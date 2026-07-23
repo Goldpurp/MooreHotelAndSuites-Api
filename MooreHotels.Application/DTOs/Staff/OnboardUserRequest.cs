@@ -1,12 +1,12 @@
+using System.ComponentModel.DataAnnotations;
 using MooreHotels.Domain.Enums;
 
 namespace MooreHotels.Application.DTOs;
 
 public record OnboardUserRequest(
-    string FullName,
-    string Email,
-    string TemporaryPassword,
+    [Required, StringLength(160, MinimumLength = 2)] string FullName,
+    [Required, EmailAddress, StringLength(254)] string Email,
     UserRole AssignedRole,
     ProfileStatus Status,
-    string? Department = null,
-    string? Phone = null);
+    [StringLength(80)] string? Department = null,
+    [Phone, StringLength(30)] string? Phone = null);

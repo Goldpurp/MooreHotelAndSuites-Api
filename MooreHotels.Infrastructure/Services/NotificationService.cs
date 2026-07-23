@@ -69,9 +69,12 @@ public class NotificationService : INotificationService
             .ToListAsync();
     }
 
-    public async Task MarkAsReadAsync(Guid notificationId)
+    public async Task MarkAsReadAsync(Guid notificationId, Guid userId, bool canManageStaffNotifications)
     {
-        var notification = await _db.Notifications.FindAsync(notificationId);
+        var notification = await _db.Notifications.FirstOrDefaultAsync(notification =>
+            notification.Id == notificationId &&
+            (notification.UserId == userId ||
+             (canManageStaffNotifications && notification.UserId == null)));
         if (notification != null)
         {
             notification.IsRead = true;

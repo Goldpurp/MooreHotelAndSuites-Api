@@ -7,7 +7,6 @@ public interface IProfileService
     Task<UserProfileDto> GetProfileAsync(Guid userId);
     Task UpdateProfileAsync(Guid userId, UpdateProfileRequest request);
     Task RotateCredentialsAsync(Guid userId, RotateCredentialsRequest request);
-    Task ForgotPasswordAsync(string email);
     Task<IEnumerable<BookingDto>> GetBookingHistoryAsync(Guid userId);
     Task DeactivateAccountAsync(Guid userId);
     Task ActivateAccountAsync(Guid userId);

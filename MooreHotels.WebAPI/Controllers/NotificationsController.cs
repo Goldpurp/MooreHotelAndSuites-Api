@@ -34,13 +34,18 @@ public class NotificationsController : ControllerBase
     [HttpPatch("{id}/read")]
     public async Task<IActionResult> MarkAsRead(Guid id)
     {
-        await _notificationService.MarkAsReadAsync(id);
+        var userId = GetUserId();
+        if (userId == Guid.Empty) return Unauthorized();
+
+        var canManageStaffNotifications =
+            User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
+        await _notificationService.MarkAsReadAsync(id, userId, canManageStaffNotifications);
         return NoContent();
     }
 
     private Guid GetUserId()
     {
-        var idStr = User.FindFirstValue("sub");
+        var idStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
         return Guid.TryParse(idStr, out var id) ? id : Guid.Empty;
     }
 }

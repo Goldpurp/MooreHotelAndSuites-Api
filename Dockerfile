@@ -1,29 +1,39 @@
-# ---------- Build Stage ----------
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:8.0.423 AS build
 WORKDIR /src
 
-COPY *.sln .
+COPY *.sln global.json ./
 COPY MooreHotels.WebAPI/*.csproj MooreHotels.WebAPI/
 COPY MooreHotels.Infrastructure/*.csproj MooreHotels.Infrastructure/
 COPY MooreHotels.Application/*.csproj MooreHotels.Application/
 COPY MooreHotels.Domain/*.csproj MooreHotels.Domain/
-
-RUN dotnet restore
+RUN dotnet restore MooreHotels.WebAPI/MooreHotels.WebAPI.csproj
 
 COPY . .
-WORKDIR /src/MooreHotels.WebAPI
+RUN dotnet tool install --global dotnet-ef --version 8.0.29
+ENV PATH="${PATH}:/root/.dotnet/tools"
+RUN dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj \
+    --configuration Release \
+    --no-restore \
+    --output /app/publish \
+    /p:UseAppHost=false
+RUN dotnet ef migrations bundle \
+    --project MooreHotels.Infrastructure/MooreHotels.Infrastructure.csproj \
+    --startup-project MooreHotels.WebAPI/MooreHotels.WebAPI.csproj \
+    --configuration Release \
+    --no-build \
+    --output /app/migrate
 
-RUN dotnet publish -c Release -o /app/publish /p:UseAppHost=false
-
-# ---------- Runtime Stage ----------
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0.29 AS runtime
 WORKDIR /app
 
-COPY --from=build /app/publish .
+ENV ASPNETCORE_HTTP_PORTS=8080 \
+    ASPNETCORE_ENVIRONMENT=Production \
+    DOTNET_EnableDiagnostics=0 \
+    DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
-ENV ASPNETCORE_URLS=http://+:8080
-ENV ASPNETCORE_ENVIRONMENT=Production
+COPY --from=build --chown=app:app /app/publish .
+COPY --from=build --chown=app:app /app/migrate ./migrate
 
+USER app
 EXPOSE 8080
-
 ENTRYPOINT ["dotnet", "MooreHotels.WebAPI.dll"]

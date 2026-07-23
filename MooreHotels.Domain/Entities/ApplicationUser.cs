@@ -9,7 +9,9 @@ public class ApplicationUser : IdentityUser<Guid>
     public UserRole Role { get; set; }
     public ProfileStatus Status { get; set; } = ProfileStatus.Active;
     public string? AvatarUrl { get; set; }
-    public string? SecurityPin { get; set; } 
+    public string? AvatarPublicId { get; set; }
     public string? Department { get; set; } // Categorization: Housekeeping, Reception, etc.
+    public string? GuestId { get; set; }
+    public Guest? GuestProfile { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

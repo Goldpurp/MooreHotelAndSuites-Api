@@ -12,24 +12,29 @@ public class GuestRepository : IGuestRepository
 
     public async Task<Guest?> GetByIdAsync(string id) => await _db.Guests.FindAsync(id);
     
-    public async Task<Guest?> GetByEmailAsync(string email) => await _db.Guests.FirstOrDefaultAsync(g => g.Email == email);
-    
     public async Task<Guest?> GetByEmailAndNameAsync(string email, string firstName, string lastName) =>
         await _db.Guests.FirstOrDefaultAsync(g => g.Email == email && g.FirstName == firstName && g.LastName == lastName);
 
-    public async Task<IEnumerable<Guest>> GetAllAsync() => await _db.Guests.ToListAsync();
+    public async Task<IEnumerable<Guest>> GetAllAsync() => await _db.Guests
+        .AsNoTracking()
+        .OrderByDescending(guest => guest.CreatedAt)
+        .Take(1000)
+        .ToListAsync();
 
     public async Task<IEnumerable<Guest>> SearchAsync(string term)
     {
         if (string.IsNullOrWhiteSpace(term)) return await GetAllAsync();
 
-        var t = term.ToLower();
+        var t = term.Trim();
         return await _db.Guests
-            .Where(g => g.Id.ToLower().Contains(t) || 
-                        g.FirstName.ToLower().Contains(t) || 
-                        g.LastName.ToLower().Contains(t) || 
-                        g.Email.ToLower().Contains(t) || 
+            .AsNoTracking()
+            .Where(g => EF.Functions.ILike(g.Id, $"%{t}%") ||
+                        EF.Functions.ILike(g.FirstName, $"%{t}%") ||
+                        EF.Functions.ILike(g.LastName, $"%{t}%") ||
+                        EF.Functions.ILike(g.Email, $"%{t}%") ||
                         g.Phone.Contains(t))
+            .OrderByDescending(guest => guest.CreatedAt)
+            .Take(200)
             .ToListAsync();
     }
 

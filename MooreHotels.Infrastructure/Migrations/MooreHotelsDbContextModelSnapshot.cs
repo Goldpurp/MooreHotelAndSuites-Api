@@ -17,7 +17,7 @@ namespace MooreHotels.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.10")
+                .HasAnnotation("ProductVersion", "8.0.29")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -161,8 +161,13 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<int>("AccessFailedCount")
                         .HasColumnType("integer");
 
+                    b.Property<string>("AvatarPublicId")
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
                     b.Property<string>("AvatarUrl")
-                        .HasColumnType("text");
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
 
                     b.Property<string>("ConcurrencyStamp")
                         .IsConcurrencyToken()
@@ -172,7 +177,8 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Department")
-                        .HasColumnType("text");
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
 
                     b.Property<string>("Email")
                         .HasMaxLength(256)
@@ -180,6 +186,10 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<bool>("EmailConfirmed")
                         .HasColumnType("boolean");
+
+                    b.Property<string>("GuestId")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<bool>("LockoutEnabled")
                         .HasColumnType("boolean");
@@ -189,7 +199,8 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<string>("NormalizedEmail")
                         .HasMaxLength(256)
@@ -210,17 +221,16 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("Role")
                         .IsRequired()
-                        .HasColumnType("text");
-
-                    b.Property<string>("SecurityPin")
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<string>("SecurityStamp")
                         .HasColumnType("text");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<bool>("TwoFactorEnabled")
                         .HasColumnType("boolean");
@@ -231,12 +241,18 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("GuestId")
+                        .IsUnique()
+                        .HasFilter("\"GuestId\" IS NOT NULL");
+
                     b.HasIndex("NormalizedEmail")
                         .HasDatabaseName("EmailIndex");
 
                     b.HasIndex("NormalizedUserName")
                         .IsUnique()
                         .HasDatabaseName("UserNameIndex");
+
+                    b.HasIndex("Status", "Role");
 
                     b.ToTable("users", (string)null);
                 });
@@ -249,18 +265,21 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("EntityId")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<string>("EntityType")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)");
 
                     b.Property<string>("NewDataJson")
                         .HasColumnType("jsonb");
@@ -273,6 +292,10 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("CreatedAt");
+
+                    b.HasIndex("EntityType", "EntityId", "CreatedAt");
+
                     b.ToTable("audit_logs", (string)null);
                 });
 
@@ -283,11 +306,13 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<decimal>("Amount")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
 
                     b.Property<string>("BookingCode")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<DateTime>("CheckIn")
                         .HasColumnType("timestamp with time zone");
@@ -300,73 +325,142 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("GuestId")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasColumnType("character varying(20)");
 
                     b.Property<string>("Notes")
-                        .HasColumnType("text");
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime?>("PaymentCheckoutExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PaymentCheckoutUrl")
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.Property<string>("PaymentConfirmationMethod")
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime?>("PaymentConfirmedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("PaymentConfirmedByUserId")
+                        .HasColumnType("uuid");
 
                     b.Property<string>("PaymentMethod")
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("PaymentProviderReference")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<string>("PaymentStatus")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<string>("RefundReference")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<Guid>("RoomId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
                     b.Property<string>("StatusHistoryJson")
                         .HasColumnType("jsonb");
 
                     b.Property<string>("TransactionReference")
-                        .HasColumnType("text");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.HasKey("Id");
 
                     b.HasIndex("BookingCode")
                         .IsUnique();
 
-                    b.HasIndex("GuestId");
+                    b.HasIndex("PaymentConfirmedByUserId");
 
-                    b.HasIndex("RoomId");
+                    b.HasIndex("PaymentProviderReference")
+                        .IsUnique()
+                        .HasFilter("\"PaymentProviderReference\" IS NOT NULL");
 
-                    b.ToTable("bookings", (string)null);
+                    b.HasIndex("TransactionReference")
+                        .IsUnique()
+                        .HasFilter("\"TransactionReference\" IS NOT NULL");
+
+                    b.HasIndex("GuestId", "CreatedAt");
+
+                    b.HasIndex("PaymentStatus", "CreatedAt");
+
+                    b.HasIndex("RoomId", "CheckIn", "CheckOut", "Status");
+
+                    b.ToTable("bookings", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_bookings_valid_dates", "\"CheckOut\" > \"CheckIn\"");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.BookingCodeAllocation", b =>
+                {
+                    b.Property<string>("Code")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<DateTime>("AllocatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Code");
+
+                    b.HasIndex("AllocatedAtUtc");
+
+                    b.ToTable("booking_code_allocations", (string)null);
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.Guest", b =>
                 {
                     b.Property<string>("Id")
-                        .HasColumnType("text");
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<string>("AvatarUrl")
-                        .HasColumnType("text");
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Email")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
 
                     b.Property<string>("FirstName")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
 
                     b.Property<string>("LastName")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
 
                     b.Property<string>("Phone")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.HasKey("Id");
 
                     b.HasIndex("Email");
+
+                    b.HasIndex("Email", "FirstName", "LastName");
 
                     b.ToTable("guests", (string)null);
                 });
@@ -378,54 +472,70 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<decimal>("Amount")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
 
                     b.Property<string>("BookingCode")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<Guid?>("BookingId")
+                        .HasColumnType("uuid");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
-                    b.Property<string>("CustomerEmail")
-                        .HasColumnType("text");
-
-                    b.Property<string>("CustomerName")
-                        .HasColumnType("text");
-
                     b.Property<decimal?>("Fee")
-                        .HasColumnType("numeric");
-
-                    b.Property<string>("MerchantReference")
-                        .HasColumnType("text");
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
 
                     b.Property<string>("MonnifyReference")
-                        .HasColumnType("text");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<string>("PaymentMethod")
-                        .HasColumnType("text");
-
-                    b.Property<string>("RawPayloadJson")
-                        .HasColumnType("jsonb");
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
 
                     b.Property<decimal?>("SettledAmount")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("Source")
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
                     b.Property<string>("TransactionReference")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<DateTime?>("UpdatedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<DateTime?>("VerifiedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.HasKey("Id");
+
+                    b.HasIndex("BookingId")
+                        .IsUnique()
+                        .HasFilter("\"BookingId\" IS NOT NULL");
+
+                    b.HasIndex("MonnifyReference")
+                        .IsUnique()
+                        .HasFilter("\"MonnifyReference\" IS NOT NULL");
 
                     b.HasIndex("TransactionReference")
                         .IsUnique();
+
+                    b.HasIndex("BookingCode", "Status");
 
                     b.ToTable("monnify_transactions", (string)null);
                 });
@@ -437,7 +547,8 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasColumnType("uuid");
 
                     b.Property<string>("BookingCode")
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
@@ -447,16 +558,20 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("Message")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
 
                     b.Property<string>("Title")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
 
                     b.Property<Guid?>("UserId")
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("UserId", "IsRead", "CreatedAt");
 
                     b.ToTable("notifications", (string)null);
                 });
@@ -476,47 +591,62 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("Category")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Description")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(4000)
+                        .HasColumnType("character varying(4000)");
 
                     b.Property<string>("Floor")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
                     b.Property<bool>("IsOnline")
                         .HasColumnType("boolean");
 
                     b.Property<string>("Name")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
 
                     b.Property<decimal>("PricePerNight")
-                        .HasColumnType("numeric");
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
 
                     b.Property<string>("RoomNumber")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<string>("Size")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
 
                     b.Property<string>("Status")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
                     b.HasKey("Id");
 
                     b.HasIndex("RoomNumber")
                         .IsUnique();
 
-                    b.ToTable("rooms", (string)null);
+                    b.HasIndex("IsOnline", "Category", "Capacity");
+
+                    b.ToTable("rooms", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_rooms_capacity_positive", "\"Capacity\" > 0");
+
+                            t.HasCheckConstraint("CK_rooms_price_positive", "\"PricePerNight\" > 0");
+                        });
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.RoomImage", b =>
@@ -530,16 +660,21 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("PublicId")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
 
                     b.Property<Guid>("RoomId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("Url")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("PublicId")
+                        .IsUnique();
 
                     b.HasIndex("RoomId");
 
@@ -554,37 +689,47 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("Action")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
 
                     b.Property<string>("AuthorizedBy")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<string>("BookingCode")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<string>("GuestId")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
 
                     b.Property<string>("GuestName")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.Property<Guid>("RoomId")
                         .HasColumnType("uuid");
 
                     b.Property<string>("RoomNumber")
                         .IsRequired()
-                        .HasColumnType("text");
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
 
                     b.Property<DateTime>("Timestamp")
                         .HasColumnType("timestamp with time zone");
 
                     b.HasKey("Id");
 
-                    b.ToTable("VisitRecords");
+                    b.HasIndex("Timestamp");
+
+                    b.HasIndex("BookingCode", "Timestamp");
+
+                    b.ToTable("visit_records", (string)null);
                 });
 
             modelBuilder.Entity("Microsoft.AspNetCore.Identity.IdentityRoleClaim<System.Guid>", b =>
@@ -638,23 +783,50 @@ namespace MooreHotels.Infrastructure.Migrations
                         .IsRequired();
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.ApplicationUser", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.Guest", "GuestProfile")
+                        .WithMany()
+                        .HasForeignKey("GuestId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("GuestProfile");
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.Booking", b =>
                 {
                     b.HasOne("MooreHotels.Domain.Entities.Guest", "Guest")
                         .WithMany("Bookings")
                         .HasForeignKey("GuestId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "PaymentConfirmedByUser")
+                        .WithMany()
+                        .HasForeignKey("PaymentConfirmedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
 
                     b.HasOne("MooreHotels.Domain.Entities.Room", "Room")
                         .WithMany()
                         .HasForeignKey("RoomId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Guest");
 
+                    b.Navigation("PaymentConfirmedByUser");
+
                     b.Navigation("Room");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.MonnifyTransaction", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.Booking", "Booking")
+                        .WithMany()
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Booking");
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.RoomImage", b =>

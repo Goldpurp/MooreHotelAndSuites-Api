@@ -22,4 +22,6 @@ public record BookingDto(
     DateTime CreatedAt,
     string? PaymentUrl = null,
     string? PaymentInstruction = null,
-    string? NotificationMessage = null);
+    string? NotificationMessage = null,
+    string? RefundReference = null,
+    DateTime? PaymentExpiresAtUtc = null);

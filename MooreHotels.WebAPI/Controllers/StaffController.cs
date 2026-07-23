@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace MooreHotels.WebAPI.Controllers;
@@ -12,10 +14,12 @@ namespace MooreHotels.WebAPI.Controllers;
 public class StaffController : ControllerBase
 {
     private readonly IStaffService _staffService;
+    private readonly MooreHotelsDbContext _context;
 
-    public StaffController(IStaffService staffService)
+    public StaffController(IStaffService staffService, MooreHotelsDbContext context)
     {
         _staffService = staffService;
+        _context = context;
     }
 
     [HttpGet("stats")]
@@ -44,23 +48,30 @@ public class StaffController : ControllerBase
     [Authorize(Roles = "Admin,Manager")]
     public async Task<IActionResult> Onboard([FromBody] OnboardUserRequest request)
     {
-        try
-        {
-            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (!Guid.TryParse(userIdStr, out var actingUserId))
-                return Unauthorized();
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
+        await _staffService.OnboardUserAsync(request, actingUserId);
+        return Ok(new { Message = "Staff member provisioned. A secure setup link has been emailed." });
+    }
 
-            await _staffService.OnboardUserAsync(request, actingUserId);
-            return Ok(new { Message = "Staff member successfully provisioned in the system." });
-        }
-        catch (UnauthorizedAccessException ex)
+    [HttpPut("employees/{id:guid}")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStaffRequest request)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
+
+        var strategy = _context.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            return StatusCode(403, new { Message = ex.Message });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { Message = ex.Message });
-        }
+            _context.ChangeTracker.Clear();
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _context.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT 1 FROM users WHERE \"Id\" = {id} FOR UPDATE");
+            await _staffService.UpdateUserAsync(id, request, actingUserId);
+            await transaction.CommitAsync();
+        });
+        return Ok(new { Message = "Staff profile updated. Existing sessions have been revoked." });
     }
 
 
@@ -70,23 +81,10 @@ public class StaffController : ControllerBase
         Guid id,
         [FromBody] ChangeStatusRequest request)
     {
-        try
-        {
-            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (!Guid.TryParse(userIdStr, out var actingUserId))
-                return Unauthorized();
-
-            await _staffService.ChangeUserStatusAsync(
-                id,
-                request.Status,
-                actingUserId);
-
-            return Ok(new { Message = "Account status updated successfully." });
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { Message = ex.Message });
-        }
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
+        await _staffService.ChangeUserStatusAsync(id, request.Status, actingUserId);
+        return Ok(new { Message = "Account status updated successfully." });
     }
 
 
@@ -111,14 +109,18 @@ public class StaffController : ControllerBase
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id)
     {
-        try
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
+        var strategy = _context.Database.CreateExecutionStrategy();
+        await strategy.ExecuteAsync(async () =>
         {
-            await _staffService.DeleteUserAsync(id);
-            return NoContent();
-        }
-        catch (Exception ex)
-        {
-            return BadRequest(new { Message = ex.Message });
-        }
+            _context.ChangeTracker.Clear();
+            await using var transaction = await _context.Database.BeginTransactionAsync();
+            await _context.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT 1 FROM users WHERE \"Id\" = {id} FOR UPDATE");
+            await _staffService.DeleteUserAsync(id, actingUserId);
+            await transaction.CommitAsync();
+        });
+        return NoContent();
     }
 }
