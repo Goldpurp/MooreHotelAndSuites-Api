@@ -48,6 +48,7 @@ public sealed class DatabaseSettings
 {
     public bool CreateIfMissing { get; init; }
     public bool ApplyMigrationsOnStartup { get; init; }
+    public bool TrustRenderPrivateNetwork { get; init; }
     public int MaxRetryCount { get; init; } = 3;
     public int CommandTimeoutSeconds { get; init; } = 30;
     public int ContextPoolSize { get; init; } = 64;
@@ -147,6 +148,8 @@ public static class ConfigurationBootstrap
     {
         var errors = new List<string>();
         var connectionString = configuration.GetConnectionString("DefaultConnection");
+        var databaseSettings = configuration.GetSection("Database")
+            .Get<DatabaseSettings>() ?? new DatabaseSettings();
         var jwt = configuration.GetSection("Jwt").Get<JwtSettings>() ?? new JwtSettings();
         var runtime = configuration.GetSection("Runtime").Get<RuntimeSettings>() ?? new RuntimeSettings();
         var origins = configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [];
@@ -176,9 +179,21 @@ public static class ConfigurationBootstrap
                         errors.Add("Production cannot use a loopback database host.");
                     }
 
-                    if (database.SslMode is SslMode.Disable or SslMode.Allow or SslMode.Prefer)
+                    var permitsRenderPrivateNetwork =
+                        databaseSettings.TrustRenderPrivateNetwork &&
+                        IsRenderPrivateDatabaseHost(databaseHost);
+                    if ((database.SslMode is SslMode.Disable or SslMode.Allow or SslMode.Prefer) &&
+                        !permitsRenderPrivateNetwork)
                     {
-                        errors.Add("Production PostgreSQL must use SSL Mode=Require, VerifyCA, or VerifyFull.");
+                        errors.Add(
+                            "Production PostgreSQL must use SSL Mode=Require, VerifyCA, or VerifyFull unless an explicit Render private database host is trusted.");
+                    }
+
+                    if (databaseSettings.TrustRenderPrivateNetwork &&
+                        !IsRenderPrivateDatabaseHost(databaseHost))
+                    {
+                        errors.Add(
+                            "Database:TrustRenderPrivateNetwork is permitted only for a Render private dpg-*-a hostname.");
                     }
                 }
             }
@@ -409,6 +424,14 @@ public static class ConfigurationBootstrap
     private static bool IsLoopback(string host) =>
         host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
         IPAddress.TryParse(host, out var address) && IPAddress.IsLoopback(address);
+
+    private static bool IsRenderPrivateDatabaseHost(string? host) =>
+        !string.IsNullOrWhiteSpace(host) &&
+        Regex.IsMatch(
+            host,
+            "^dpg-[a-z0-9]+-a$",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+            TimeSpan.FromMilliseconds(100));
 
     private static void ValidateEmailSettings(
         EmailSettings settings,

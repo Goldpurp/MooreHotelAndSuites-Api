@@ -44,6 +44,37 @@ public sealed class ProductionConfigurationSecurityTests
     }
 
     [Fact]
+    public void Production_accepts_an_explicit_render_private_database()
+    {
+        var settings = BaselineSettings();
+        settings["ConnectionStrings:DefaultConnection"] =
+            "Host=dpg-example123-a;Database=moore;Username=moore_app;Password=strong-db-secret;SSL Mode=Disable";
+        settings["Database:TrustRenderPrivateNetwork"] = "true";
+
+        ConfigurationBootstrap.ValidateForStartup(
+            BuildConfiguration(settings),
+            ProductionEnvironment());
+    }
+
+    [Theory]
+    [InlineData("db.example.test", "true")]
+    [InlineData("dpg-example123-a", "false")]
+    public void Production_rejects_non_tls_database_outside_the_explicit_render_boundary(
+        string host,
+        string trustRenderPrivateNetwork)
+    {
+        var settings = BaselineSettings();
+        settings["ConnectionStrings:DefaultConnection"] =
+            $"Host={host};Database=moore;Username=moore_app;Password=strong-db-secret;SSL Mode=Disable";
+        settings["Database:TrustRenderPrivateNetwork"] = trustRenderPrivateNetwork;
+
+        Assert.Throws<InvalidOperationException>(() =>
+            ConfigurationBootstrap.ValidateForStartup(
+                BuildConfiguration(settings),
+                ProductionEnvironment()));
+    }
+
+    [Fact]
     public void Production_accepts_a_base64_data_protection_certificate()
     {
         var settings = BaselineSettings();
