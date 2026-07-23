@@ -168,8 +168,18 @@ public static class ServiceCollectionExtensions
             dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
         }
         var certificatePath = configuration["DataProtection:CertificatePath"];
+        var certificateBase64 = configuration["DataProtection:CertificateBase64"];
         var certificatePassword = configuration["DataProtection:CertificatePassword"];
-        if (!string.IsNullOrWhiteSpace(certificatePath) && !string.IsNullOrWhiteSpace(certificatePassword))
+        if (!string.IsNullOrWhiteSpace(certificateBase64) &&
+            !string.IsNullOrWhiteSpace(certificatePassword))
+        {
+            dataProtection.ProtectKeysWithCertificate(new X509Certificate2(
+                Convert.FromBase64String(certificateBase64),
+                certificatePassword,
+                X509KeyStorageFlags.EphemeralKeySet));
+        }
+        else if (!string.IsNullOrWhiteSpace(certificatePath) &&
+                 !string.IsNullOrWhiteSpace(certificatePassword))
         {
             dataProtection.ProtectKeysWithCertificate(new X509Certificate2(
                 certificatePath,

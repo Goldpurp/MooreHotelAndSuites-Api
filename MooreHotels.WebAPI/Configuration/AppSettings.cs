@@ -309,7 +309,27 @@ public static class ConfigurationBootstrap
         }
         if (environment.IsDeployed())
         {
-            RequireSecret(configuration, "DataProtection:CertificatePath", errors);
+            var certificatePath = configuration["DataProtection:CertificatePath"];
+            var certificateBase64 = configuration["DataProtection:CertificateBase64"];
+            if (IsMissingOrPlaceholder(certificatePath) &&
+                IsMissingOrPlaceholder(certificateBase64))
+            {
+                errors.Add(
+                    "Either DataProtection:CertificatePath or DataProtection:CertificateBase64 is required.");
+            }
+
+            if (!IsMissingOrPlaceholder(certificateBase64))
+            {
+                try
+                {
+                    _ = Convert.FromBase64String(certificateBase64!);
+                }
+                catch (FormatException)
+                {
+                    errors.Add("DataProtection:CertificateBase64 must be valid base64.");
+                }
+            }
+
             RequireSecret(configuration, "DataProtection:CertificatePassword", errors);
         }
 

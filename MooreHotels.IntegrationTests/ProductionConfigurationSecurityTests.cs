@@ -44,6 +44,37 @@ public sealed class ProductionConfigurationSecurityTests
     }
 
     [Fact]
+    public void Production_accepts_a_base64_data_protection_certificate()
+    {
+        var settings = BaselineSettings();
+        settings.Remove("DataProtection:CertificatePath");
+        settings["DataProtection:CertificateBase64"] =
+            Convert.ToBase64String("test-certificate-bytes"u8);
+
+        ConfigurationBootstrap.ValidateForStartup(
+            BuildConfiguration(settings),
+            ProductionEnvironment());
+    }
+
+    [Fact]
+    public void Production_rejects_an_invalid_base64_data_protection_certificate()
+    {
+        var settings = BaselineSettings();
+        settings.Remove("DataProtection:CertificatePath");
+        settings["DataProtection:CertificateBase64"] = "not-valid-base64";
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            ConfigurationBootstrap.ValidateForStartup(
+                BuildConfiguration(settings),
+                ProductionEnvironment()));
+
+        Assert.Contains(
+            "DataProtection:CertificateBase64",
+            exception.Message,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Production_rejects_render_edge_mode_with_more_than_one_hop()
     {
         var settings = BaselineSettings();
