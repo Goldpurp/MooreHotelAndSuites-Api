@@ -68,7 +68,12 @@ public static class ServiceCollectionExtensions
             {
                 options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
                 options.ForwardLimit = Math.Clamp(forwardedHeaders.ForwardLimit, 1, 3);
-                options.RequireHeaderSymmetry = true;
+                // Render can append a proxy hop to X-Forwarded-For while
+                // supplying a single X-Forwarded-Proto value. Requiring equal
+                // list lengths would reject both headers and collapse all
+                // clients onto the edge proxy address. Render edge mode is
+                // still bounded to the trusted right-most hop below.
+                options.RequireHeaderSymmetry = !forwardedHeaders.TrustRenderEdge;
                 options.KnownProxies.Clear();
                 options.KnownNetworks.Clear();
 
