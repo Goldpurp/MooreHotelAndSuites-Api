@@ -58,11 +58,22 @@ public class CloudinaryService : IImageService
     {
         if (files == null || !files.Any()) return new List<MyImageResult>();
 
-        // Parallel processing: Upload all images simultaneously
-        var tasks = files.Select(file => UploadImageAsync(file, folder));
-        var results = await Task.WhenAll(tasks);
-        
-        return results.Where(r => r != null).ToList()!;
+        var tasks = files.Select(file => UploadImageAsync(file, folder)).ToArray();
+        try
+        {
+            var results = await Task.WhenAll(tasks);
+            return results.Where(result => result is not null).Cast<MyImageResult>().ToList();
+        }
+        catch
+        {
+            // Task.WhenAll waits for every upload. Remove any successful objects
+            // so a partial provider failure cannot leave untracked assets.
+            var uploaded = tasks
+                .Where(task => task.Status == TaskStatus.RanToCompletion && task.Result is not null)
+                .Select(task => task.Result!);
+            await Task.WhenAll(uploaded.Select(result => DeleteImageAsync(result.PublicId)));
+            throw;
+        }
     }
 
     public async Task<bool> DeleteImageAsync(string publicId)

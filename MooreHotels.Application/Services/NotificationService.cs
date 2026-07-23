@@ -26,7 +26,7 @@ public class NotificationService : INotificationService
         return Task.FromResult(Enumerable.Empty<NotificationDto>());
     }
 
-    public Task MarkAsReadAsync(Guid notificationId)
+    public Task MarkAsReadAsync(Guid notificationId, Guid userId, bool canManageStaffNotifications)
     {
         return Task.CompletedTask;
     }

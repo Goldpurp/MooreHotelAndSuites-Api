@@ -23,26 +23,34 @@ public class JwtService : IJwtService
 
     public string GenerateToken(ApplicationUser user)
     {
-        var secretKey = _config["Jwt:Key"] ?? "MooreHotelsSuperSecretKey2024!AtLeast32CharactersForSecurityPurpose";
+        var secretKey = _config["Jwt:Key"]
+            ?? throw new InvalidOperationException("Jwt:Key is not configured.");
+        var issuer = _config["Jwt:Issuer"]
+            ?? throw new InvalidOperationException("Jwt:Issuer is not configured.");
+        var audience = _config["Jwt:Audience"]
+            ?? throw new InvalidOperationException("Jwt:Audience is not configured.");
+        var expirationMinutes = Math.Clamp(_config.GetValue<int?>("Jwt:ExpirationMinutes") ?? 60, 5, 1440);
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 
         // Using standard ClaimTypes for reliable mapping in Identity middleware
         var claims = new List<Claim>
         {
+            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new Claim(ClaimTypes.NameIdentifier, user.Id.ToString()),
             new Claim(ClaimTypes.Email, user.Email ?? ""),
             new Claim(ClaimTypes.Name, user.Name),
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-            new Claim(ClaimTypes.Role, user.Role.ToString()), // Standard Role Claim
-            new Claim("role", user.Role.ToString()) // Redundant short-form for client-side ease
+            new Claim(ClaimTypes.Role, user.Role.ToString()),
+            new Claim("security_stamp", user.SecurityStamp ?? string.Empty)
         };
 
         var token = new JwtSecurityToken(
-            issuer: "MooreHotels",
-            audience: "MooreHotels_Clients",
+            issuer: issuer,
+            audience: audience,
             claims: claims,
-            expires: DateTime.UtcNow.AddDays(1),
+            notBefore: DateTime.UtcNow,
+            expires: DateTime.UtcNow.AddMinutes(expirationMinutes),
             signingCredentials: creds
         );
 

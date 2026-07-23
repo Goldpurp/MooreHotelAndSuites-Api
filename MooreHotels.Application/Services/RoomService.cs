@@ -3,6 +3,7 @@ using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Application.Exceptions;
 
 namespace MooreHotels.Application.Services;
 
@@ -22,9 +23,9 @@ public class RoomService : IRoomService
         _imageService = imageService;
     }
 
-    public async Task<IEnumerable<RoomDto>> GetAllRoomsAsync(RoomCategory? category = null)
+    public async Task<IEnumerable<RoomDto>> GetAllRoomsAsync(RoomCategory? category = null, bool includeOffline = false)
     {
-        var rooms = await _roomRepo.GetAllAsync(onlyOnline: false);
+        var rooms = await _roomRepo.GetAllAsync(onlyOnline: !includeOffline);
         if (category.HasValue) rooms = rooms.Where(r => r.Category == category);
 
         return rooms.Select(MapToDto);
@@ -77,7 +78,7 @@ public class RoomService : IRoomService
     public async Task<RoomDto> CreateRoomAsync(CreateRoomRequest request)
     {
         var existingRoom = await _roomRepo.GetByRoomNumberAsync(request.RoomNumber);
-        if (existingRoom != null) throw new Exception($"Conflict: Room unit '{request.RoomNumber}' is already registered.");
+        if (existingRoom != null) throw new BadRequestException("That room number is already registered.");
 
         var room = new Room
         {
@@ -90,10 +91,10 @@ public class RoomService : IRoomService
             Capacity = request.Capacity,
             Size = request.Size,
             Description = request.Description,
-            Amenities = request.Amenities ?? new List<string>(),
+            Amenities = NormalizeAmenities(request.Amenities),
             Images = new List<RoomImage>(),
             Status = request.Status,
-            IsOnline = request.Status != RoomStatus.Maintenance,
+            IsOnline = request.Status != RoomStatus.Maintenance && (request.IsOnline ?? true),
             CreatedAt = DateTime.UtcNow
         };
 
@@ -105,20 +106,46 @@ public class RoomService : IRoomService
     public async Task UpdateRoomAsync(Guid id, UpdateRoomRequest request)
     {
         var room = await _roomRepo.GetByIdWithImagesAsync(id);
-        if (room == null) throw new Exception("Room not found");
+        if (room == null) throw new NotFoundException("Room not found.");
 
-        if (request.Name != null) room.Name = request.Name;
+        if (request.Name != null) room.Name = request.Name.Trim();
         if (request.Category != null) room.Category = request.Category.Value;
         if (request.Floor != null) room.Floor = request.Floor.Value;
         if (request.Status != null)
         {
+            var wasInMaintenance = room.Status == RoomStatus.Maintenance;
             room.Status = request.Status.Value;
-            room.IsOnline = request.Status != RoomStatus.Maintenance;
+            if (room.Status == RoomStatus.Maintenance)
+            {
+                room.IsOnline = false;
+            }
+            else if (request.IsOnline.HasValue)
+            {
+                room.IsOnline = request.IsOnline.Value;
+            }
+            else if (wasInMaintenance)
+            {
+                // Preserve the existing maintenance toggle behaviour for older clients.
+                room.IsOnline = true;
+            }
+        }
+        else if (request.IsOnline.HasValue)
+        {
+            // A room under maintenance must never be published accidentally.
+            room.IsOnline = room.Status != RoomStatus.Maintenance && request.IsOnline.Value;
         }
         if (request.PricePerNight != null) room.PricePerNight = request.PricePerNight.Value;
         if (request.Capacity != null) room.Capacity = request.Capacity.Value;
+        if (request.Size != null) room.Size = request.Size.Trim();
         if (request.Description != null) room.Description = request.Description;
-        if (request.Amenities != null) room.Amenities = request.Amenities;
+        if (request.ReplaceAmenities == true)
+        {
+            room.Amenities = NormalizeAmenities(request.Amenities);
+        }
+        else if (request.Amenities != null)
+        {
+            room.Amenities = NormalizeAmenities(request.Amenities);
+        }
 
         await _roomRepo.UpdateAsync(room);
     }
@@ -140,25 +167,16 @@ public class RoomService : IRoomService
 }
 
 
-    public async Task AddImagesToRoomAsync(Guid roomId, List<ImageUploadResult> results)
-    {
-        var room = await _roomRepo.GetByIdWithImagesAsync(roomId);
-        if (room == null) return;
-
-        foreach (var res in results)
-        {
-            room.Images.Add(new RoomImage
-            {
-                Url = res.Url,
-                PublicId = res.PublicId
-            });
-        }
-    }
-
-
-
     private static RoomDto MapToDto(Room r) => new(
         r.Id, r.RoomNumber, r.Name, r.Category, r.Floor, r.Status,
         r.PricePerNight, r.Capacity, r.Size, r.IsOnline, r.Description,
         r.Amenities, r.Images.Select(i => i.Url).ToList(), r.CreatedAt);
+
+    private static List<string> NormalizeAmenities(IEnumerable<string>? amenities) =>
+        amenities?
+            .Select(value => value.Trim())
+            .Where(value => value.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(50)
+            .ToList() ?? [];
 }

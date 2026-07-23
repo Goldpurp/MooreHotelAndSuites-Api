@@ -1,0 +1,53 @@
+name: API release gates
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      MOORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=postgres;Username=postgres;Password=postgres;SSL Mode=Disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+          cache: true
+          cache-dependency-path: '**/*.csproj'
+      - name: Restore
+        run: dotnet restore MooreHotels.sln
+      - name: Build Release
+        run: dotnet build MooreHotels.sln --configuration Release --no-restore
+      - name: Run integration tests
+        run: dotnet test MooreHotels.IntegrationTests/MooreHotels.IntegrationTests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+      - name: Scan NuGet dependencies
+        run: ./scripts/check-nuget-vulnerabilities.sh
+      - name: Restore pinned EF tooling
+        run: dotnet tool restore
+      - name: Validate EF model
+        run: dotnet tool run dotnet-ef migrations has-pending-model-changes --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build
+      - name: Build migration bundle
+        run: dotnet tool run dotnet-ef migrations bundle --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build --output /tmp/moore-hotels-migrate
+      - name: Publish API
+        run: dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --configuration Release --no-build --output /tmp/moore-hotels-api

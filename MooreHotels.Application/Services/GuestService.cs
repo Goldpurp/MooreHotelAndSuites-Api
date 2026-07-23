@@ -28,18 +28,6 @@ public class GuestService : IGuestService
         return guest != null ? MapToDto(guest) : null;
     }
 
-    public async Task<GuestDto?> GetGuestByEmailAsync(string email)
-    {
-        var guest = await _guestRepo.GetByEmailAsync(email);
-        return guest != null ? MapToDto(guest) : null;
-    }
-
-    public async Task SetVipStatusAsync(string id, bool isVip)
-    {
-        // Tier system removed as requested.
-        await Task.CompletedTask;
-    }
-
     private static GuestDto MapToDto(Guest g) => new(
         g.Id, g.FirstName, g.LastName, g.Email, g.Phone, g.AvatarUrl, g.CreatedAt);
 }

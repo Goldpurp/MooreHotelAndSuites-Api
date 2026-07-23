@@ -21,18 +21,27 @@ public class UserStatusMiddleware
             var userIdStr = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
             if (Guid.TryParse(userIdStr, out var userId))
             {
-                // Note: In high-traffic scenarios, consider caching this status for 30-60 seconds 
-                // to reduce DB load, but for "total invasion" requirements, we query directly.
                 var user = await userManager.FindByIdAsync(userIdStr);
 
-                if (user == null || user.Status == ProfileStatus.Suspended)
+                var tokenStamp = context.User.FindFirstValue("security_stamp");
+                var hasValidSecurityStamp = user is not null &&
+                    !string.IsNullOrEmpty(tokenStamp) &&
+                    string.Equals(tokenStamp, user.SecurityStamp, StringComparison.Ordinal);
+
+                if (user == null || user.Status == ProfileStatus.Suspended || !hasValidSecurityStamp)
                 {
+                    var errorCode = user?.Status == ProfileStatus.Suspended
+                        ? "ACCOUNT_SUSPENDED"
+                        : "SESSION_REVOKED";
+                    var message = user?.Status == ProfileStatus.Suspended
+                        ? "This account is suspended. Contact an administrator."
+                        : "This session is no longer valid. Please sign in again.";
                     context.Response.StatusCode = StatusCodes.Status403Forbidden;
                     context.Response.ContentType = "application/json";
                     await context.Response.WriteAsJsonAsync(new 
                     { 
-                        Message = "Security Alert: Your account has been suspended. All active sessions have been terminated.",
-                        ErrorCode = "ACCOUNT_SUSPENDED"
+                        Message = message,
+                        ErrorCode = errorCode
                     });
                     return;
                 }
@@ -45,7 +54,7 @@ public class UserStatusMiddleware
 
 public static class UserStatusMiddlewareExtensions
 {
-    public static IApplicationBuilder UseUserStatusInvasion(this IApplicationBuilder builder)
+    public static IApplicationBuilder UseUserStatusEnforcement(this IApplicationBuilder builder)
     {
         return builder.UseMiddleware<UserStatusMiddleware>();
     }

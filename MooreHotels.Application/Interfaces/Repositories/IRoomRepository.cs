@@ -18,7 +18,6 @@ public interface IRoomRepository
     Task AddAsync(Room room);
     Task UpdateAsync(Room room);
     Task DeleteAsync(Room room);
-    Task<bool> ExistsAsync(Guid id);
     Task<Room?> GetByIdWithImagesAsync(Guid id);
 
 }

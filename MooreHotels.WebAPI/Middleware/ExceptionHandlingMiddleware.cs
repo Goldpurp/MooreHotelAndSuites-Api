@@ -1,5 +1,7 @@
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.Exceptions;
+using MooreHotels.WebAPI.Configuration;
+using Microsoft.EntityFrameworkCore;
 using System.Net;
 using System.Text.Json;
 
@@ -26,6 +28,10 @@ public class ExceptionHandlingMiddleware
         }
         catch (Exception ex)
         {
+            if (context.Response.HasStarted)
+            {
+                throw;
+            }
             await HandleExceptionAsync(context, ex);
         }
     }
@@ -38,7 +44,11 @@ public class ExceptionHandlingMiddleware
         {
             BadRequestException or ArgumentException => (HttpStatusCode.BadRequest, "Bad Request"),
             NotFoundException or KeyNotFoundException => (HttpStatusCode.NotFound, "Resource Not Found"),
-            UnauthorizedAccessException => (HttpStatusCode.Unauthorized, "Unauthorized Access"),
+            UnauthorizedAccessException => (HttpStatusCode.Forbidden, "Forbidden"),
+            ConflictException => (HttpStatusCode.Conflict, "Request Conflict"),
+            ServiceUnavailableException => (HttpStatusCode.ServiceUnavailable, "Service Unavailable"),
+            DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "Concurrent Update Conflict"),
+            DbUpdateException => (HttpStatusCode.Conflict, "Data Conflict"),
             _ => (HttpStatusCode.InternalServerError, "Internal Server Error")
         };
 
@@ -53,9 +63,16 @@ public class ExceptionHandlingMiddleware
         {
             Status = (int)statusCode,
             Title = title,
-            Detail = statusCode == HttpStatusCode.InternalServerError && !_env.IsDevelopment() 
-                ? "An unexpected error occurred. Please contact system support." 
-                : exception.Message,
+            Detail = statusCode switch
+            {
+                HttpStatusCode.InternalServerError when !_env.IsLocal() =>
+                    "An unexpected error occurred. Please contact system support.",
+                HttpStatusCode.Conflict when exception is DbUpdateException =>
+                    "The requested change conflicts with existing data. Refresh and try again.",
+                HttpStatusCode.ServiceUnavailable =>
+                    "The payment provider is temporarily unavailable. Please try again shortly.",
+                _ => exception.Message
+            },
             Instance = context.Request.Path,
             Extensions = { ["traceId"] = context.TraceIdentifier }
         };

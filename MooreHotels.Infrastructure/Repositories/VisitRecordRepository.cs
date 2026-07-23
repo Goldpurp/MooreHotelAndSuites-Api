@@ -12,7 +12,11 @@ public class VisitRecordRepository : IVisitRecordRepository
     public VisitRecordRepository(MooreHotelsDbContext db) => _db = db;
 
     public async Task<IEnumerable<VisitRecord>> GetAllAsync() => 
-        await _db.VisitRecords.OrderByDescending(v => v.Timestamp).ToListAsync();
+        await _db.VisitRecords
+            .AsNoTracking()
+            .OrderByDescending(v => v.Timestamp)
+            .Take(1000)
+            .ToListAsync();
 
     public async Task AddAsync(VisitRecord record)
     {

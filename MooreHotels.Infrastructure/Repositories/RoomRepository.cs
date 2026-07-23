@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Domain.Common;
 using MooreHotels.Infrastructure.Persistence;
 
 namespace MooreHotels.Infrastructure.Repositories;
@@ -37,8 +38,15 @@ public class RoomRepository : IRoomRepository
         {
             var start = checkIn.Value;
             var end = checkOut.Value;
+            var expirationCutoffUtc = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
             var bookedRoomIds = await _db.Bookings
-                .Where(b => b.Status != BookingStatus.Cancelled && b.Status != BookingStatus.CheckedOut)
+                .Where(b => b.Status != BookingStatus.Cancelled &&
+                            b.Status != BookingStatus.CheckedOut &&
+                            b.Status != BookingStatus.NoShow &&
+                            !(b.Status == BookingStatus.Pending &&
+                              (b.PaymentStatus == PaymentStatus.Unpaid ||
+                               b.PaymentStatus == PaymentStatus.AwaitingVerification) &&
+                              b.CreatedAt <= expirationCutoffUtc))
                 .Where(b => b.CheckIn < end && b.CheckOut > start)
                 .Select(b => b.RoomId)
                 .Distinct()
@@ -85,13 +93,6 @@ public class RoomRepository : IRoomRepository
         _db.Rooms.Remove(room);
         await _db.SaveChangesAsync();
     }
-
-    public async Task AddToContextAsync(Room room)
-{
-    await _db.Rooms.AddAsync(room);
-}
-
-    public async Task<bool> ExistsAsync(Guid id) => await _db.Rooms.AnyAsync(r => r.Id == id);
 
     public async Task<Room?> GetByIdWithImagesAsync(Guid id)
     {

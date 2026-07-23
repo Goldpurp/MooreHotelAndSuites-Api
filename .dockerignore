@@ -1,0 +1,15 @@
+.git
+.gitignore
+.env
+.env.*
+!.env.*.example
+.local
+.idea
+.qodo
+.vscode
+**/bin
+**/obj
+**/TestResults
+publish
+*.log
+docs

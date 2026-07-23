@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Infrastructure.Persistence;
 
@@ -5,6 +6,7 @@ namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/health")]
+[AllowAnonymous]
 public class HealthController : ControllerBase
 {
     private readonly MooreHotelsDbContext _context;
@@ -16,17 +18,31 @@ public class HealthController : ControllerBase
         try
         {
             var canConnect = await _context.Database.CanConnectAsync();
+            if (!canConnect)
+            {
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+                {
+                    Status = "Unhealthy",
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Database = "Disconnected"
+                });
+            }
+
             return Ok(new
             {
                 Status = "Healthy",
-                Timestamp = DateTime.UtcNow,
-                Database = canConnect ? "Connected" : "Disconnected",
-                Version = "1.0.0-PROD"
+                Timestamp = DateTimeOffset.UtcNow,
+                Database = "Connected"
             });
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return StatusCode(500, new { Status = "Unhealthy", Error = ex.Message });
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                Status = "Unhealthy",
+                Timestamp = DateTimeOffset.UtcNow,
+                Database = "Disconnected"
+            });
         }
     }
 }

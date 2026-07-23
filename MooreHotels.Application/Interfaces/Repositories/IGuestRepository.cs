@@ -5,7 +5,6 @@ namespace MooreHotels.Application.Interfaces.Repositories;
 public interface IGuestRepository
 {
     Task<Guest?> GetByIdAsync(string id);
-    Task<Guest?> GetByEmailAsync(string email);
     Task<Guest?> GetByEmailAndNameAsync(string email, string firstName, string lastName);
     Task<IEnumerable<Guest>> SearchAsync(string term);
     Task<IEnumerable<Guest>> GetAllAsync();

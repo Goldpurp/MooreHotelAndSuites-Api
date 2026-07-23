@@ -1,20 +1,30 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Application.DTOs;
 using Microsoft.EntityFrameworkCore;
+using MooreHotels.WebAPI.Services;
 
 namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/images")]
+[Authorize]
 public class ImagesController : ControllerBase
 {
     private readonly IImageService _imageService;
+    private readonly MooreHotels.Infrastructure.Persistence.MooreHotelsDbContext _context;
+    private readonly ILogger<ImagesController> _logger;
 
-    public ImagesController(IImageService imageService)
+    public ImagesController(
+        IImageService imageService,
+        MooreHotels.Infrastructure.Persistence.MooreHotelsDbContext context,
+        ILogger<ImagesController> logger)
     {
         _imageService = imageService;
+        _context = context;
+        _logger = logger;
     }
 
     /// <summary>
@@ -22,6 +32,7 @@ public class ImagesController : ControllerBase
     /// Default folder is 'website-assets' for general UI components.
     /// </summary>
     [HttpPost("upload")]
+    [RequestSizeLimit(ImageFileValidator.MaxFileBytes + 64 * 1024)]
     [ProducesResponseType(typeof(ImageUploadResult), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Upload(IFormFile file, [FromQuery] string folder = "website-assets")
@@ -29,12 +40,17 @@ public class ImagesController : ControllerBase
         if (file == null || file.Length == 0)
             return BadRequest(new { message = "File is empty or not provided." });
 
-        // Ensure we only accept image formats
-        var allowedExtensions = new[] { ".jpg", ".jpeg", ".png", ".webp", ".avif" };
-        var extension = Path.GetExtension(file.FileName).ToLower();
+        var validationError = await ImageFileValidator.GetValidationErrorAsync(file);
+        if (validationError is not null) return BadRequest(new { message = validationError });
 
-        if (!allowedExtensions.Contains(extension))
-            return BadRequest(new { message = "Invalid file type. Only images are allowed." });
+        var allowedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { "website-assets", "rooms", "avatars", "general" };
+        if (!allowedFolders.Contains(folder)) folder = "general";
+        if (!folder.Equals("avatars", StringComparison.OrdinalIgnoreCase) &&
+            !User.IsInRole("Admin") && !User.IsInRole("Manager"))
+        {
+            return Forbid();
+        }
 
         try
         {
@@ -45,36 +61,63 @@ public class ImagesController : ControllerBase
 
             return Ok(result);
         }
-        catch (Exception ex)
+        catch (Exception exception)
         {
-            return StatusCode(500, new { message = "Internal server error during upload.", details = ex.Message });
+            _logger.LogError(exception, "Image upload failed for folder {Folder}.", folder);
+            return StatusCode(500, new { message = "The image could not be uploaded." });
         }
     }
 
     /// <summary>
     /// Deletes an image from Cloudinary using its PublicId.
     /// </summary>
- [HttpDelete("delete")]
-public async Task<IActionResult> Delete([FromQuery] string publicId, [FromServices] MooreHotels.Infrastructure.Persistence.MooreHotelsDbContext context)
-{
-    if (string.IsNullOrWhiteSpace(publicId))
-        return BadRequest(new { message = "PublicId is required." });
-
-    var cloudDeleted = await _imageService.DeleteImageAsync(publicId);
-
-    var dbImage = await context.RoomImages.FirstOrDefaultAsync(x => x.PublicId == publicId);
-    
-    if (dbImage != null)
+    [HttpDelete("delete")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> Delete([FromQuery] string publicId)
     {
-        context.RoomImages.Remove(dbImage);
-        await context.SaveChangesAsync();
+        if (string.IsNullOrWhiteSpace(publicId))
+            return BadRequest(new { message = "PublicId is required." });
+
+        if (await _context.Users.AsNoTracking().AnyAsync(user => user.AvatarPublicId == publicId))
+        {
+            return Conflict(new
+            {
+                message = "This image is an active profile photo and must be replaced through the profile avatar endpoint."
+            });
+        }
+
+        var dbImage = await _context.RoomImages.FirstOrDefaultAsync(image => image.PublicId == publicId);
+        if (dbImage is not null)
+        {
+            // Remove application references first. A provider outage may leave an
+            // orphaned asset, but it must never leave the application pointing at
+            // an image that has already been destroyed.
+            _context.RoomImages.Remove(dbImage);
+            await _context.SaveChangesAsync();
+        }
+
+        bool providerDeleted;
+        try
+        {
+            providerDeleted = await _imageService.DeleteImageAsync(publicId);
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Image {PublicId} was detached but provider cleanup failed.", publicId);
+            providerDeleted = false;
+        }
+
+        if (!providerDeleted && dbImage is null)
+            return NotFound(new { message = "Image not found in storage or the application database." });
+
+        return Ok(new
+        {
+            message = providerDeleted
+                ? "Image removed successfully."
+                : "Image removed from the application; storage cleanup will need to be retried.",
+            storageDeleted = providerDeleted
+        });
     }
-
-    if (!cloudDeleted && dbImage == null)
-        return NotFound(new { message = "Image not found in Cloud or Database." });
-
-    return Ok(new { message = "Image successfully removed from cloud and database." });
-}
 
 
 }

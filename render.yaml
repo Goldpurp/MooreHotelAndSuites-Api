@@ -1,0 +1,101 @@
+services:
+  - type: web
+    runtime: docker
+    name: moore-hotels-api
+    region: frankfurt
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    preDeployCommand: ./migrate
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 60
+    disk:
+      name: moore-hotels-api-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: ASPNETCORE_ENVIRONMENT
+        value: Production
+      - key: ASPNETCORE_HTTP_PORTS
+        value: 8080
+      - key: PORT
+        value: 8080
+      - key: ConnectionStrings__DefaultConnection
+        sync: false
+      - key: Jwt__Key
+        generateValue: true
+      - key: Jwt__Issuer
+        value: MooreHotels
+      - key: Jwt__Audience
+        value: MooreHotels_Clients
+      - key: Jwt__ExpirationMinutes
+        value: 60
+      - key: PublicAppUrl
+        value: https://moorehotelandsuites.com
+      - key: DashboardUrl
+        value: https://admin.moorehotelandsuites.com
+      - key: Api__PublicBaseUrl
+        value: https://api.moorehotelandsuites.com
+      - key: AllowedHosts
+        value: api.moorehotelandsuites.com;*.onrender.com
+      - key: AllowedOrigins__0
+        value: https://moorehotelandsuites.com
+      - key: AllowedOrigins__1
+        value: https://www.moorehotelandsuites.com
+      - key: AllowedOrigins__2
+        value: https://admin.moorehotelandsuites.com
+      - key: ForwardedHeaders__Enabled
+        value: true
+      - key: ForwardedHeaders__ForwardLimit
+        value: 1
+      - key: ForwardedHeaders__TrustRenderEdge
+        value: true
+      - key: CloudinarySettings__CloudName
+        sync: false
+      - key: CloudinarySettings__ApiKey
+        sync: false
+      - key: CloudinarySettings__ApiSecret
+        sync: false
+      - key: EmailSettings__DeliveryMode
+        value: Brevo
+      - key: EmailSettings__ApiPass
+        sync: false
+      - key: EmailSettings__SenderEmail
+        sync: false
+      - key: EmailSettings__SenderName
+        value: Moore Hotels & Suites
+      - key: EmailSettings__AdminNotificationEmail
+        sync: false
+      - key: EmailSettings__MaxRetryAttempts
+        value: 3
+      - key: MonnifySettings__Enabled
+        value: false
+      - key: BankTransferSettings__BankName
+        sync: false
+      - key: BankTransferSettings__AccountName
+        sync: false
+      - key: BankTransferSettings__AccountNumber
+        sync: false
+      - key: Runtime__EnableSwagger
+        value: false
+      - key: Runtime__EnableExternalServices
+        value: true
+      - key: Runtime__AutoConfirmEmail
+        value: false
+      - key: Runtime__UseHttpsRedirection
+        value: false
+      - key: Runtime__EnableBookingExpiration
+        value: true
+      - key: Database__CreateIfMissing
+        value: false
+      - key: Database__ApplyMigrationsOnStartup
+        value: false
+      - key: DataProtection__KeysPath
+        value: /var/data/moorehotels-keys
+      - key: DataProtection__CertificateBase64
+        sync: false
+      - key: DataProtection__CertificatePassword
+        sync: false
+      - key: SeedAdmin
+        value: false

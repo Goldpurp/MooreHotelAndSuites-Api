@@ -9,7 +9,6 @@
 *.sln.docstates
 
 ## Secrets and Configs
-appsettings.Development.json
 appsettings.Local.json
 appsettings.*.secret.json
 *.pfx
@@ -18,6 +17,12 @@ secrets.json
 .env
 .env.*
 .env.local
+!.env.*.example
+
+# The environment-specific appsettings files contain only safe defaults. Real
+# credentials remain in ignored .env files or the cloud secret manager.
+!MooreHotels.WebAPI/appsettings.Local.json
+!MooreHotels.WebAPI/appsettings.Production.json
 
 ## Infrastructure
 .docker/
@@ -37,3 +42,9 @@ dist/
 publish/
 apiGuide.md
 IntegrationGuide.md
+
+## Local runtime state
+.local/
+MooreHotels.WebAPI/wwwroot/uploads/
+MooreHotels.WebAPI/DataProtection-Keys/
+*.log

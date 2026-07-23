@@ -17,5 +17,9 @@ public class AuditLogRepository : IAuditLogRepository
     }
 
     public async Task<IEnumerable<AuditLog>> GetAllAsync() => 
-        await _db.AuditLogs.OrderByDescending(l => l.CreatedAt).ToListAsync();
+        await _db.AuditLogs
+            .AsNoTracking()
+            .OrderByDescending(l => l.CreatedAt)
+            .Take(1000)
+            .ToListAsync();
 }

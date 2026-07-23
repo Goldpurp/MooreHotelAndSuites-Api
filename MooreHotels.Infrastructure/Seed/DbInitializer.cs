@@ -1,85 +1,96 @@
 using Microsoft.AspNetCore.Identity;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
-using MooreHotels.Infrastructure.Persistence;
 
 namespace MooreHotels.Infrastructure.Seed;
 
 public static class DbInitializer
 {
+    private static readonly string[] RoleNames = Enum.GetNames<UserRole>();
+
+    public static async Task SeedRolesAsync(IServiceProvider serviceProvider)
+    {
+        var roleManager = serviceProvider.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
+
+        foreach (var roleName in RoleNames)
+        {
+            if (await roleManager.RoleExistsAsync(roleName))
+            {
+                continue;
+            }
+
+            var result = await roleManager.CreateAsync(new IdentityRole<Guid>(roleName));
+            EnsureSucceeded(result, $"create the '{roleName}' role");
+        }
+    }
+
+    /// <summary>
+    /// Provisions the initial root account using the existing Admin role. In
+    /// this application Admin is the super-administrator role; creating a
+    /// second overlapping role would make the old authorization attributes
+    /// inconsistent.
+    /// </summary>
     public static async Task SeedAdminAsync(IServiceProvider serviceProvider)
     {
         var userManager = serviceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-        var roleManager = serviceProvider.GetRequiredService<RoleManager<IdentityRole<Guid>>>();
-        var config = serviceProvider.GetRequiredService<IConfiguration>();
+        var configuration = serviceProvider.GetRequiredService<IConfiguration>();
         var logger = serviceProvider.GetRequiredService<ILoggerFactory>().CreateLogger("DbInitializer");
 
-        try
+        var email = configuration["AdminSeed:Email"]
+            ?? throw new InvalidOperationException("AdminSeed:Email is required when SeedAdmin=true.");
+        var password = configuration["AdminSeed:Password"]
+            ?? throw new InvalidOperationException("AdminSeed:Password is required when SeedAdmin=true.");
+        var name = configuration["AdminSeed:Name"] ?? "Moore Hotels Super Administrator";
+
+        var admin = await userManager.FindByEmailAsync(email);
+        if (admin is null)
         {
-            // 1. Ensure Roles exist
-            string[] roles = { "Admin", "Manager", "Staff", "Client" };
-            foreach (var roleName in roles)
+            admin = new ApplicationUser
             {
-                if (!await roleManager.RoleExistsAsync(roleName))
-                {
-                    await roleManager.CreateAsync(new IdentityRole<Guid>(roleName));
-                }
-            }
+                Id = Guid.NewGuid(),
+                UserName = email.Trim().ToLowerInvariant(),
+                Email = email.Trim().ToLowerInvariant(),
+                Name = name.Trim(),
+                Role = UserRole.Admin,
+                Status = ProfileStatus.Active,
+                EmailConfirmed = true,
+                LockoutEnabled = true,
+                CreatedAt = DateTime.UtcNow
+            };
 
-            // 2. Validate Seed Config
-            var adminEmail = config["AdminSeed:Email"];
-            var adminPassword = config["AdminSeed:Password"];
-
-            if (string.IsNullOrEmpty(adminEmail) || string.IsNullOrEmpty(adminPassword))
-            {
-                logger.LogWarning("Seeding Aborted: 'AdminSeed:Email' or 'AdminSeed:Password' is missing in configuration.");
-                return;
-            }
-
-            // 3. Check Existence
-            var adminUser = await userManager.FindByEmailAsync(adminEmail);
-
-            if (adminUser == null)
-            {
-                adminUser = new ApplicationUser
-                {
-                    UserName = adminEmail,
-                    Email = adminEmail,
-                    Name = "More Blessings",
-                    Status = ProfileStatus.Active,
-                    EmailConfirmed = true,
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                var createResult = await userManager.CreateAsync(adminUser, adminPassword);
-                if (createResult.Succeeded)
-                {
-                    await userManager.AddToRoleAsync(adminUser, "Admin");
-                    logger.LogInformation("Security Provisioning: Admin account created successfully: {Email}", adminEmail);
-                }
-                else
-                {
-                    var errors = string.Join(", ", createResult.Errors.Select(e => e.Description));
-                    logger.LogError("Security Seeding Failed: {Errors}", errors);
-                }
-            }
-            else
-            {
-                logger.LogInformation("Security Check: Admin account '{Email}' already exists. Skipping creation.", adminEmail);
-
-                if (!await userManager.IsInRoleAsync(adminUser, "Admin"))
-                {
-                    await userManager.AddToRoleAsync(adminUser, "Admin");
-                }
-            }
+            EnsureSucceeded(
+                await userManager.CreateAsync(admin, password),
+                "create the initial super administrator");
+            logger.LogInformation("Initial super administrator account created.");
         }
-        catch (Exception ex)
+
+        if (admin.Role != UserRole.Admin || admin.Status != ProfileStatus.Active || !admin.EmailConfirmed)
         {
-            logger.LogError(ex, "FATAL ERROR during the initial security seeding protocol.");
+            admin.Role = UserRole.Admin;
+            admin.Status = ProfileStatus.Active;
+            admin.EmailConfirmed = true;
+            EnsureSucceeded(await userManager.UpdateAsync(admin), "repair the initial super administrator");
         }
+
+        if (!await userManager.IsInRoleAsync(admin, nameof(UserRole.Admin)))
+        {
+            EnsureSucceeded(
+                await userManager.AddToRoleAsync(admin, nameof(UserRole.Admin)),
+                "assign the Admin role to the initial super administrator");
+        }
+    }
+
+    private static void EnsureSucceeded(IdentityResult result, string action)
+    {
+        if (result.Succeeded)
+        {
+            return;
+        }
+
+        var errors = string.Join("; ", result.Errors.Select(error => $"{error.Code}: {error.Description}"));
+        throw new InvalidOperationException($"Failed to {action}. {errors}");
     }
 }
