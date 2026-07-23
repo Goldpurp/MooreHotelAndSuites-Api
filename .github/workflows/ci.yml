@@ -43,11 +43,11 @@ jobs:
         run: dotnet test MooreHotels.IntegrationTests/MooreHotels.IntegrationTests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
       - name: Scan NuGet dependencies
         run: ./scripts/check-nuget-vulnerabilities.sh
-      - name: Install EF tooling
-        run: dotnet tool install --global dotnet-ef --version 8.0.29
+      - name: Restore pinned EF tooling
+        run: dotnet tool restore
       - name: Validate EF model
-        run: dotnet ef migrations has-pending-model-changes --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build
+        run: dotnet tool run dotnet-ef migrations has-pending-model-changes --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build
       - name: Build migration bundle
-        run: dotnet ef migrations bundle --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build --output /tmp/moore-hotels-migrate
+        run: dotnet tool run dotnet-ef migrations bundle --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build --output /tmp/moore-hotels-migrate
       - name: Publish API
         run: dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --configuration Release --no-build --output /tmp/moore-hotels-api
