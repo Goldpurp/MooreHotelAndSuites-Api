@@ -9,14 +9,13 @@ COPY MooreHotels.Domain/*.csproj MooreHotels.Domain/
 RUN dotnet restore MooreHotels.WebAPI/MooreHotels.WebAPI.csproj
 
 COPY . .
-RUN dotnet tool install --global dotnet-ef --version 8.0.29
-ENV PATH="${PATH}:/root/.dotnet/tools"
+RUN dotnet tool restore
 RUN dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj \
     --configuration Release \
     --no-restore \
     --output /app/publish \
     /p:UseAppHost=false
-RUN dotnet ef migrations bundle \
+RUN dotnet tool run dotnet-ef migrations bundle \
     --project MooreHotels.Infrastructure/MooreHotels.Infrastructure.csproj \
     --startup-project MooreHotels.WebAPI/MooreHotels.WebAPI.csproj \
     --configuration Release \
