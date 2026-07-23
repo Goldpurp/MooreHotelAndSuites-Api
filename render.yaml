@@ -91,6 +91,8 @@ services:
         value: false
       - key: Database__ApplyMigrationsOnStartup
         value: false
+      - key: Database__TrustRenderPrivateNetwork
+        value: true
       - key: DataProtection__KeysPath
         value: /var/data/moorehotels-keys
       - key: DataProtection__CertificateBase64
