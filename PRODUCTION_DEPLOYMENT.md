@@ -100,6 +100,11 @@ credentials must be rotated. Enter the new values only in Render:
 - `BankTransferSettings__AccountName`
 - `BankTransferSettings__AccountNumber`
 - `FinancialControls__HighValueRefundThreshold`
+- `Privacy__CurrentPrivacyPolicyVersion`
+- `Privacy__CurrentBookingTermsVersion`
+- `Privacy__PrivacyPolicyUrl`
+- `Privacy__BookingTermsUrl`
+- `Privacy__GuestRetentionDays`
 - `DataProtection__CertificateBase64`
 - `DataProtection__CertificatePassword`
 
@@ -111,6 +116,11 @@ All existing login tokens become invalid after rotation.
 is reachable exclusively through Render's edge. Keep `ForwardLimit=1`. If the
 service moves to another host or becomes directly reachable, disable this mode
 and configure that host's exact trusted proxy addresses instead.
+
+Before accepting real guest data, publish the approved privacy policy and
+booking terms at the configured HTTPS URLs. Record approval of the configured
+retention period; changing either document requires a new version value so new
+acceptances remain attributable to the exact text shown.
 
 ## 4. Data Protection certificate
 
@@ -185,11 +195,18 @@ Do not reuse a password previously shared in chat.
 Do not deploy the dashboard or guest website until all checks pass:
 
 - `/health/live` and `/health/ready` return HTTP 200.
-- `/api/health` reports `Healthy` when the email and media-deletion queues are
+- An authenticated Admin can access `/api/health`; anonymous callers receive
+  `401`. It reports `Healthy` when the email and media-deletion queues are
   operational and `Degraded`—without taking the API out of service—when either
   queue has exhausted work.
 - An untrusted CORS origin receives no access-control allow-origin header.
-- Admin, Manager, Staff and Client permissions behave correctly.
+- Admin, Manager, department-scoped Staff and Client permissions behave
+  correctly; a Housekeeping account cannot read guest or reservation lists.
+- Booking requests persist adults and children, accept the exact room capacity,
+  and reject one guest above capacity at both the API and database boundaries.
+- Registration and booking require the current policy versions, client data
+  export works, privacy requests are audited through closure, and a rehearsed
+  retention sweep anonymizes only expired unlinked guest records.
 - Room create/update/delete and image replacement work.
 - Direct-transfer booking, exact `ACCEPT` confirmation and audit logging work.
 - Anonymous booking requires a valid, single-use email-verification token;

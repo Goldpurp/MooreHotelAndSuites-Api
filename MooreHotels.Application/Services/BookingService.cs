@@ -107,6 +107,8 @@ public class BookingService : IBookingService
         if (string.IsNullOrWhiteSpace(request.GuestFirstName)) throw new BadRequestException("Guest first name is required.");
         if (string.IsNullOrWhiteSpace(request.GuestLastName)) throw new BadRequestException("Guest last name is required.");
         if (string.IsNullOrWhiteSpace(request.GuestPhone)) throw new BadRequestException("Guest phone number is required.");
+        if (request.AdultCount < 1 || request.ChildCount < 0)
+            throw new BadRequestException("A booking requires at least one adult and cannot contain a negative guest count.");
         if (!request.PaymentMethod.HasValue) throw new BadRequestException("A payment method is required.");
         if (request.PaymentMethod == PaymentMethod.Paystack)
         {
@@ -118,6 +120,27 @@ public class BookingService : IBookingService
         {
             throw new BadRequestException(
                 "Online payment is temporarily unavailable. Please choose direct bank transfer.");
+        }
+
+        var privacy = _config.GetSection("Privacy").Get<PrivacySettings>() ?? new PrivacySettings();
+        var submittedPolicyAcceptance = request.AcceptPrivacyPolicy ||
+                                        request.AcceptBookingTerms ||
+                                        !string.IsNullOrWhiteSpace(request.PrivacyPolicyVersion) ||
+                                        !string.IsNullOrWhiteSpace(request.BookingTermsVersion);
+        if ((privacy.RequirePolicyAcceptance || submittedPolicyAcceptance) &&
+            (!request.AcceptPrivacyPolicy ||
+             !request.AcceptBookingTerms ||
+             !string.Equals(
+                 request.PrivacyPolicyVersion,
+                 privacy.CurrentPrivacyPolicyVersion,
+                 StringComparison.Ordinal) ||
+             !string.Equals(
+                 request.BookingTermsVersion,
+                 privacy.CurrentBookingTermsVersion,
+                 StringComparison.Ordinal)))
+        {
+            throw new BadRequestException(
+                "Accept the current privacy policy and booking terms before creating a reservation.");
         }
 
         var normalizedEmail = request.GuestEmail.Trim().ToLowerInvariant();
@@ -185,6 +208,12 @@ public class BookingService : IBookingService
         if (checkInDate > _hotelTime.Today.AddYears(2))
             throw new BadRequestException("Reservations cannot be created more than two years in advance.");
         if (!room.IsOnline) throw new BadRequestException("This room is currently unavailable.");
+        var requestedOccupancy = checked(request.AdultCount + request.ChildCount);
+        if (requestedOccupancy > room.Capacity)
+        {
+            throw new BadRequestException(
+                $"This room permits a maximum of {room.Capacity} guests. Select another room or reduce the occupancy.");
+        }
 
         // 2. Conflict Check
         if (await _bookingRepo.IsRoomBookedAsync(room.Id, checkIn, checkOut))
@@ -218,6 +247,9 @@ public class BookingService : IBookingService
         // generated and owned by this server before persisting the booking.
         var guestAccessToken = BookingGuestAccess.GenerateToken();
         var guestAccessIssuedAtUtc = DateTime.UtcNow;
+        var policiesAcceptedAtUtc = request.AcceptPrivacyPolicy && request.AcceptBookingTerms
+            ? guestAccessIssuedAtUtc
+            : (DateTime?)null;
         var booking = new Booking
         {
             Id = Guid.NewGuid(),
@@ -226,6 +258,8 @@ public class BookingService : IBookingService
             GuestId = guest.Id,
             CheckIn = checkIn,
             CheckOut = checkOut,
+            AdultCount = request.AdultCount,
+            ChildCount = request.ChildCount,
             Status = BookingStatus.Pending,
             Amount = totalAmount,
             PaymentStatus = request.PaymentMethod == PaymentMethod.DirectTransfer ? PaymentStatus.AwaitingVerification : PaymentStatus.Unpaid,
@@ -236,6 +270,13 @@ public class BookingService : IBookingService
             GuestAccessTokenIssuedAtUtc = guestAccessIssuedAtUtc,
             GuestAccessTokenExpiresAtUtc = guestAccessIssuedAtUtc.Add(
                 BookingGuestAccessPolicy.InitialLinkLifetime),
+            PrivacyPolicyVersion = policiesAcceptedAtUtc.HasValue
+                ? request.PrivacyPolicyVersion
+                : null,
+            BookingTermsVersion = policiesAcceptedAtUtc.HasValue
+                ? request.BookingTermsVersion
+                : null,
+            PoliciesAcceptedAtUtc = policiesAcceptedAtUtc,
             CreatedAt = guestAccessIssuedAtUtc
         };
 
@@ -279,6 +320,8 @@ public class BookingService : IBookingService
                     room.Name,
                     room.Category.ToString(),
                     room.Capacity,
+                    booking.AdultCount,
+                    booking.ChildCount,
                     booking.CheckIn,
                     booking.CheckOut,
                     nights,
@@ -298,6 +341,8 @@ public class BookingService : IBookingService
                     room.Name,
                     room.Category.ToString(),
                     room.Capacity,
+                    booking.AdultCount,
+                    booking.ChildCount,
                     booking.CheckIn,
                     booking.CheckOut,
                     nights,
@@ -992,7 +1037,12 @@ public class BookingService : IBookingService
             RefundApprovedAtUtc: b.RefundApprovedAtUtc,
             RefundProcessedByUserId: b.RefundProcessedByUserId,
             RefundProcessedAtUtc: b.RefundProcessedAtUtc,
-            GuestAccessExpiresAtUtc: b.GuestAccessTokenExpiresAtUtc);
+            GuestAccessExpiresAtUtc: b.GuestAccessTokenExpiresAtUtc,
+            AdultCount: b.AdultCount,
+            ChildCount: b.ChildCount,
+            PrivacyPolicyVersion: b.PrivacyPolicyVersion,
+            BookingTermsVersion: b.BookingTermsVersion,
+            PoliciesAcceptedAtUtc: b.PoliciesAcceptedAtUtc);
     }
 
     private string GetTransferInstructions()

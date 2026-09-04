@@ -96,6 +96,7 @@ public class PdfInvoiceGenerator : IPdfInvoiceGenerator
                     c.Item().Text($"{booking.GuestFirstName} {booking.GuestLastName}").Bold().FontSize(11);
                     c.Item().Text($"Email: {booking.GuestEmail}").FontSize(9);
                     c.Item().Text($"Phone: {booking.GuestPhone}").FontSize(9);
+                    c.Item().Text($"Occupancy: {booking.AdultCount} adult(s), {booking.ChildCount} child(ren)").FontSize(9);
                 });
 
                 row.ConstantItem(15);

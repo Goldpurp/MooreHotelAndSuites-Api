@@ -1,10 +1,11 @@
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
+using MooreHotels.Application.Common;
 
 namespace MooreHotels.Infrastructure.Hubs;
 
-[Authorize]
+[Authorize(Policy = HotelAuthorization.ReservationsRead)]
 public class NotificationHub : Hub
 {
     private readonly StaffConnectionRegistry _connections;

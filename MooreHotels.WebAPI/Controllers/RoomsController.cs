@@ -40,6 +40,7 @@ public class RoomsController : ControllerBase
 
     [HttpGet]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetRooms([FromQuery] RoomCategory? category)
     {
         var includeOffline = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
@@ -49,6 +50,7 @@ public class RoomsController : ControllerBase
 
     [HttpGet("search")]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<ActionResult<IEnumerable<RoomDto>>> SearchRooms(
         [FromQuery] DateTime? checkIn,
         [FromQuery] DateTime? checkOut,
@@ -71,6 +73,7 @@ public class RoomsController : ControllerBase
 
     [HttpGet("{id:guid}")]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetRoom(Guid id)
     {
         var room = await _roomService.GetRoomByIdAsync(id);
@@ -82,6 +85,7 @@ public class RoomsController : ControllerBase
 
     [HttpGet("{id:guid}/availability")]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetAvailability(Guid id, [FromQuery] DateTime checkIn, [FromQuery] DateTime checkOut)
     {
         if (checkIn >= checkOut) return BadRequest("Check-out must be after check-in.");

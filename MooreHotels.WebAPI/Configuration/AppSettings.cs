@@ -3,6 +3,7 @@ using System.Net.Mail;
 using System.Text.RegularExpressions;
 using DotNetEnv;
 using MooreHotels.Application.DTOs;
+using MooreHotels.Domain.Common;
 using Npgsql;
 
 namespace MooreHotels.WebAPI.Configuration;
@@ -173,6 +174,8 @@ public static class ConfigurationBootstrap
             .Get<HotelSettings>() ?? new HotelSettings();
         var financialControls = configuration.GetSection("FinancialControls")
             .Get<FinancialControlsSettings>() ?? new FinancialControlsSettings();
+        var privacy = configuration.GetSection("Privacy")
+            .Get<PrivacySettings>() ?? new PrivacySettings();
 
         if (IsMissingOrPlaceholder(connectionString))
         {
@@ -347,6 +350,20 @@ public static class ConfigurationBootstrap
         if (environment.IsDeployed() && financialControls.HighValueRefundThreshold <= 0)
         {
             errors.Add("FinancialControls:HighValueRefundThreshold must be greater than zero in Production.");
+        }
+
+        if (environment.IsDeployed())
+        {
+            if (!privacy.RequirePolicyAcceptance)
+                errors.Add("Privacy:RequirePolicyAcceptance must be true in Production.");
+            if (!privacy.EnableRetentionWorker)
+                errors.Add("Privacy:EnableRetentionWorker must be true in Production.");
+            if (privacy.GuestRetentionDays is < 365 or > 3650)
+                errors.Add("Privacy:GuestRetentionDays must be between 365 and 3650 days in Production.");
+            RequireSecret(configuration, "Privacy:CurrentPrivacyPolicyVersion", errors);
+            RequireSecret(configuration, "Privacy:CurrentBookingTermsVersion", errors);
+            ValidateDeployedUrl(configuration, "Privacy:PrivacyPolicyUrl", errors);
+            ValidateDeployedUrl(configuration, "Privacy:BookingTermsUrl", errors);
         }
 
         if (environment.IsDeployed() &&

@@ -28,6 +28,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
     public DbSet<NotificationReceipt> NotificationReceipts => Set<NotificationReceipt>();
     public DbSet<MediaDeletionJob> MediaDeletionJobs => Set<MediaDeletionJob>();
+    public DbSet<PrivacyRequest> PrivacyRequests => Set<PrivacyRequest>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -44,12 +45,15 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
 
         builder.Entity<ApplicationUser>(entity =>
         {
-            entity.ToTable("users");
+            entity.ToTable("users", table => table.HasCheckConstraint(
+                "CK_users_privacy_acceptance_consistent",
+                "(\"PrivacyPolicyVersion\" IS NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NULL) OR (\"PrivacyPolicyVersion\" IS NOT NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NOT NULL)"));
             entity.Property(user => user.Name).HasMaxLength(160).IsRequired();
             entity.Property(user => user.AvatarUrl).HasMaxLength(2048);
             entity.Property(user => user.AvatarPublicId).HasMaxLength(512);
             entity.Property(user => user.Department).HasMaxLength(80);
             entity.Property(user => user.GuestId).HasMaxLength(20);
+            entity.Property(user => user.PrivacyPolicyVersion).HasMaxLength(80);
             entity.Property(user => user.Role).HasConversion<string>().HasMaxLength(30);
             entity.Property(user => user.Status).HasConversion<string>().HasMaxLength(30);
             entity.HasIndex(user => new { user.Status, user.Role });
@@ -146,6 +150,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(guest => guest.AvatarUrl).HasMaxLength(2048);
             entity.HasIndex(guest => guest.Email);
             entity.HasIndex(guest => new { guest.Email, guest.FirstName, guest.LastName });
+            entity.HasIndex(guest => guest.AnonymizedAtUtc);
         });
 
         builder.Entity<Booking>(entity =>
@@ -155,6 +160,12 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 table.HasCheckConstraint(
                     "CK_bookings_valid_dates",
                     "\"CheckOut\" > \"CheckIn\"");
+                table.HasCheckConstraint(
+                    "CK_bookings_occupancy_counts",
+                    "\"AdultCount\" >= 1 AND \"ChildCount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_bookings_policy_acceptance_consistent",
+                    "(\"PrivacyPolicyVersion\" IS NULL AND \"BookingTermsVersion\" IS NULL AND \"PoliciesAcceptedAtUtc\" IS NULL) OR (\"PrivacyPolicyVersion\" IS NOT NULL AND \"BookingTermsVersion\" IS NOT NULL AND \"PoliciesAcceptedAtUtc\" IS NOT NULL)");
                 table.HasCheckConstraint(
                     "CK_bookings_guest_access_window",
                     "\"GuestAccessTokenExpiresAtUtc\" IS NULL OR (\"GuestAccessTokenIssuedAtUtc\" IS NOT NULL AND \"GuestAccessTokenExpiresAtUtc\" > \"GuestAccessTokenIssuedAtUtc\")");
@@ -178,6 +189,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 booking.Id
             }).HasFilter("\"GuestAccessTokenRevokedAtUtc\" IS NULL AND \"GuestAccessTokenExpiresAtUtc\" IS NOT NULL");
             entity.Property(booking => booking.BookingCode).HasMaxLength(30).IsRequired();
+            entity.Property(booking => booking.AdultCount).HasDefaultValue(1);
             entity.Property(booking => booking.Status).HasConversion<string>().HasMaxLength(40);
             entity.Property(booking => booking.PaymentStatus).HasConversion<string>().HasMaxLength(40);
             entity.Property(booking => booking.PaymentMethod).HasConversion<string>().HasMaxLength(40);
@@ -194,6 +206,8 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(booking => booking.Amount).HasPrecision(18, 2);
             entity.Property(booking => booking.StatusHistoryJson).HasColumnType("jsonb");
             entity.Property(booking => booking.GuestAccessTokenHash).HasMaxLength(44);
+            entity.Property(booking => booking.PrivacyPolicyVersion).HasMaxLength(80);
+            entity.Property(booking => booking.BookingTermsVersion).HasMaxLength(80);
             entity.HasOne(booking => booking.Room)
                 .WithMany()
                 .HasForeignKey(booking => booking.RoomId)
@@ -217,6 +231,33 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .OnDelete(DeleteBehavior.SetNull);
             entity.HasIndex(booking => booking.RefundApprovedByUserId);
             entity.HasIndex(booking => booking.RefundProcessedByUserId);
+        });
+
+        builder.Entity<PrivacyRequest>(entity =>
+        {
+            entity.ToTable("privacy_requests", table => table.HasCheckConstraint(
+                "CK_privacy_requests_resolution_consistent",
+                "(\"Status\" IN ('Completed', 'Rejected') AND \"ResolvedAtUtc\" IS NOT NULL AND \"ResolvedByUserId\" IS NOT NULL) OR (\"Status\" IN ('Pending', 'InProgress') AND \"ResolvedAtUtc\" IS NULL AND \"ResolvedByUserId\" IS NULL)"));
+            entity.HasKey(request => request.Id);
+            entity.Property(request => request.GuestId).HasMaxLength(20).IsRequired();
+            entity.Property(request => request.Type).HasConversion<string>().HasMaxLength(40);
+            entity.Property(request => request.Status).HasConversion<string>().HasMaxLength(40);
+            entity.Property(request => request.Details).HasMaxLength(2000);
+            entity.Property(request => request.ResolutionNotes).HasMaxLength(2000);
+            entity.HasIndex(request => new { request.GuestId, request.RequestedAtUtc });
+            entity.HasIndex(request => new { request.Status, request.RequestedAtUtc });
+            entity.HasOne(request => request.Guest)
+                .WithMany()
+                .HasForeignKey(request => request.GuestId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(request => request.RequestedByUser)
+                .WithMany()
+                .HasForeignKey(request => request.RequestedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(request => request.ResolvedByUser)
+                .WithMany()
+                .HasForeignKey(request => request.ResolvedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         builder.Entity<BookingCodeAllocation>(entity =>

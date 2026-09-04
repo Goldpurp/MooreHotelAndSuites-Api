@@ -19,6 +19,14 @@ public class CreateBookingRequestValidator : AbstractValidator<CreateBookingRequ
             .GreaterThan(x => x.CheckIn)
             .WithMessage("Check-out date must be strictly after the check-in date.");
 
+        RuleFor(x => x.AdultCount)
+            .InclusiveBetween(1, 20)
+            .WithMessage("At least one adult is required and no more than 20 adults may be submitted.");
+
+        RuleFor(x => x.ChildCount)
+            .InclusiveBetween(0, 20)
+            .WithMessage("Child count must be between 0 and 20.");
+
         RuleFor(x => x.GuestFirstName)
             .NotEmpty().WithMessage("Guest first name is required.")
             .MaximumLength(80).WithMessage("First name cannot exceed 80 characters.");

@@ -146,6 +146,12 @@ public sealed class ProductionConfigurationSecurityTests
     [InlineData(
         "Security:RequireStaffMfa",
         "false")]
+    [InlineData(
+        "Privacy:RequirePolicyAcceptance",
+        "false")]
+    [InlineData(
+        "Privacy:EnableRetentionWorker",
+        "false")]
     public void Production_rejects_security_boundary_weakening(
         string key,
         string value)
@@ -207,6 +213,13 @@ public sealed class ProductionConfigurationSecurityTests
         ["Runtime:EnableMediaDeletion"] = "true",
         ["Runtime:AutoConfirmEmail"] = "false",
         ["Security:RequireStaffMfa"] = "true",
+        ["Privacy:RequirePolicyAcceptance"] = "true",
+        ["Privacy:CurrentPrivacyPolicyVersion"] = "2026-09-04",
+        ["Privacy:CurrentBookingTermsVersion"] = "2026-09-04",
+        ["Privacy:PrivacyPolicyUrl"] = "https://moorehotelandsuites.com/privacy",
+        ["Privacy:BookingTermsUrl"] = "https://moorehotelandsuites.com/terms",
+        ["Privacy:EnableRetentionWorker"] = "true",
+        ["Privacy:GuestRetentionDays"] = "2555",
         ["DATABASE_RUNTIME_ROLE"] = "moore_runtime",
         ["DataProtection:KeysPath"] = "/var/data/moorehotels-keys",
         ["DataProtection:CertificatePath"] =

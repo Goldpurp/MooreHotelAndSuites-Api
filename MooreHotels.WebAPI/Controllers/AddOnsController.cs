@@ -3,6 +3,9 @@ using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Application.Common;
+using Microsoft.AspNetCore.RateLimiting;
+using MooreHotels.WebAPI.Extensions;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -16,6 +19,7 @@ public class AddOnsController : ControllerBase
 
     [HttpGet]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetAll(
         [FromQuery] bool onlyActive = true,
         [FromQuery] AddOnCategory? category = null,
@@ -24,6 +28,7 @@ public class AddOnsController : ControllerBase
 
     [HttpGet("{id:guid}")]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken = default)
     {
         var dto = await _addOnService.GetServiceByIdAsync(id, cancellationToken);
@@ -52,12 +57,12 @@ public class AddOnsController : ControllerBase
     }
 
     [HttpGet("bookings/{bookingCode}")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.FolioManage)]
     public async Task<IActionResult> GetBookingAddOns(string bookingCode, CancellationToken cancellationToken = default) =>
         Ok(await _addOnService.GetBookingAddOnsAsync(bookingCode, cancellationToken));
 
     [HttpPost("bookings/{bookingCode}")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.FolioManage)]
     public async Task<IActionResult> AddServiceToBooking(
         string bookingCode,
         [FromBody] AddServiceToBookingRequest request,

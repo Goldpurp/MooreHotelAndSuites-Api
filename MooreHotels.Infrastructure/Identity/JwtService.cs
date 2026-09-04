@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 using MooreHotels.Domain.Entities;
+using MooreHotels.Application.Common;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Text;
@@ -42,7 +43,8 @@ public class JwtService : IJwtService
             new Claim(ClaimTypes.Name, user.Name),
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
             new Claim(ClaimTypes.Role, user.Role.ToString()),
-            new Claim("security_stamp", user.SecurityStamp ?? string.Empty)
+            new Claim("security_stamp", user.SecurityStamp ?? string.Empty),
+            new Claim(HotelAuthorization.DepartmentClaimType, user.Department ?? string.Empty)
         };
 
         var token = new JwtSecurityToken(

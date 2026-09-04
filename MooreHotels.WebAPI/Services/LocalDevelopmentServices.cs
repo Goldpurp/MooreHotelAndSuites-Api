@@ -52,7 +52,7 @@ public sealed class LocalEmailService : IEmailService
         await Accepted(template, recipient);
     }
 
-    public Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null) =>
+    public Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null) =>
         string.IsNullOrWhiteSpace(manageBookingUrl)
             ? Accepted("BookingConfirmation", email)
             : AcceptedWithLink("BookingConfirmation", email, manageBookingUrl);
@@ -64,7 +64,7 @@ public sealed class LocalEmailService : IEmailService
     public Task SendPasswordResetAsync(string email, string name, string link) => AcceptedWithLink("PasswordReset", email, link);
     public Task SendPaymentSuccessAsync(string email, string guestName, string bookingCode, string roomName, decimal amount, string reference) => Accepted("PaymentSuccess", email);
     public Task SendCheckOutThankYouAsync(string email, string guestName, string bookingCode, string roomName) => Accepted("CheckOutThankYou", email);
-    public Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone) => Accepted("AdminNewBooking", adminEmail);
+    public Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone) => Accepted("AdminNewBooking", adminEmail);
     public Task SendStaffWelcomeEmailAsync(string email, string name, string setupLink, string role) => AcceptedWithLink("StaffWelcome", email, setupLink);
     public Task SendAccountSuspendedAsync(string email, string name) => Accepted("AccountSuspended", email);
     public Task SendAccountActivatedAsync(string email, string name) => Accepted("AccountActivated", email);

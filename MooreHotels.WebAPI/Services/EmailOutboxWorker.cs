@@ -196,7 +196,7 @@ public sealed class EmailOutboxWorker : BackgroundService
     {
         var p = outbox.ReadPayload<BookingConfirmationEmail>(message);
         return sender.SendBookingConfirmationAsync(message.Recipient, p.GuestName, p.BookingCode,
-            p.RoomName, p.RoomCategory, p.Capacity, p.CheckIn, p.CheckOut, p.Nights,
+            p.RoomName, p.RoomCategory, p.Capacity, p.AdultCount, p.ChildCount, p.CheckIn, p.CheckOut, p.Nights,
             p.TotalAmount, p.ManageBookingUrl);
     }
 
@@ -221,7 +221,7 @@ public sealed class EmailOutboxWorker : BackgroundService
     {
         var p = outbox.ReadPayload<AdminNewBookingEmail>(message);
         return sender.SendAdminNewBookingAlertAsync(message.Recipient, p.GuestName, p.BookingCode,
-            p.RoomName, p.RoomCategory, p.Capacity, p.CheckIn, p.CheckOut, p.Nights,
+            p.RoomName, p.RoomCategory, p.Capacity, p.AdultCount, p.ChildCount, p.CheckIn, p.CheckOut, p.Nights,
             p.TotalAmount, p.GuestEmail, p.GuestPhone);
     }
 

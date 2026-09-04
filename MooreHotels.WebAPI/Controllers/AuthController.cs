@@ -8,9 +8,11 @@ using MooreHotels.Application.Common;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces;
+using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Domain.Common;
 using MooreHotels.Infrastructure.Identity;
 using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.WebAPI.Extensions;
@@ -30,6 +32,7 @@ public class AuthController : ControllerBase
     private readonly MooreHotelsDbContext _dbContext;
     private readonly IConfiguration _configuration;
     private readonly ILogger<AuthController> _logger;
+    private readonly IStaffSessionRevocationService _sessionRevocation;
 
     public AuthController(
         UserManager<ApplicationUser> userManager,
@@ -39,7 +42,8 @@ public class AuthController : ControllerBase
         IEmailOutbox emailOutbox,
         MooreHotelsDbContext dbContext,
         IConfiguration configuration,
-        ILogger<AuthController> logger)
+        ILogger<AuthController> logger,
+        IStaffSessionRevocationService sessionRevocation)
     {
         _userManager = userManager;
         _signInManager = signInManager;
@@ -49,6 +53,7 @@ public class AuthController : ControllerBase
         _dbContext = dbContext;
         _configuration = configuration;
         _logger = logger;
+        _sessionRevocation = sessionRevocation;
     }
 
     [HttpPost("login")]
@@ -135,6 +140,22 @@ public class AuthController : ControllerBase
     [EnableRateLimiting(ServiceCollectionExtensions.PublicWriteRateLimitPolicy)]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
+        var privacy = _configuration.GetSection("Privacy").Get<PrivacySettings>() ?? new PrivacySettings();
+        var submittedPolicyAcceptance = request.AcceptPrivacyPolicy ||
+                                        !string.IsNullOrWhiteSpace(request.PrivacyPolicyVersion);
+        if ((privacy.RequirePolicyAcceptance || submittedPolicyAcceptance) &&
+            (!request.AcceptPrivacyPolicy ||
+             !string.Equals(
+                 request.PrivacyPolicyVersion,
+                 privacy.CurrentPrivacyPolicyVersion,
+                 StringComparison.Ordinal)))
+        {
+            return BadRequest(new
+            {
+                Message = "Accept the current privacy policy before creating an account."
+            });
+        }
+
         var email = request.Email.Trim().ToLowerInvariant();
         var existingUser = await _userManager.FindByEmailAsync(email);
         if (existingUser is not null)
@@ -169,6 +190,12 @@ public class AuthController : ControllerBase
                 Status = ProfileStatus.Active,
                 PhoneNumber = request.Phone.Trim(),
                 GuestId = guest.Id,
+                PrivacyPolicyVersion = request.AcceptPrivacyPolicy
+                    ? request.PrivacyPolicyVersion
+                    : null,
+                PrivacyPolicyAcceptedAtUtc = request.AcceptPrivacyPolicy
+                    ? DateTime.UtcNow
+                    : null,
                 EmailConfirmed = autoConfirm,
                 LockoutEnabled = true,
                 CreatedAt = DateTime.UtcNow
@@ -333,6 +360,8 @@ public class AuthController : ControllerBase
                 Errors = result.Errors.Select(error => error.Description)
             });
         }
+
+        await _sessionRevocation.RevokeAsync(user.Id, "PASSWORD_RESET");
 
         var signInBaseUrl = user.Role == UserRole.Client
             ? _configuration["PublicAppUrl"]

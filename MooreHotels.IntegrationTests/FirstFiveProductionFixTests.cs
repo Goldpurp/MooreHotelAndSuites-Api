@@ -46,7 +46,7 @@ public sealed class FirstFiveProductionFixTests
 
         try
         {
-            using var diagnosticsRequest = PublicRequest(HttpMethod.Get, "/api/health");
+            using var diagnosticsRequest = AuthorizedRequest(HttpMethod.Get, "/api/health");
             using var diagnostics = await _fixture.Client.SendAsync(diagnosticsRequest);
             Assert.Equal(HttpStatusCode.OK, diagnostics.StatusCode);
             using var payload = JsonDocument.Parse(await diagnostics.Content.ReadAsStringAsync());
@@ -324,6 +324,8 @@ public sealed class FirstFiveProductionFixTests
                 guestPhone = "+2348000000010",
                 checkIn = DateTime.UtcNow.Date.AddDays(30),
                 checkOut = DateTime.UtcNow.Date.AddDays(32),
+                adultCount = 2,
+                childCount = 0,
                 paymentMethod = "directTransfer",
                 notes = "Booking email verification test",
                 emailVerificationToken

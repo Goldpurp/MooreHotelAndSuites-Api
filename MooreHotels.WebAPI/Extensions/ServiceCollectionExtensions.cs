@@ -16,6 +16,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
@@ -41,6 +42,7 @@ public static class ServiceCollectionExtensions
     public const string LookupRateLimitPolicy = "Lookup";
     public const string WebhookRateLimitPolicy = "Webhook";
     public const string ImageUploadRateLimitPolicy = "ImageUpload";
+    public const string PublicReadRateLimitPolicy = "PublicRead";
 
     public static IServiceCollection AddMooreHotelsApi(
         this IServiceCollection services,
@@ -67,6 +69,7 @@ public static class ServiceCollectionExtensions
         services.Configure<CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
         services.Configure<MonnifySettings>(configuration.GetSection("MonnifySettings"));
         services.Configure<HotelSettings>(configuration.GetSection("HotelSettings"));
+        services.Configure<PrivacySettings>(configuration.GetSection("Privacy"));
 
         if (forwardedHeaders.Enabled)
         {
@@ -244,6 +247,40 @@ public static class ServiceCollectionExtensions
             options.FallbackPolicy = new AuthorizationPolicyBuilder()
                 .RequireAuthenticatedUser()
                 .Build();
+
+            options.AddPolicy(HotelAuthorization.ReservationsRead, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(
+                        context.User,
+                        "Reception",
+                        "FrontDesk",
+                        "Concierge")));
+            options.AddPolicy(HotelAuthorization.ReservationsManage, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Reception", "FrontDesk")));
+            options.AddPolicy(HotelAuthorization.GuestPiiRead, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Reception", "FrontDesk")));
+            options.AddPolicy(HotelAuthorization.FolioManage, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(
+                        context.User,
+                        "Reception",
+                        "FrontDesk",
+                        "Concierge")));
+            options.AddPolicy(HotelAuthorization.OperationsRead, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Reception", "FrontDesk")));
         });
 
         var origins = configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [];
@@ -280,6 +317,8 @@ public static class ServiceCollectionExtensions
                 options.AddPolicy(WebhookRateLimitPolicy, _ =>
                     RateLimitPartition.GetNoLimiter("test"));
                 options.AddPolicy(ImageUploadRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(PublicReadRateLimitPolicy, _ =>
                     RateLimitPartition.GetNoLimiter("test"));
                 return;
             }
@@ -339,6 +378,20 @@ public static class ServiceCollectionExtensions
                         QueueLimit = 0,
                         AutoReplenishment = true
                     }));
+
+            options.AddPolicy(PublicReadRateLimitPolicy, context =>
+                context.User.Identity?.IsAuthenticated == true
+                    ? RateLimitPartition.GetNoLimiter(GetAuthenticatedClientKey(context))
+                    : RateLimitPartition.GetSlidingWindowLimiter(
+                        GetClientKey(context),
+                        _ => new SlidingWindowRateLimiterOptions
+                        {
+                            PermitLimit = 120,
+                            Window = TimeSpan.FromMinutes(1),
+                            SegmentsPerWindow = 4,
+                            QueueLimit = 0,
+                            AutoReplenishment = true
+                        }));
         });
 
         services.AddResponseCompression();
@@ -421,6 +474,7 @@ public static class ServiceCollectionExtensions
         services.AddHostedService<PendingBookingExpirationWorker>();
         services.AddHostedService<EmailOutboxWorker>();
         services.AddHostedService<MediaDeletionWorker>();
+        services.AddHostedService<PrivacyRetentionWorker>();
         services.AddSingleton<OrphanedMediaCleanup>();
 
         if (string.Equals(

@@ -246,7 +246,8 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         throw new TimeoutException("The test media-deletion outbox did not drain.");
     }
 
-    public Task<TestUser> CreateUserAsync(UserRole role) => SeedUserAsync(role);
+    public Task<TestUser> CreateUserAsync(UserRole role, string? department = null) =>
+        SeedUserAsync(role, department);
 
     public async Task<Room> CreateRoomAsync()
     {
@@ -315,7 +316,7 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         return await action(db);
     }
 
-    private async Task<TestUser> SeedUserAsync(UserRole role)
+    private async Task<TestUser> SeedUserAsync(UserRole role, string? department = null)
     {
         await using var scope = Services.CreateAsyncScope();
         var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
@@ -327,6 +328,7 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
             Email = email,
             Name = $"Integration {role}",
             Role = role,
+            Department = role == UserRole.Staff ? department ?? "FrontDesk" : null,
             Status = ProfileStatus.Active,
             EmailConfirmed = true,
             LockoutEnabled = true

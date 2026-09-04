@@ -400,7 +400,9 @@ public sealed class EmailService : IEmailService
         DateTime? checkIn,
         DateTime? checkOut,
         int? nights,
-        decimal? amount)
+        decimal? amount,
+        int? adultCount = null,
+        int? childCount = null)
     {
         bookingCode = E(bookingCode);
         roomName = E(roomName);
@@ -456,10 +458,13 @@ public sealed class EmailService : IEmailService
 
         if (capacity is > 0)
         {
+            var requestedOccupancy = adultCount is > 0
+                ? $" Requested: <strong style='color:#26231F;'>{adultCount.Value} adult(s), {Math.Max(0, childCount ?? 0)} child(ren)</strong>."
+                : string.Empty;
             html += $@"
             <tr>
                 <td colspan='2' style='padding:14px 20px; background-color:#FAF8F5; border-top:1px solid #ECE7E0; color:#615B53; font-size:12px; line-height:18px;'>
-                    Maximum occupancy: <strong style='color:#26231F;'>{capacity.Value} {(capacity.Value == 1 ? "guest" : "guests")}</strong>
+                    Maximum occupancy: <strong style='color:#26231F;'>{capacity.Value} {(capacity.Value == 1 ? "guest" : "guests")}</strong>.{requestedOccupancy}
                 </td>
             </tr>";
         }
@@ -489,7 +494,7 @@ public sealed class EmailService : IEmailService
 
 
     // Guest emails
-    public async Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null)
+    public async Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null)
     {
         guestName = E(guestName);
         var manageLink = string.IsNullOrWhiteSpace(manageBookingUrl)
@@ -501,7 +506,7 @@ public sealed class EmailService : IEmailService
         <p style='margin-top:0;'>Dear <strong>{guestName}</strong>,</p>
         <p>Your booking request at <strong>Moore Hotels & Suites</strong> has been received. Keep your reference below and complete payment where required; the hotel will confirm the stay after payment verification.</p>
         
-        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount)}
+        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount, adultCount, childCount)}
 
         {manageLink}
 
@@ -796,7 +801,7 @@ public sealed class EmailService : IEmailService
     }
 
     // Admin & security
-    public async Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone)
+    public async Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone)
     {
         guestName = E(guestName);
         guestEmail = E(guestEmail);
@@ -815,7 +820,7 @@ public sealed class EmailService : IEmailService
             </tr>
         </table>
 
-        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount)}
+        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount, adultCount, childCount)}
 
         <div style='margin-top:25px; text-align:center;'>
             <a class='mobile-button' href='{bookingsUrl}' style='display:inline-block; background-color:#111111; color:#FFFFFF; padding:12px 25px; border-radius:6px; text-decoration:none; font-size:14px; font-weight:600;'>Manage in Portal</a>

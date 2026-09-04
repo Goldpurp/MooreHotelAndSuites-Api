@@ -80,6 +80,8 @@ public sealed class ProductionHardeningTests
                 guestPhone = "+2348012345678",
                 checkIn = DateTime.UtcNow.Date.AddDays(4),
                 checkOut = DateTime.UtcNow.Date.AddDays(6),
+                adultCount = 1,
+                childCount = 0,
                 paymentMethod = "paystack"
             });
 

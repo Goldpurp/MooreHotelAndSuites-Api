@@ -13,5 +13,7 @@ public class ApplicationUser : IdentityUser<Guid>
     public string? Department { get; set; } // Categorization: Housekeeping, Reception, etc.
     public string? GuestId { get; set; }
     public Guest? GuestProfile { get; set; }
+    public string? PrivacyPolicyVersion { get; set; }
+    public DateTime? PrivacyPolicyAcceptedAtUtc { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 }

@@ -319,6 +319,8 @@ public sealed class GuestBookingSecurityTests
                     guestPhone = "+2348000000004",
                     checkIn = DateTime.UtcNow.Date.AddDays(25),
                     checkOut = DateTime.UtcNow.Date.AddDays(26),
+                    adultCount = 1,
+                    childCount = 0,
                     paymentMethod = "directTransfer"
                 });
             using var response = await _fixture.Client.SendAsync(request);
@@ -357,6 +359,8 @@ public sealed class GuestBookingSecurityTests
                 guestPhone = "+2348000000003",
                 checkIn = DateTime.UtcNow.Date.AddDays(20),
                 checkOut = DateTime.UtcNow.Date.AddDays(22),
+                adultCount = 2,
+                childCount = 0,
                 paymentMethod = "directTransfer",
                 notes = "Guest access security test"
             });

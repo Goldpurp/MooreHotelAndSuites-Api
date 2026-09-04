@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
@@ -27,6 +28,7 @@ public class BookingsController : ControllerBase
     private readonly MonnifySettings _monnifySettings;
     private readonly IPdfInvoiceGenerator _pdfGenerator;
     private readonly IAddOnService _addOnService;
+    private readonly IAuthorizationService _authorizationService;
 
     public BookingsController(
         IBookingService bookingService,
@@ -36,7 +38,8 @@ public class BookingsController : ControllerBase
         MooreHotelsDbContext dbContext,
         IOptions<MonnifySettings> monnifySettings,
         IPdfInvoiceGenerator pdfGenerator,
-        IAddOnService addOnService)
+        IAddOnService addOnService,
+        IAuthorizationService authorizationService)
     {
         _bookingService = bookingService;
         _monnifyService = monnifyService;
@@ -46,10 +49,11 @@ public class BookingsController : ControllerBase
         _monnifySettings = monnifySettings.Value;
         _pdfGenerator = pdfGenerator;
         _addOnService = addOnService;
+        _authorizationService = authorizationService;
     }
 
     [HttpGet]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
     public async Task<IActionResult> GetAllBookings(
         [FromQuery] int page = 1,
         [FromQuery] int pageSize = 20,
@@ -60,7 +64,7 @@ public class BookingsController : ControllerBase
         => Ok(await _bookingService.GetPagedBookingsAsync(page, pageSize, status, paymentStatus, search, cancellationToken));
 
     [HttpGet("{code}")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
     public async Task<IActionResult> GetBookingByCode(string code)
     {
         var dto = await _bookingService.GetBookingByCodeAsync(code);
@@ -73,9 +77,9 @@ public class BookingsController : ControllerBase
     public async Task<IActionResult> DownloadInvoicePdf(string code, CancellationToken cancellationToken = default)
     {
         BookingDto? booking;
-        if (User.IsInRole(nameof(UserRole.Admin)) ||
-            User.IsInRole(nameof(UserRole.Manager)) ||
-            User.IsInRole(nameof(UserRole.Staff)))
+        if ((await _authorizationService.AuthorizeAsync(
+                User,
+                HotelAuthorization.ReservationsRead)).Succeeded)
         {
             booking = await _bookingService.GetBookingByCodeAsync(code);
         }
@@ -280,7 +284,7 @@ public class BookingsController : ControllerBase
     }
 
     [HttpPut("{id}/status")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.ReservationsManage)]
     public async Task<IActionResult> UpdateBookingStatus(Guid id, [FromQuery] BookingStatus status)
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -292,7 +296,7 @@ public class BookingsController : ControllerBase
     }
 
     [HttpPost("{id}/cancel")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.ReservationsManage)]
     public async Task<IActionResult> CancelBookingAdmin(Guid id, [FromQuery] string? reason = null)
     {
         // 1. Robust User ID Extraction
@@ -464,7 +468,9 @@ public class BookingsController : ControllerBase
         booking.NotificationMessage,
         booking.PaymentExpiresAtUtc,
         booking.GuestAccessToken,
-        booking.GuestAccessExpiresAtUtc);
+        booking.GuestAccessExpiresAtUtc,
+        booking.AdultCount,
+        booking.ChildCount);
 
 
 

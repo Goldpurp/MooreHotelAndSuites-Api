@@ -38,6 +38,8 @@ public sealed class BookingEmailLifecycleTests
                 guestPhone = "+2348000000002",
                 checkIn = DateTime.UtcNow.Date.AddDays(10),
                 checkOut = DateTime.UtcNow.Date.AddDays(12),
+                adultCount = 2,
+                childCount = 0,
                 paymentMethod = "directTransfer",
                 notes = "Email lifecycle integration test"
             })

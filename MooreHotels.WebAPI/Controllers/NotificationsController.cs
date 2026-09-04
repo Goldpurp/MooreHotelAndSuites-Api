@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Common;
 using System.Security.Claims;
 
 namespace MooreHotels.WebAPI.Controllers;
@@ -11,14 +12,18 @@ namespace MooreHotels.WebAPI.Controllers;
 public class NotificationsController : ControllerBase
 {
     private readonly INotificationService _notificationService;
+    private readonly IAuthorizationService _authorizationService;
 
-    public NotificationsController(INotificationService notificationService)
+    public NotificationsController(
+        INotificationService notificationService,
+        IAuthorizationService authorizationService)
     {
         _notificationService = notificationService;
+        _authorizationService = authorizationService;
     }
 
     [HttpGet("staff")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
     public async Task<IActionResult> GetStaffNotifications()
     {
         var userId = GetUserId();
@@ -39,8 +44,9 @@ public class NotificationsController : ControllerBase
         var userId = GetUserId();
         if (userId == Guid.Empty) return Unauthorized();
 
-        var canManageStaffNotifications =
-            User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
+        var canManageStaffNotifications = (await _authorizationService.AuthorizeAsync(
+            User,
+            HotelAuthorization.ReservationsRead)).Succeeded;
         await _notificationService.MarkAsReadAsync(id, userId, canManageStaffNotifications);
         return NoContent();
     }

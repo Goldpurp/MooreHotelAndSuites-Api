@@ -33,4 +33,9 @@ public record BookingDto(
     DateTime? RefundApprovedAtUtc = null,
     Guid? RefundProcessedByUserId = null,
     DateTime? RefundProcessedAtUtc = null,
-    DateTime? GuestAccessExpiresAtUtc = null);
+    DateTime? GuestAccessExpiresAtUtc = null,
+    int AdultCount = 1,
+    int ChildCount = 0,
+    string? PrivacyPolicyVersion = null,
+    string? BookingTermsVersion = null,
+    DateTime? PoliciesAcceptedAtUtc = null);

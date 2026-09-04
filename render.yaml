@@ -101,6 +101,20 @@ services:
         sync: false
       - key: FinancialControls__HighValueRefundThreshold
         value: 500000
+      - key: Privacy__RequirePolicyAcceptance
+        value: true
+      - key: Privacy__CurrentPrivacyPolicyVersion
+        sync: false
+      - key: Privacy__CurrentBookingTermsVersion
+        sync: false
+      - key: Privacy__PrivacyPolicyUrl
+        sync: false
+      - key: Privacy__BookingTermsUrl
+        sync: false
+      - key: Privacy__EnableRetentionWorker
+        value: true
+      - key: Privacy__GuestRetentionDays
+        sync: false
       - key: Security__RequireStaffMfa
         value: true
       - key: Runtime__EnableSwagger

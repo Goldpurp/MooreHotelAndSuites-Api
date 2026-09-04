@@ -46,6 +46,8 @@ public sealed class MonnifyPaymentSecurityTests
                 guestPhone = "+2348000000002",
                 checkIn = DateTime.UtcNow.Date.AddDays(20),
                 checkOut = DateTime.UtcNow.Date.AddDays(22),
+                adultCount = 1,
+                childCount = 1,
                 paymentMethod = "monnify",
                 notes = "Secure checkout test"
             });
@@ -101,6 +103,8 @@ public sealed class MonnifyPaymentSecurityTests
                         "+2348000000002",
                         DateTime.UtcNow.Date.AddDays(20),
                         DateTime.UtcNow.Date.AddDays(22),
+                        1,
+                        0,
                         PaymentMethod.Monnify,
                         null)));
             Assert.Contains(

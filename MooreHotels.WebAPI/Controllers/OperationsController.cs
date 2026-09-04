@@ -4,12 +4,13 @@ using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Infrastructure.Persistence;
+using MooreHotels.Application.Common;
 
 namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/operations")]
-[Authorize(Roles = "Admin,Manager,Staff")]
+[Authorize(Policy = HotelAuthorization.OperationsRead)]
 public class OperationsController : ControllerBase
 {
     private readonly IOperationService _operationService;

@@ -223,7 +223,12 @@ public class ProfileService : IProfileService
                     b.Status == BookingStatus.Pending &&
                     b.PaymentStatus is PaymentStatus.Unpaid or PaymentStatus.AwaitingVerification
                         ? BookingPaymentPolicy.GetConfirmationDeadlineUtc(b.CreatedAt)
-                        : null));
+                        : null,
+                AdultCount: b.AdultCount,
+                ChildCount: b.ChildCount,
+                PrivacyPolicyVersion: b.PrivacyPolicyVersion,
+                BookingTermsVersion: b.BookingTermsVersion,
+                PoliciesAcceptedAtUtc: b.PoliciesAcceptedAtUtc));
     }
 
     public async Task RotateCredentialsAsync(Guid userId, RotateCredentialsRequest request)

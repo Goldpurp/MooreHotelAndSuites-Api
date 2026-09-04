@@ -27,6 +27,8 @@ public sealed class BrevoEmailServiceContractTests
             "Test Suite",
             "Standard",
             2,
+            2,
+            0,
             DateTime.UtcNow.AddDays(1),
             DateTime.UtcNow.AddDays(2),
             1,

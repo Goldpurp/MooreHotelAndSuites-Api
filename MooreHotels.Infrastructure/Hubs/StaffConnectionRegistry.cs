@@ -48,12 +48,16 @@ public sealed class StaffConnectionRegistry : IStaffSessionRevocationService
                 .Select(item => new
                 {
                     item.Role,
+                    item.Department,
                     item.Status,
                     item.SecurityStamp
                 })
                 .SingleOrDefaultAsync(cancellationToken);
 
-            var isStaff = user?.Role is UserRole.Admin or UserRole.Manager or UserRole.Staff;
+            var isStaff = user?.Role is UserRole.Admin or UserRole.Manager ||
+                          user?.Role == UserRole.Staff &&
+                          new[] { "Reception", "FrontDesk", "Concierge" }
+                              .Contains(user.Department, StringComparer.OrdinalIgnoreCase);
             var isAuthorized = user is not null &&
                                user.Status == ProfileStatus.Active &&
                                isStaff &&

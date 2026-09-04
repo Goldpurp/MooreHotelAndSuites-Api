@@ -11,6 +11,12 @@ public record CreateBookingRequest(
     [Required, Phone, StringLength(30, MinimumLength = 7)] string GuestPhone,
     [Required] DateTime CheckIn,
     [Required] DateTime CheckOut,
+    [Range(1, 20)] int AdultCount,
+    [Range(0, 20)] int ChildCount,
     [Required] PaymentMethod? PaymentMethod,
     [StringLength(1000)] string? Notes,
-    [StringLength(128, MinimumLength = 40)] string? EmailVerificationToken = null);
+    [StringLength(128, MinimumLength = 40)] string? EmailVerificationToken = null,
+    bool AcceptPrivacyPolicy = false,
+    [StringLength(80)] string? PrivacyPolicyVersion = null,
+    bool AcceptBookingTerms = false,
+    [StringLength(80)] string? BookingTermsVersion = null);

@@ -8,13 +8,13 @@ namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/health")]
-[AllowAnonymous]
 public class HealthController : ControllerBase
 {
     private readonly MooreHotelsDbContext _context;
     public HealthController(MooreHotelsDbContext context) => _context = context;
 
     [HttpGet]
+    [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Check()
     {
         try
@@ -80,6 +80,7 @@ public class HealthController : ControllerBase
     }
 
     [HttpGet("~/health/ready")]
+    [AllowAnonymous]
     public async Task<IActionResult> Ready(CancellationToken cancellationToken)
     {
         try

@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Common;
 
 namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/visit-records")]
-[Authorize(Roles = "Admin,Manager,Staff")]
+[Authorize(Policy = HotelAuthorization.OperationsRead)]
 public class VisitRecordsController : ControllerBase
 {
     private readonly IVisitRecordService _visitService;

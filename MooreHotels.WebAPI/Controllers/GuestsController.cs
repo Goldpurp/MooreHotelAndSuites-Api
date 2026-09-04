@@ -1,12 +1,13 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Common;
 
 namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/guests")]
-[Authorize(Roles = "Admin,Manager,Staff")]
+[Authorize(Policy = HotelAuthorization.GuestPiiRead)]
 public class GuestsController : ControllerBase
 {
     private readonly IGuestService _guestService;

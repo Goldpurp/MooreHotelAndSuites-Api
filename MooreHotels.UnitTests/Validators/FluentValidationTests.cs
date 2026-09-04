@@ -24,6 +24,8 @@ public class FluentValidationTests
             GuestPhone: "+2348012345678",
             CheckIn: DateTime.UtcNow.Date.AddDays(5),
             CheckOut: DateTime.UtcNow.Date.AddDays(3), // Invalid: before check-in
+            AdultCount: 1,
+            ChildCount: 0,
             PaymentMethod: PaymentMethod.Monnify,
             Notes: "Arriving late");
 
@@ -47,6 +49,8 @@ public class FluentValidationTests
             GuestPhone: "+2348098765432",
             CheckIn: DateTime.UtcNow.Date.AddDays(1),
             CheckOut: DateTime.UtcNow.Date.AddDays(4),
+            AdultCount: 2,
+            ChildCount: 0,
             PaymentMethod: PaymentMethod.Monnify,
             Notes: null);
 
@@ -68,6 +72,8 @@ public class FluentValidationTests
             GuestPhone: "+2348098765432",
             CheckIn: DateTime.UtcNow.Date.AddDays(1),
             CheckOut: DateTime.UtcNow.Date.AddDays(4),
+            AdultCount: 1,
+            ChildCount: 0,
             PaymentMethod: PaymentMethod.Paystack,
             Notes: null);
 

@@ -10,6 +10,8 @@ public class Booking
     public string GuestId { get; set; } = string.Empty;
     public DateTime CheckIn { get; set; }
     public DateTime CheckOut { get; set; }
+    public int AdultCount { get; set; } = 1;
+    public int ChildCount { get; set; }
     public BookingStatus Status { get; set; }
     public decimal Amount { get; set; }
     public PaymentStatus PaymentStatus { get; set; }
@@ -38,6 +40,9 @@ public class Booking
     public DateTime? GuestAccessTokenRevokedAtUtc { get; set; }
     public DateTime? GuestAccessLinkLastRequestedAtUtc { get; set; }
     public DateTime? CancelledAtUtc { get; set; }
+    public string? PrivacyPolicyVersion { get; set; }
+    public string? BookingTermsVersion { get; set; }
+    public DateTime? PoliciesAcceptedAtUtc { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public Room? Room { get; set; }

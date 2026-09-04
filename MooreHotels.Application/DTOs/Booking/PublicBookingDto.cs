@@ -21,4 +21,6 @@ public sealed record PublicBookingDto(
     string? NotificationMessage = null,
     DateTime? PaymentExpiresAtUtc = null,
     string? GuestAccessToken = null,
-    DateTime? GuestAccessExpiresAtUtc = null);
+    DateTime? GuestAccessExpiresAtUtc = null,
+    int AdultCount = 1,
+    int ChildCount = 0);
