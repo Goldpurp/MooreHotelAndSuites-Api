@@ -51,38 +51,26 @@ public sealed class PendingBookingExpirationWorker : BackgroundService
             {
                 await using var scope = _scopeFactory.CreateAsyncScope();
                 var repository = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
-                var notifications =
-                    await repository.CancelExpiredUnconfirmedWithNotificationsAsync(
+                expired = await repository.CancelExpiredUnconfirmedAsync(
                     DateTime.UtcNow,
                     BatchSize,
                     cancellationToken);
-                expired = notifications.Count;
                 total += expired;
 
-                var emailService =
-                    scope.ServiceProvider.GetRequiredService<IEmailService>();
-                foreach (var notification in notifications)
-                {
-                    try
-                    {
-                        await emailService.SendCancellationNoticeAsync(
-                            notification.GuestEmail,
-                            notification.GuestName,
-                            notification.BookingCode,
-                            notification.RoomName,
-                            notification.RoomCategory,
-                            notification.CheckIn,
-                            "Payment was not confirmed within one hour, so the room hold was released.");
-                    }
-                    catch (Exception exception)
-                    {
-                        _logger.LogError(
-                            exception,
-                            "Payment-expiry email failed for booking {BookingCode}.",
-                            notification.BookingCode);
-                    }
-                }
             } while (expired == BatchSize && !cancellationToken.IsCancellationRequested);
+
+            // Verification links are short-lived. Retain expired rows briefly
+            // for troubleshooting, then remove them in bounded batches.
+            int deletedVerifications;
+            do
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var repository = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
+                deletedVerifications = await repository.DeleteExpiredEmailVerificationsAsync(
+                    DateTime.UtcNow,
+                    500,
+                    cancellationToken);
+            } while (deletedVerifications == 500 && !cancellationToken.IsCancellationRequested);
 
             if (total > 0)
             {

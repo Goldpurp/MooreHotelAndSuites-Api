@@ -52,7 +52,12 @@ public sealed class LocalEmailService : IEmailService
         await Accepted(template, recipient);
     }
 
-    public Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount) => Accepted("BookingConfirmation", email);
+    public Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null) =>
+        string.IsNullOrWhiteSpace(manageBookingUrl)
+            ? Accepted("BookingConfirmation", email)
+            : AcceptedWithLink("BookingConfirmation", email, manageBookingUrl);
+    public Task SendBookingAccessLinkAsync(string email, string guestName, string bookingCode, string manageBookingUrl) => AcceptedWithLink("BookingAccessLink", email, manageBookingUrl);
+    public Task SendBookingEmailVerificationAsync(string email, string verificationLink) => AcceptedWithLink("BookingEmailVerification", email, verificationLink);
     public Task SendCancellationNoticeAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, DateTime checkIn, string? reason = null) => Accepted("Cancellation", email);
     public Task SendCheckInReminderAsync(string email, string guestName, string bookingCode, string roomName, DateTime checkIn) => Accepted("CheckInReminder", email);
     public Task SendEmailVerificationAsync(string email, string name, string link) => AcceptedWithLink("EmailVerification", email, link);

@@ -17,5 +17,5 @@ public class Room
     public string Description { get; set; } = string.Empty;
     public List<string> Amenities { get; set; } = new();
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-     public ICollection<RoomImage> Images { get; set; } = new List<RoomImage>();
+    public ICollection<RoomImage> Images { get; set; } = new List<RoomImage>();
 }

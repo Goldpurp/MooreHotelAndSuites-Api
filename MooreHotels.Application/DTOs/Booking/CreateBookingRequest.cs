@@ -12,4 +12,5 @@ public record CreateBookingRequest(
     [Required] DateTime CheckIn,
     [Required] DateTime CheckOut,
     [Required] PaymentMethod? PaymentMethod,
-    [StringLength(1000)] string? Notes);
+    [StringLength(1000)] string? Notes,
+    [StringLength(128, MinimumLength = 40)] string? EmailVerificationToken = null);

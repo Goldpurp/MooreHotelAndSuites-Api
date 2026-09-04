@@ -41,6 +41,8 @@ public sealed class RuntimeSettings
     public bool UseHttpsRedirection { get; init; }
     public bool ResponseCompression { get; init; } = true;
     public bool EnableBookingExpiration { get; init; } = true;
+    public bool EnableRateLimiting { get; init; } = true;
+    public bool RequirePublicBookingEmailVerification { get; init; } = true;
     public int ExternalRequestTimeoutSeconds { get; init; } = 20;
 }
 
@@ -161,6 +163,8 @@ public static class ConfigurationBootstrap
             ?? new MooreHotels.Domain.Common.MonnifySettings();
         var email = configuration.GetSection("EmailSettings")
             .Get<EmailSettings>() ?? new EmailSettings();
+        var hotel = configuration.GetSection("HotelSettings")
+            .Get<HotelSettings>() ?? new HotelSettings();
 
         if (IsMissingOrPlaceholder(connectionString))
         {
@@ -315,7 +319,43 @@ public static class ConfigurationBootstrap
                 "Runtime:EnableExternalServices must be true in Production.");
         }
 
+        if (environment.IsDeployed() && !runtime.EnableRateLimiting)
+        {
+            errors.Add(
+                "Runtime:EnableRateLimiting must be true in Production.");
+        }
+
+        if (environment.IsDeployed() && !runtime.RequirePublicBookingEmailVerification)
+        {
+            errors.Add(
+                "Runtime:RequirePublicBookingEmailVerification must be true in Production.");
+        }
+
+        if (environment.IsDeployed() &&
+            !configuration.GetValue<bool>("Security:RequireStaffMfa"))
+        {
+            errors.Add("Security:RequireStaffMfa must be true in Production.");
+        }
+
         ValidateEmailSettings(email, environment, errors);
+
+        try
+        {
+            _ = TimeZoneInfo.FindSystemTimeZoneById(hotel.TimeZoneId);
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            errors.Add("HotelSettings:TimeZoneId must identify a time zone installed on the deployment host.");
+        }
+        catch (InvalidTimeZoneException)
+        {
+            errors.Add("HotelSettings:TimeZoneId is invalid.");
+        }
+
+        if (hotel.CheckInHour is < 0 or > 23 || hotel.CheckOutHour is < 0 or > 23)
+        {
+            errors.Add("HotelSettings check-in and check-out hours must be between 0 and 23.");
+        }
 
         if (environment.IsDeployed() &&
             IsMissingOrPlaceholder(configuration["DataProtection:KeysPath"]))
@@ -356,6 +396,11 @@ public static class ConfigurationBootstrap
             RequireSecret(configuration, "EmailSettings:ApiPass", errors);
             RequireSecret(configuration, "EmailSettings:SenderEmail", errors);
             RequireSecret(configuration, "EmailSettings:AdminNotificationEmail", errors);
+            RequireSecret(configuration, "HotelSettings:Name", errors);
+            RequireSecret(configuration, "HotelSettings:Tagline", errors);
+            RequireSecret(configuration, "HotelSettings:Address", errors);
+            RequireSecret(configuration, "HotelSettings:SupportEmail", errors);
+            RequireSecret(configuration, "HotelSettings:Phone", errors);
             if (monnify.Enabled)
             {
                 RequireSecret(configuration, "MonnifySettings:ApiKey", errors);
@@ -393,7 +438,7 @@ public static class ConfigurationBootstrap
         }
     }
 
-    private static void RequireSecret(IConfiguration configuration, string key, ICollection<string> errors)
+    private static void RequireSecret(IConfiguration configuration, string key, List<string> errors)
     {
         if (IsMissingOrPlaceholder(configuration[key]))
         {
@@ -404,7 +449,7 @@ public static class ConfigurationBootstrap
     private static void ValidateDeployedUrl(
         IConfiguration configuration,
         string key,
-        ICollection<string> errors)
+        List<string> errors)
     {
         var value = configuration[key];
         if (!Uri.TryCreate(value, UriKind.Absolute, out var uri) ||
@@ -436,7 +481,7 @@ public static class ConfigurationBootstrap
     private static void ValidateEmailSettings(
         EmailSettings settings,
         IHostEnvironment environment,
-        ICollection<string> errors)
+        List<string> errors)
     {
         var usesBrevo = string.Equals(
             settings.DeliveryMode,
@@ -499,7 +544,7 @@ public static class ConfigurationBootstrap
 
     private static void ValidateProductionMonnifySettings(
         MooreHotels.Domain.Common.MonnifySettings settings,
-        ICollection<string> errors)
+        List<string> errors)
     {
         if (!Uri.TryCreate(settings.BaseUrl, UriKind.Absolute, out var baseUri) ||
             baseUri.Scheme != Uri.UriSchemeHttps ||

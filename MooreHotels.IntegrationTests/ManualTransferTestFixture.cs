@@ -5,6 +5,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Hosting;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Application.Interfaces;
@@ -12,6 +13,7 @@ using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Infrastructure.Identity;
 using MooreHotels.Infrastructure.Persistence;
 using Npgsql;
+using MooreHotels.WebAPI.Services;
 
 namespace MooreHotels.IntegrationTests;
 
@@ -72,6 +74,8 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         SetEnvironment("Runtime__EnableExternalServices", "false");
         SetEnvironment("Runtime__EnableSwagger", "true");
         SetEnvironment("Runtime__EnableBookingExpiration", "false");
+        SetEnvironment("Runtime__EnableRateLimiting", "false");
+        SetEnvironment("Runtime__RequirePublicBookingEmailVerification", "false");
         SetEnvironment("MonnifySettings__Enabled", "true");
         SetEnvironment("EmailSettings__DeliveryMode", "Capture");
         SetEnvironment(
@@ -106,6 +110,9 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
                 var publicIds = await db.RoomImages
                     .AsNoTracking()
                     .Select(image => image.PublicId)
+                    .Concat(db.MediaAssets
+                        .AsNoTracking()
+                        .Select(asset => asset.PublicId))
                     .Concat(db.Users
                         .AsNoTracking()
                         .Where(user => user.AvatarPublicId != null)
@@ -204,6 +211,22 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         db.Bookings.Add(booking);
         await db.SaveChangesAsync();
         return booking;
+    }
+
+    public async Task FlushEmailOutboxAsync()
+    {
+        var worker = Services.GetServices<IHostedService>()
+            .OfType<EmailOutboxWorker>()
+            .Single();
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            await worker.ProcessOnceAsync();
+            var pending = await WithDbAsync(db => db.EmailOutboxMessages.CountAsync());
+            if (pending == 0) return;
+            await Task.Delay(100);
+        }
+
+        throw new TimeoutException("The test email outbox did not drain.");
     }
 
     public async Task<Room> CreateRoomAsync()

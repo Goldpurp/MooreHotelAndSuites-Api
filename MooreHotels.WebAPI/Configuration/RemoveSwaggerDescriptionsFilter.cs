@@ -6,20 +6,20 @@ namespace MooreHotels.WebAPI.Configuration;
 public sealed class RemoveSwaggerDescriptionsFilter : IDocumentFilter
 {
     public void Apply(
-        OpenApiDocument document,
+        OpenApiDocument swaggerDoc,
         DocumentFilterContext context)
     {
-        document.Info.Description = null;
+        swaggerDoc.Info.Description = null;
 
-        if (document.Tags is not null)
+        if (swaggerDoc.Tags is not null)
         {
-            foreach (var tag in document.Tags)
+            foreach (var tag in swaggerDoc.Tags)
             {
                 tag.Description = null;
             }
         }
 
-        foreach (var path in document.Paths.Values)
+        foreach (var path in swaggerDoc.Paths.Values)
         {
             foreach (var operation in path.Operations.Values)
             {
@@ -58,29 +58,29 @@ public sealed class RemoveSwaggerDescriptionsFilter : IDocumentFilter
             }
         }
 
-        foreach (var schema in document.Components.Schemas.Values)
+        foreach (var schema in swaggerDoc.Components.Schemas.Values)
         {
             RemoveSchemaDescriptions(schema);
         }
 
-        foreach (var parameter in document.Components.Parameters.Values)
+        foreach (var parameter in swaggerDoc.Components.Parameters.Values)
         {
             parameter.Description = null;
             RemoveSchemaDescriptions(parameter.Schema);
         }
 
-        foreach (var requestBody in document.Components.RequestBodies.Values)
+        foreach (var requestBody in swaggerDoc.Components.RequestBodies.Values)
         {
             requestBody.Description = null;
         }
 
-        foreach (var response in document.Components.Responses.Values)
+        foreach (var response in swaggerDoc.Components.Responses.Values)
         {
             response.Description = string.Empty;
         }
 
         foreach (var securityScheme in
-                 document.Components.SecuritySchemes.Values)
+                 swaggerDoc.Components.SecuritySchemes.Values)
         {
             securityScheme.Description = null;
         }

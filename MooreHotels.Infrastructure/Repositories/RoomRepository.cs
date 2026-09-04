@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
@@ -81,12 +82,11 @@ public class RoomRepository : IRoomRepository
         await _db.Rooms.AddAsync(room);
     }
 
-   public Task UpdateAsync(Room room)
-{
-    _db.Rooms.Update(room);
-    return Task.CompletedTask;
-}
-
+    public Task UpdateAsync(Room room)
+    {
+        _db.Rooms.Update(room);
+        return Task.CompletedTask;
+    }
 
     public async Task DeleteAsync(Room room)
     {
@@ -101,4 +101,25 @@ public class RoomRepository : IRoomRepository
             .FirstOrDefaultAsync(r => r.Id == id);
     }
 
+    public async Task<AssetStatusDistribution> GetAssetStatusDistributionAsync(CancellationToken cancellationToken = default)
+    {
+        var statuses = await _db.Rooms.AsNoTracking()
+            .GroupBy(r => r.Status)
+            .Select(g => new { Status = g.Key, Count = g.Count() })
+            .ToListAsync(cancellationToken);
+
+        var occupied = statuses.FirstOrDefault(s => s.Status == RoomStatus.Occupied)?.Count ?? 0;
+        var available = statuses.FirstOrDefault(s => s.Status == RoomStatus.Available)?.Count ?? 0;
+        var cleaning = statuses.FirstOrDefault(s => s.Status == RoomStatus.Cleaning)?.Count ?? 0;
+        var maintenance = statuses.FirstOrDefault(s => s.Status == RoomStatus.Maintenance)?.Count ?? 0;
+
+        return new AssetStatusDistribution(occupied, available, cleaning, maintenance);
+    }
+
+    public async Task<(int TotalRooms, int OccupiedRooms)> GetRoomCountsAsync(CancellationToken cancellationToken = default)
+    {
+        var total = await _db.Rooms.AsNoTracking().CountAsync(cancellationToken);
+        var occupied = await _db.Rooms.AsNoTracking().CountAsync(r => r.Status == RoomStatus.Occupied, cancellationToken);
+        return (total, occupied);
+    }
 }

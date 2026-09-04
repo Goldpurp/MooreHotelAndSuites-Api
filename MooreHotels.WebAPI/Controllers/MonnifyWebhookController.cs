@@ -23,7 +23,6 @@ public sealed class MonnifyWebhookController : ControllerBase
 
     private readonly IMonnifyService _monnifyService;
     private readonly IMonnifyPaymentProcessor _paymentProcessor;
-    private readonly IBookingService _bookingService;
     private readonly IBookingRepository _bookingRepository;
     private readonly MonnifySettings _settings;
     private readonly ILogger<MonnifyWebhookController> _logger;
@@ -31,14 +30,12 @@ public sealed class MonnifyWebhookController : ControllerBase
     public MonnifyWebhookController(
         IMonnifyService monnifyService,
         IMonnifyPaymentProcessor paymentProcessor,
-        IBookingService bookingService,
         IBookingRepository bookingRepository,
         IOptions<MonnifySettings> settings,
         ILogger<MonnifyWebhookController> logger)
     {
         _monnifyService = monnifyService;
         _paymentProcessor = paymentProcessor;
-        _bookingService = bookingService;
         _bookingRepository = bookingRepository;
         _settings = settings.Value;
         _logger = logger;
@@ -181,13 +178,7 @@ public sealed class MonnifyWebhookController : ControllerBase
                 HttpContext.TraceIdentifier,
                 cancellationToken);
 
-            if (outcome.Kind == MonnifyPaymentOutcomeKind.Confirmed)
-            {
-                await _bookingService.SendPaymentConfirmationAsync(
-                    outcome.BookingCode,
-                    outcome.PaymentReference);
-            }
-            else if (outcome.Kind ==
+            if (outcome.Kind ==
                      MonnifyPaymentOutcomeKind.PaidAfterExpiry)
             {
                 _logger.LogWarning(

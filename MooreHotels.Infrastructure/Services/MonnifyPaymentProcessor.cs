@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Interfaces;
+using MooreHotels.Application.DTOs;
 using MooreHotels.Domain.Common;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
@@ -16,10 +18,14 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
     private const string PaidAfterExpiryStatus = "PAID_AFTER_EXPIRY";
 
     private readonly MooreHotelsDbContext _db;
+    private readonly IEmailOutbox _emailOutbox;
 
-    public MonnifyPaymentProcessor(MooreHotelsDbContext db)
+    public MonnifyPaymentProcessor(
+        MooreHotelsDbContext db,
+        IEmailOutbox emailOutbox)
     {
         _db = db;
+        _emailOutbox = emailOutbox;
     }
 
     public async Task<MonnifyPaymentOutcome> ApplyVerifiedPaymentAsync(
@@ -203,6 +209,23 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                     now,
                     previousPaymentStatus,
                     previousBookingStatus);
+                if (booking.Guest is not null)
+                {
+                    var roomName = await _db.Rooms
+                        .Where(room => room.Id == booking.RoomId)
+                        .Select(room => room.Name)
+                        .SingleOrDefaultAsync(cancellationToken)
+                        ?? "Reserved Room";
+                    _db.EmailOutboxMessages.Add(_emailOutbox.Create(
+                        TransactionalEmailTemplates.PaymentSuccess,
+                        booking.Guest.Email,
+                        new PaymentSuccessEmail(
+                            booking.Guest.FirstName,
+                            booking.BookingCode,
+                            roomName,
+                            booking.Amount,
+                            verification.PaymentReference)));
+                }
                 outcomeKind = MonnifyPaymentOutcomeKind.Confirmed;
             }
 

@@ -8,6 +8,8 @@ using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Persistence;
+using Microsoft.AspNetCore.RateLimiting;
+using MooreHotels.WebAPI.Extensions;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -51,14 +53,6 @@ public class RoomsController : ControllerBase
         [FromQuery] string? roomNumber = null,
         [FromQuery] string? amenity = null)
     {
-        if (guest <= 0) return BadRequest("Guest count must be greater than zero.");
-
-        if (checkIn.HasValue && checkOut.HasValue)
-        {
-            if (checkIn >= checkOut) return BadRequest("Check-out must be after check-in.");
-            if (checkIn < DateTime.UtcNow.Date) return BadRequest("Check-in cannot be in the past.");
-        }
-
         var canViewInternalFields = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
         var request = new RoomSearchRequest(
             checkIn,
@@ -98,6 +92,8 @@ public class RoomsController : ControllerBase
     [HttpPost]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
+    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     public async Task<IActionResult> CreateRoom([FromForm] CreateRoomRequest request, List<IFormFile> files)
     {
         var validationError = await ImageFileValidator.GetValidationErrorAsync(files);
@@ -135,7 +131,17 @@ public class RoomsController : ControllerBase
         {
             foreach (var result in uploadResults)
             {
-                await _imageService.DeleteImageAsync(result.PublicId);
+                try
+                {
+                    await _imageService.DeleteImageAsync(result.PublicId);
+                }
+                catch (Exception cleanupException)
+                {
+                    _logger.LogWarning(
+                        cleanupException,
+                        "Could not remove orphaned image {PublicId} after room creation failed.",
+                        result.PublicId);
+                }
             }
 
             throw;
@@ -148,9 +154,11 @@ public class RoomsController : ControllerBase
     [HttpPost("{id:guid}/images")]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
+    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     public async Task<IActionResult> AddImages(Guid id, List<IFormFile> files)
     {
-        if (files == null || !files.Any()) return BadRequest("No files uploaded.");
+        if (files == null || files.Count == 0) return BadRequest("No files uploaded.");
         var validationError = await ImageFileValidator.GetValidationErrorAsync(files);
         if (validationError is not null) return BadRequest(new { message = validationError });
 
@@ -170,6 +178,23 @@ public class RoomsController : ControllerBase
             {
                 _context.ChangeTracker.Clear();
                 await using var transaction = await _context.Database.BeginTransactionAsync();
+
+                var lockedRoom = await _context.Rooms
+                    .FromSqlInterpolated(
+                        $"SELECT * FROM rooms WHERE \"Id\" = {id} FOR UPDATE")
+                    .SingleOrDefaultAsync();
+                if (lockedRoom is null)
+                {
+                    throw new NotFoundException("Room not found.");
+                }
+
+                var currentImageCount = await _context.RoomImages
+                    .CountAsync(image => image.RoomId == id);
+                if (currentImageCount + uploadResults.Count > 30)
+                {
+                    throw new BadRequestException(
+                        "A room gallery cannot contain more than 30 images.");
+                }
 
                 foreach (var result in uploadResults)
                 {
@@ -215,6 +240,8 @@ public class RoomsController : ControllerBase
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
+    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     [ProducesResponseType(typeof(RoomDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -266,8 +293,25 @@ public class RoomsController : ControllerBase
                 publicIdsToDelete.Clear();
                 await using var transaction = await _context.Database.BeginTransactionAsync();
 
-                await _context.Database.ExecuteSqlInterpolatedAsync(
-                    $"SELECT 1 FROM rooms WHERE \"Id\" = {id} FOR UPDATE");
+                var lockedRoom = await _context.Rooms
+                    .FromSqlInterpolated(
+                        $"SELECT * FROM rooms WHERE \"Id\" = {id} FOR UPDATE")
+                    .SingleOrDefaultAsync();
+                if (lockedRoom is null)
+                {
+                    throw new NotFoundException("Room not found.");
+                }
+
+                var currentImageCount = await _context.RoomImages
+                    .CountAsync(image => image.RoomId == id);
+                var committedRetainedCount = willReplaceImages
+                    ? retainedImageUrls.Count
+                    : currentImageCount;
+                if (committedRetainedCount + uploadResults.Count > 30)
+                {
+                    throw new BadRequestException(
+                        "A room gallery cannot contain more than 30 images.");
+                }
 
                 await _roomService.UpdateRoomAsync(id, request);
 
@@ -291,7 +335,7 @@ public class RoomsController : ControllerBase
                         .Where(img => !retainedImageUrls.Contains(img.Url))
                         .ToList();
 
-                    if (imagesToDelete.Any())
+                    if (imagesToDelete.Count > 0)
                     {
                         _context.RoomImages.RemoveRange(imagesToDelete);
                         publicIdsToDelete.AddRange(imagesToDelete

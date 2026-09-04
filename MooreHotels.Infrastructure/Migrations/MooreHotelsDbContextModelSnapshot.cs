@@ -17,7 +17,7 @@ namespace MooreHotels.Infrastructure.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.29")
+                .HasAnnotation("ProductVersion", "8.0.30")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
@@ -150,6 +150,47 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.HasKey("UserId", "LoginProvider", "Name");
 
                     b.ToTable("AspNetUserTokens", (string)null);
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.AddOnService", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<DateTime>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<decimal>("Price")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("IsActive", "Category");
+
+                    b.ToTable("addon_services", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_addon_services_price_positive", "\"Price\" > 0");
+                        });
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.ApplicationUser", b =>
@@ -314,6 +355,9 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)");
 
+                    b.Property<DateTime?>("CancelledAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<DateTime>("CheckIn")
                         .HasColumnType("timestamp with time zone");
 
@@ -322,6 +366,10 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<DateTime>("CreatedAt")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("GuestAccessTokenHash")
+                        .HasMaxLength(44)
+                        .HasColumnType("character varying(44)");
 
                     b.Property<string>("GuestId")
                         .IsRequired()
@@ -361,6 +409,9 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(40)
                         .HasColumnType("character varying(40)");
 
+                    b.Property<string>("ProtectedGuestAccessToken")
+                        .HasColumnType("text");
+
                     b.Property<string>("RefundReference")
                         .HasMaxLength(160)
                         .HasColumnType("character varying(160)");
@@ -395,6 +446,11 @@ namespace MooreHotels.Infrastructure.Migrations
                         .IsUnique()
                         .HasFilter("\"TransactionReference\" IS NOT NULL");
 
+                    b.HasIndex("CancelledAtUtc", "Id")
+                        .HasFilter("\"Status\" = 'Cancelled' AND \"CancelledAtUtc\" IS NOT NULL");
+
+                    b.HasIndex("CreatedAt", "Id");
+
                     b.HasIndex("GuestId", "CreatedAt");
 
                     b.HasIndex("PaymentStatus", "CreatedAt");
@@ -404,6 +460,52 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.ToTable("bookings", null, t =>
                         {
                             t.HasCheckConstraint("CK_bookings_valid_dates", "\"CheckOut\" > \"CheckIn\"");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.BookingAddOn", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AddOnServiceId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("AddedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Notes")
+                        .HasMaxLength(300)
+                        .HasColumnType("character varying(300)");
+
+                    b.Property<int>("Quantity")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("TotalPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("UnitPrice")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AddOnServiceId");
+
+                    b.HasIndex("BookingId", "AddedAtUtc");
+
+                    b.ToTable("booking_addons", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_booking_addons_quantity_positive", "\"Quantity\" > 0");
+
+                            t.HasCheckConstraint("CK_booking_addons_total_matches_quantity", "\"TotalPrice\" = \"UnitPrice\" * \"Quantity\"");
+
+                            t.HasCheckConstraint("CK_booking_addons_unit_price_positive", "\"UnitPrice\" > 0");
                         });
                 });
 
@@ -421,6 +523,95 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.HasIndex("AllocatedAtUtc");
 
                     b.ToTable("booking_code_allocations", (string)null);
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.BookingEmailVerification", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("ConsumedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Email")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(44)
+                        .HasColumnType("character varying(44)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.HasIndex("Email", "CreatedAtUtc");
+
+                    b.HasIndex("ExpiresAtUtc", "Id")
+                        .HasFilter("\"ConsumedAtUtc\" IS NULL");
+
+                    b.ToTable("booking_email_verifications", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_booking_email_verifications_valid_window", "\"ExpiresAtUtc\" > \"CreatedAtUtc\"");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.EmailOutboxMessage", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("LastErrorCode")
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<Guid?>("LockId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("LockedUntilUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("NextAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("ProtectedPayload")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Recipient")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<string>("Template")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("NextAttemptAtUtc", "LockedUntilUtc", "AttemptCount");
+
+                    b.ToTable("email_outbox", (string)null);
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.Guest", b =>
@@ -463,6 +654,45 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.HasIndex("Email", "FirstName", "LastName");
 
                     b.ToTable("guests", (string)null);
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.MediaAsset", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Folder")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("PublicId")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("character varying(512)");
+
+                    b.Property<Guid?>("UploadedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Url")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("character varying(2048)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("PublicId")
+                        .IsUnique();
+
+                    b.HasIndex("UploadedByUserId");
+
+                    b.HasIndex("Folder", "CreatedAtUtc");
+
+                    b.ToTable("media_assets", (string)null);
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.MonnifyTransaction", b =>
@@ -574,6 +804,24 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.HasIndex("UserId", "IsRead", "CreatedAt");
 
                     b.ToTable("notifications", (string)null);
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.NotificationReceipt", b =>
+                {
+                    b.Property<Guid>("NotificationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("ReadAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("NotificationId", "UserId");
+
+                    b.HasIndex("UserId", "ReadAtUtc");
+
+                    b.ToTable("notification_receipts", (string)null);
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.Room", b =>
@@ -729,6 +977,8 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.HasIndex("BookingCode", "Timestamp");
 
+                    b.HasIndex("Timestamp", "Id");
+
                     b.ToTable("visit_records", (string)null);
                 });
 
@@ -819,6 +1069,35 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Navigation("Room");
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.BookingAddOn", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.AddOnService", "AddOnService")
+                        .WithMany()
+                        .HasForeignKey("AddOnServiceId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.Booking", "Booking")
+                        .WithMany("AddOns")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("AddOnService");
+
+                    b.Navigation("Booking");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.MediaAsset", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "UploadedByUser")
+                        .WithMany()
+                        .HasForeignKey("UploadedByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("UploadedByUser");
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.MonnifyTransaction", b =>
                 {
                     b.HasOne("MooreHotels.Domain.Entities.Booking", "Booking")
@@ -827,6 +1106,25 @@ namespace MooreHotels.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Booking");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.NotificationReceipt", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.Notification", "Notification")
+                        .WithMany()
+                        .HasForeignKey("NotificationId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Notification");
+
+                    b.Navigation("User");
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.RoomImage", b =>
@@ -838,6 +1136,11 @@ namespace MooreHotels.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("Room");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.Booking", b =>
+                {
+                    b.Navigation("AddOns");
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.Guest", b =>

@@ -134,6 +134,15 @@ public sealed class ProductionConfigurationSecurityTests
     [InlineData(
         "ForwardedHeaders:KnownNetworks:0",
         "0.0.0.0 / 0")]
+    [InlineData(
+        "Runtime:EnableRateLimiting",
+        "false")]
+    [InlineData(
+        "Runtime:RequirePublicBookingEmailVerification",
+        "false")]
+    [InlineData(
+        "Security:RequireStaffMfa",
+        "false")]
     public void Production_rejects_security_boundary_weakening(
         string key,
         string value)
@@ -190,7 +199,10 @@ public sealed class ProductionConfigurationSecurityTests
         ["ForwardedHeaders:KnownNetworks:0"] = "10.0.0.0/8",
         ["Runtime:EnableSwagger"] = "false",
         ["Runtime:EnableExternalServices"] = "true",
+        ["Runtime:EnableRateLimiting"] = "true",
+        ["Runtime:RequirePublicBookingEmailVerification"] = "true",
         ["Runtime:AutoConfirmEmail"] = "false",
+        ["Security:RequireStaffMfa"] = "true",
         ["DataProtection:KeysPath"] = "/var/data/moorehotels-keys",
         ["DataProtection:CertificatePath"] =
             "/etc/secrets/moorehotels-data-protection.pfx",
@@ -215,6 +227,14 @@ public sealed class ProductionConfigurationSecurityTests
         ["PublicAppUrl"] = "https://moorehotelandsuites.com",
         ["DashboardUrl"] = "https://admin.moorehotelandsuites.com",
         ["Api:PublicBaseUrl"] = "https://api.moorehotelandsuites.com",
+        ["HotelSettings:Name"] = "Moore Hotels Test",
+        ["HotelSettings:Tagline"] = "Test hospitality",
+        ["HotelSettings:Address"] = "1 Test Street, Abuja",
+        ["HotelSettings:SupportEmail"] = "support@example.test",
+        ["HotelSettings:Phone"] = "+2340000000000",
+        ["HotelSettings:TimeZoneId"] = "Africa/Lagos",
+        ["HotelSettings:CheckInHour"] = "14",
+        ["HotelSettings:CheckOutHour"] = "12",
         ["SeedAdmin"] = "false"
     };
 

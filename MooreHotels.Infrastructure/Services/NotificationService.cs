@@ -42,11 +42,11 @@ public class NotificationService : INotificationService
         await _db.SaveChangesAsync();
 
         await _hubContext.Clients.Group("StaffGroup").SendAsync("ReceiveNotification", new NotificationDto(
-            notification.Id, 
-            notification.Title, 
-            notification.Message, 
-            notification.BookingCode, 
-            notification.IsRead, 
+            notification.Id,
+            notification.Title,
+            notification.Message,
+            notification.BookingCode,
+            notification.IsRead,
             notification.CreatedAt));
     }
 
@@ -55,30 +55,50 @@ public class NotificationService : INotificationService
         return await _db.Notifications
             .Where(n => n.UserId == userId)
             .OrderByDescending(n => n.CreatedAt)
-            .Select(n => new NotificationDto(n.Id, n.Title, n.Message, n.BookingCode, n.IsRead, n.CreatedAt))
+            .Take(50)
+            .Select(n => new NotificationDto(
+                n.Id,
+                n.Title,
+                n.Message,
+                n.BookingCode,
+                _db.NotificationReceipts.Any(receipt =>
+                    receipt.NotificationId == n.Id && receipt.UserId == userId),
+                n.CreatedAt))
             .ToListAsync();
     }
 
-    public async Task<IEnumerable<NotificationDto>> GetStaffNotificationsAsync()
+    public async Task<IEnumerable<NotificationDto>> GetStaffNotificationsAsync(Guid userId)
     {
         return await _db.Notifications
             .Where(n => n.UserId == null)
             .OrderByDescending(n => n.CreatedAt)
             .Take(50)
-            .Select(n => new NotificationDto(n.Id, n.Title, n.Message, n.BookingCode, n.IsRead, n.CreatedAt))
+            .Select(n => new NotificationDto(
+                n.Id,
+                n.Title,
+                n.Message,
+                n.BookingCode,
+                _db.NotificationReceipts.Any(receipt =>
+                    receipt.NotificationId == n.Id && receipt.UserId == userId),
+                n.CreatedAt))
             .ToListAsync();
     }
 
     public async Task MarkAsReadAsync(Guid notificationId, Guid userId, bool canManageStaffNotifications)
     {
-        var notification = await _db.Notifications.FirstOrDefaultAsync(notification =>
+        var notificationExists = await _db.Notifications.AsNoTracking().AnyAsync(notification =>
             notification.Id == notificationId &&
             (notification.UserId == userId ||
              (canManageStaffNotifications && notification.UserId == null)));
-        if (notification != null)
+        if (notificationExists)
         {
-            notification.IsRead = true;
-            await _db.SaveChangesAsync();
+            var readAtUtc = DateTime.UtcNow;
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                 INSERT INTO notification_receipts ("NotificationId", "UserId", "ReadAtUtc")
+                 VALUES ({notificationId}, {userId}, {readAtUtc})
+                 ON CONFLICT ("NotificationId", "UserId") DO NOTHING
+                 """);
         }
     }
 }

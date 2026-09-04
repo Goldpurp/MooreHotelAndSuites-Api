@@ -111,7 +111,36 @@ public sealed class BrevoEmailServiceContractTests
                 "Test Suite"));
     }
 
-    private static EmailService CreateService(RecordingHandler handler)
+    [Fact]
+    public async Task Duplicate_idempotency_response_is_treated_as_prior_acceptance()
+    {
+        var handler = new RecordingHandler(
+            Response(
+                HttpStatusCode.BadRequest,
+                """{"code":"duplicate_parameter","message":"duplicate idempotencyKey"}"""));
+        var context = new EmailDeliveryContext();
+        var stableId = Guid.NewGuid();
+        context.IdempotencyKey = stableId;
+        var service = CreateService(handler, context);
+
+        await service.SendPasswordResetAsync(
+            "guest@example.test",
+            "Guest Tester",
+            "https://example.test/reset");
+
+        Assert.Single(handler.Requests);
+        using var body = JsonDocument.Parse(handler.Requests[0].Body);
+        Assert.Equal(
+            stableId.ToString(),
+            body.RootElement
+                .GetProperty("headers")
+                .GetProperty("idempotencyKey")
+                .GetString());
+    }
+
+    private static EmailService CreateService(
+        RecordingHandler handler,
+        EmailDeliveryContext? deliveryContext = null)
     {
         var client = new HttpClient(handler)
         {
@@ -136,6 +165,7 @@ public sealed class BrevoEmailServiceContractTests
             }),
             NullLogger<EmailService>.Instance,
             new FixedHttpClientFactory(client),
+            deliveryContext ?? new EmailDeliveryContext(),
             configuration);
     }
 

@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Configuration;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Repositories;
@@ -19,22 +20,25 @@ public class ProfileService : IProfileService
     private readonly IAuditService _auditService;
     private readonly IBookingRepository _bookingRepo;
     private readonly IGuestRepository _guestRepo;
-    private readonly IEmailService _emailService;
+    private readonly IEmailOutbox _emailOutbox;
+    private readonly IApplicationTransaction _transaction;
     private readonly IConfiguration _configuration;
 
     public ProfileService(
-        UserManager<ApplicationUser> userManager, 
-        IAuditService auditService, 
+        UserManager<ApplicationUser> userManager,
+        IAuditService auditService,
         IBookingRepository bookingRepo,
         IGuestRepository guestRepo,
-        IEmailService emailService,
+        IEmailOutbox emailOutbox,
+        IApplicationTransaction transaction,
         IConfiguration configuration)
     {
         _userManager = userManager;
         _auditService = auditService;
         _bookingRepo = bookingRepo;
         _guestRepo = guestRepo;
-        _emailService = emailService;
+        _emailOutbox = emailOutbox;
+        _transaction = transaction;
         _configuration = configuration;
     }
 
@@ -78,19 +82,22 @@ public class ProfileService : IProfileService
             updatedFields.Add("name");
         }
 
-        if (!string.IsNullOrWhiteSpace(request.Email) && request.Email != user.Email)
+        if (!string.IsNullOrWhiteSpace(request.Email))
         {
             var normalizedEmail = request.Email.Trim().ToLowerInvariant();
-            var existing = await _userManager.FindByEmailAsync(normalizedEmail);
-            if (existing != null && existing.Id != userId)
-                throw new BadRequestException("Email address is already associated with another account.");
+            if (!string.Equals(normalizedEmail, user.Email, StringComparison.OrdinalIgnoreCase))
+            {
+                var existing = await _userManager.FindByEmailAsync(normalizedEmail);
+                if (existing != null && existing.Id != userId)
+                    throw new BadRequestException("Email address is already associated with another account.");
 
-            user.Email = normalizedEmail;
-            user.UserName = normalizedEmail;
-            user.EmailConfirmed = _configuration.GetValue<bool>("Runtime:AutoConfirmEmail");
-            isChanged = true;
-            emailChanged = true;
-            updatedFields.Add("email");
+                user.Email = normalizedEmail;
+                user.UserName = normalizedEmail;
+                user.EmailConfirmed = _configuration.GetValue<bool>("Runtime:AutoConfirmEmail");
+                isChanged = true;
+                emailChanged = true;
+                updatedFields.Add("email");
+            }
         }
 
         if (request.Phone != null)
@@ -113,56 +120,70 @@ public class ProfileService : IProfileService
 
         if (isChanged)
         {
-            var result = await _userManager.UpdateAsync(user);
-            if (!result.Succeeded) 
-                throw new BadRequestException(string.Join(", ", result.Errors.Select(e => e.Description)));
-
-            if (emailChanged)
+            await _transaction.ExecuteWithUserLockAsync(userId, async () =>
             {
-                await _userManager.UpdateSecurityStampAsync(user);
-            }
-
-            var guest = string.IsNullOrWhiteSpace(user.GuestId)
-                ? null
-                : await _guestRepo.GetByIdAsync(user.GuestId);
-            if (guest != null)
-            {
-                if (!string.IsNullOrWhiteSpace(request.FullName))
+                var result = await _userManager.UpdateAsync(user);
+                if (!result.Succeeded)
                 {
-                    var names = request.FullName.Split(' ', 2);
-                    guest.FirstName = names[0];
-                    guest.LastName = names.Length > 1 ? names[1] : "";
+                    throw new BadRequestException(
+                        string.Join(", ", result.Errors.Select(e => e.Description)));
                 }
-                
-                if (emailChanged) guest.Email = user.Email!;
-                if (request.Phone != null) guest.Phone = request.Phone;
-                if (request.AvatarUrl != null) guest.AvatarUrl = request.AvatarUrl;
-                
-                await _guestRepo.UpdateAsync(guest);
-            }
 
-            await _auditService.LogActionAsync(
-                userId,
-                "PARTIAL_PROFILE_UPDATE",
-                "User",
-                userId.ToString(),
-                newData: new { Fields = updatedFields });
-
-            if (emailChanged && !user.EmailConfirmed)
-            {
-                var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-                var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
-                var publicAppUrl = _configuration["PublicAppUrl"]
-                    ?? throw new InvalidOperationException("PublicAppUrl is not configured.");
-                var verificationUrl = QueryHelpers.AddQueryString(
-                    $"{publicAppUrl.TrimEnd('/')}/verify-email",
-                    new Dictionary<string, string?>
+                if (emailChanged)
+                {
+                    var stamp = await _userManager.UpdateSecurityStampAsync(user);
+                    if (!stamp.Succeeded)
                     {
-                        ["userId"] = user.Id.ToString(),
-                        ["token"] = encodedToken
-                    });
-                await _emailService.SendEmailVerificationAsync(user.Email!, user.Name, verificationUrl);
-            }
+                        throw new InvalidOperationException("Existing sessions could not be invalidated.");
+                    }
+                }
+
+                var guest = string.IsNullOrWhiteSpace(user.GuestId)
+                    ? null
+                    : await _guestRepo.GetByIdAsync(user.GuestId);
+                if (guest != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(request.FullName))
+                    {
+                        var names = request.FullName.Trim().Split(' ', 2);
+                        guest.FirstName = names[0];
+                        guest.LastName = names.Length > 1 ? names[1] : "";
+                    }
+
+                    if (emailChanged) guest.Email = user.Email!;
+                    if (request.Phone != null) guest.Phone = request.Phone.Trim();
+                    if (request.AvatarUrl != null) guest.AvatarUrl = request.AvatarUrl;
+
+                    await _guestRepo.UpdateAsync(guest);
+                }
+
+                await _auditService.LogActionAsync(
+                    userId,
+                    "PARTIAL_PROFILE_UPDATE",
+                    "User",
+                    userId.ToString(),
+                    newData: new { Fields = updatedFields });
+
+                if (emailChanged && !user.EmailConfirmed)
+                {
+                    var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+                    var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
+                    var publicAppUrl = _configuration["PublicAppUrl"]
+                        ?? throw new InvalidOperationException("PublicAppUrl is not configured.");
+                    var verificationUrl = FrontendLinkBuilder.WithFragment(
+                        publicAppUrl,
+                        "verify-email",
+                        new Dictionary<string, string?>
+                        {
+                            ["userId"] = user.Id.ToString(),
+                            ["token"] = encodedToken
+                        });
+                    await _emailOutbox.EnqueueAsync(
+                        TransactionalEmailTemplates.EmailVerification,
+                        user.Email!,
+                        new EmailVerificationEmail(user.Name, verificationUrl));
+                }
+            });
         }
     }
 
@@ -179,7 +200,7 @@ public class ProfileService : IProfileService
         var bookings = await _bookingRepo.GetByGuestIdAsync(user.GuestId);
         return bookings
             .Select(b => new BookingDto(
-                b.Id, b.BookingCode, b.RoomId, b.GuestId, 
+                b.Id, b.BookingCode, b.RoomId, b.GuestId,
                 b.Guest?.FirstName ?? "", b.Guest?.LastName ?? "", b.Guest?.Email ?? "", b.Guest?.Phone ?? "",
                 b.CheckIn, b.CheckOut,
                 b.Status, b.Amount, b.PaymentStatus, b.PaymentMethod, b.TransactionReference, b.Notes, b.CreatedAt,
@@ -205,40 +226,74 @@ public class ProfileService : IProfileService
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (user == null) throw new NotFoundException("User not found.");
 
-        var result = await _userManager.ChangePasswordAsync(user, request.OldPassword, request.NewPassword);
-        if (!result.Succeeded) 
-            throw new BadRequestException(string.Join(", ", result.Errors.Select(e => e.Description)));
+        await _transaction.ExecuteWithUserLockAsync(userId, async () =>
+        {
+            var result = await _userManager.ChangePasswordAsync(
+                user,
+                request.OldPassword,
+                request.NewPassword);
+            if (!result.Succeeded)
+            {
+                throw new BadRequestException(
+                    string.Join(", ", result.Errors.Select(e => e.Description)));
+            }
 
-        await _auditService.LogActionAsync(userId, "ROTATE_CREDENTIALS", "User", userId.ToString(), 
-            new { Message = "Security credentials updated." });
+            await _auditService.LogActionAsync(
+                userId,
+                "ROTATE_CREDENTIALS",
+                "User",
+                userId.ToString(),
+                new { Message = "Security credentials updated." });
+        });
     }
 
     public async Task DeactivateAccountAsync(Guid userId)
     {
         var user = await _userManager.FindByIdAsync(userId.ToString());
-        if (user == null) throw new Exception("User not found");
+        if (user == null) throw new NotFoundException("User not found.");
 
         if (user.Role == UserRole.Admin)
-            throw new Exception("Security Constraint: Admin account cannot be deactivated.");
+            throw new BadRequestException("An administrator account cannot be deactivated.");
 
-        user.Status = ProfileStatus.Suspended;
-        await _userManager.UpdateAsync(user);
-        await _userManager.UpdateSecurityStampAsync(user);
+        await _transaction.ExecuteWithUserLockAsync(userId, async () =>
+        {
+            user.Status = ProfileStatus.Suspended;
+            var update = await _userManager.UpdateSecurityStampAsync(user);
+            if (!update.Succeeded)
+            {
+                throw new InvalidOperationException("The account could not be deactivated.");
+            }
 
-        await _auditService.LogActionAsync(userId, "DEACTIVATE_ACCOUNT", "User", userId.ToString(), 
-            new { Status = "Suspended" });
+            await _auditService.LogActionAsync(
+                userId,
+                "DEACTIVATE_ACCOUNT",
+                "User",
+                userId.ToString(),
+                new { Status = "Suspended" });
+        });
     }
 
     public async Task ActivateAccountAsync(Guid userId)
     {
         var user = await _userManager.FindByIdAsync(userId.ToString());
-        if (user == null) throw new Exception("User not found");
+        if (user == null) throw new NotFoundException("User not found.");
 
-        user.Status = ProfileStatus.Active;
-        await _userManager.UpdateAsync(user);
+        await _transaction.ExecuteWithUserLockAsync(userId, async () =>
+        {
+            user.Status = ProfileStatus.Active;
+            var update = await _userManager.UpdateAsync(user);
+            if (!update.Succeeded)
+            {
+                throw new InvalidOperationException("The account could not be activated.");
+            }
 
-        await _auditService.LogActionAsync(userId, "ACTIVATE_ACCOUNT", "User", userId.ToString(), 
-            new { Status = "Active" });
+            await _auditService.LogActionAsync(
+                userId,
+                "ACTIVATE_ACCOUNT",
+                "User",
+                userId.ToString(),
+                new { Status = "Active" });
+        });
     }
 
     private bool IsTrustedAvatarUrl(string value)
@@ -247,7 +302,7 @@ public class ProfileService : IProfileService
         if (uri.Scheme == Uri.UriSchemeHttps &&
             uri.Host.Equals("res.cloudinary.com", StringComparison.OrdinalIgnoreCase))
         {
-            var cloudName = _configuration["Cloudinary:CloudName"];
+            var cloudName = _configuration["CloudinarySettings:CloudName"];
             return !string.IsNullOrWhiteSpace(cloudName) &&
                    uri.AbsolutePath.StartsWith(
                        $"/{cloudName}/image/upload/",

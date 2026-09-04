@@ -7,15 +7,27 @@ never loads local secrets.
 
 ## First-time Local setup
 
-1. Start the installed PostgreSQL server. The current Local profile uses
-   `127.0.0.1:5433` and the `postgres` login.
+1. Install PostgreSQL once. The current Local profile uses `127.0.0.1:5433`
+   and the `postgres` login. The project launcher starts the existing local
+   PostgreSQL cluster automatically when it is not already running.
 2. Copy `.env.local.example` to the ignored `.env.local` and replace its
    placeholders. Keep this file owner-readable only (`chmod 600 .env.local`).
-3. Start the API:
+3. Start the API in release-style Local mode:
 
 ```bash
 bash scripts/run-local.sh
 ```
+
+For hot reload during development, use:
+
+```bash
+bash scripts/watch-local.sh
+```
+
+Use these guarded launchers instead of running `dotnet watch run` directly.
+They start or reuse PostgreSQL, wait until port `5433` is ready, and only then
+launch the API. After a computer restart, no separate database command is
+required.
 
 During Local startup the API connects briefly to PostgreSQL's existing
 `postgres` maintenance database. If `moore_hotels_local` is missing, it creates
@@ -24,7 +36,8 @@ the configured initial administrator. Database creation is rejected in every
 non-Local environment.
 
 The API listens on `http://127.0.0.1:5222`; local Swagger is available at
-`/swagger`, and the database-backed health endpoint is `/api/health`.
+`/swagger`. `/health/live` reports process liveness, `/health/ready` reports
+database readiness, and `/api/health` reports detailed operational health.
 
 The Local staff login is:
 
@@ -71,6 +84,7 @@ API key.
 
 The API sends lifecycle messages for:
 
+- public-booking email verification before inventory is reserved;
 - a new booking (guest receipt and operations alert);
 - Monnify or manually acknowledged transfer payment success;
 - staff or guest cancellation, no-show, and automatic one-hour payment expiry;
@@ -79,11 +93,16 @@ The API sends lifecycle messages for:
 - account verification, password reset, staff onboarding, suspension and
   reactivation.
 
-Brevo calls use a request idempotency key, bounded provider responses, safe
-error messages, and limited retries for timeouts, rate limiting, and server
-errors. Automated Local integration tests use `DeliveryMode=Capture`, replace
-the delivery service in memory, and assert every lifecycle trigger without
-sending test mail to real recipients. `Capture` is rejected in Production.
+Booking lifecycle email is committed to a Data-Protection-encrypted database
+outbox in the same transaction as the booking, payment, cancellation, refund or
+checkout change. A multi-instance-safe worker retries delivery with a stable
+provider idempotency key and removes the protected payload after Brevo accepts
+it. `/api/health` reports queue counts without exposing guest data. Brevo calls
+also use bounded provider responses and limited retries for timeouts, rate
+limiting, and server errors. Automated Local integration tests use
+`DeliveryMode=Capture`, replace the delivery service in memory, and assert every
+lifecycle trigger without sending test mail to real recipients. `Capture` is
+rejected in Production.
 
 ## Swagger
 
@@ -103,7 +122,7 @@ release step, then start the new API build:
 dotnet tool restore
 dotnet tool run dotnet-ef migrations script --idempotent \
   --project MooreHotels.Infrastructure \
-  --startup-project MooreHotels.WebAPI
+  --startup-project MooreHotels.Infrastructure
 ```
 
 The current `ProductionHardening` migration removes obsolete sensitive fields
@@ -119,6 +138,8 @@ guest name/e-mail fields from the payment ledger.
 `RandomBookingCodeAllocations` replaces volume-revealing sequential references
 with collision-safe random references and reserves every existing booking code
 against reuse.
+`SecureGuestAccessAndEmailOutbox` adds secure guest-management tokens and the
+encrypted transactional email outbox.
 
 ## Public booking references
 
@@ -127,6 +148,20 @@ random digits, for example `MHS482071`. The digits do not represent a database
 row count, date, customer count, or booking volume. A database primary-key
 reservation makes allocation atomic across concurrent requests and multiple API
 instances. Existing references are preserved and are never reissued.
+
+New public bookings are managed through a 256-bit secure link. The API stores a
+hash for validation and a Data-Protection-encrypted copy for email recovery;
+the raw token is never written to audit logs. The browser sends the token in
+`X-Booking-Access-Token`, not an API URL, and email links put it in the URL
+fragment so it is not sent to the website host or CDN. Code plus email alone
+cannot read or cancel a new booking. Historical bookings without a token retain
+the previous lookup behavior until they age out.
+
+Anonymous guests must first call `POST /api/bookings/verification/request` with
+their email address. The single-use token delivered by email is submitted as
+`emailVerificationToken` on `POST /api/bookings`; it expires after 15 minutes
+and is consumed in the same transaction that reserves the room. Authenticated
+Client accounts with a linked guest profile do not need this extra step.
 
 ## Manual bank-transfer confirmation
 

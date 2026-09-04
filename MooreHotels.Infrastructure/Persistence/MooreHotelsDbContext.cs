@@ -16,11 +16,17 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<RoomImage> RoomImages => Set<RoomImage>();
     public DbSet<Guest> Guests => Set<Guest>();
     public DbSet<Booking> Bookings => Set<Booking>();
+    public DbSet<BookingEmailVerification> BookingEmailVerifications => Set<BookingEmailVerification>();
     public DbSet<BookingCodeAllocation> BookingCodeAllocations => Set<BookingCodeAllocation>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
     public DbSet<VisitRecord> VisitRecords => Set<VisitRecord>();
     public DbSet<Notification> Notifications => Set<Notification>();
     public DbSet<MonnifyTransaction> MonnifyTransactions => Set<MonnifyTransaction>();
+    public DbSet<EmailOutboxMessage> EmailOutboxMessages => Set<EmailOutboxMessage>();
+    public DbSet<AddOnService> AddOnServices => Set<AddOnService>();
+    public DbSet<BookingAddOn> BookingAddOns => Set<BookingAddOn>();
+    public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
+    public DbSet<NotificationReceipt> NotificationReceipts => Set<NotificationReceipt>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -91,6 +97,22 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.HasIndex(image => image.PublicId).IsUnique();
         });
 
+        builder.Entity<MediaAsset>(entity =>
+        {
+            entity.ToTable("media_assets");
+            entity.HasKey(asset => asset.Id);
+            entity.Property(asset => asset.Url).HasMaxLength(2048).IsRequired();
+            entity.Property(asset => asset.PublicId).HasMaxLength(512).IsRequired();
+            entity.Property(asset => asset.Folder).HasMaxLength(80).IsRequired();
+            entity.HasIndex(asset => asset.PublicId).IsUnique();
+            entity.HasIndex(asset => new { asset.Folder, asset.CreatedAtUtc });
+            entity.HasIndex(asset => asset.UploadedByUserId);
+            entity.HasOne(asset => asset.UploadedByUser)
+                .WithMany()
+                .HasForeignKey(asset => asset.UploadedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
         builder.Entity<Guest>(entity =>
         {
             entity.ToTable("guests");
@@ -118,6 +140,9 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.HasIndex(booking => new { booking.RoomId, booking.CheckIn, booking.CheckOut, booking.Status });
             entity.HasIndex(booking => new { booking.GuestId, booking.CreatedAt });
             entity.HasIndex(booking => new { booking.PaymentStatus, booking.CreatedAt });
+            entity.HasIndex(booking => new { booking.CreatedAt, booking.Id });
+            entity.HasIndex(booking => new { booking.CancelledAtUtc, booking.Id })
+                .HasFilter("\"Status\" = 'Cancelled' AND \"CancelledAtUtc\" IS NOT NULL");
             entity.Property(booking => booking.BookingCode).HasMaxLength(30).IsRequired();
             entity.Property(booking => booking.Status).HasConversion<string>().HasMaxLength(40);
             entity.Property(booking => booking.PaymentStatus).HasConversion<string>().HasMaxLength(40);
@@ -130,6 +155,8 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(booking => booking.Notes).HasMaxLength(1000);
             entity.Property(booking => booking.Amount).HasPrecision(18, 2);
             entity.Property(booking => booking.StatusHistoryJson).HasColumnType("jsonb");
+            entity.Property(booking => booking.GuestAccessTokenHash).HasMaxLength(44);
+            entity.Property(booking => booking.ProtectedGuestAccessToken).HasColumnType("text");
             entity.HasOne(booking => booking.Room)
                 .WithMany()
                 .HasForeignKey(booking => booking.RoomId)
@@ -157,6 +184,27 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.HasIndex(allocation => allocation.AllocatedAtUtc);
         });
 
+        builder.Entity<BookingEmailVerification>(entity =>
+        {
+            entity.ToTable("booking_email_verifications", table => table.HasCheckConstraint(
+                "CK_booking_email_verifications_valid_window",
+                "\"ExpiresAtUtc\" > \"CreatedAtUtc\""));
+            entity.HasKey(verification => verification.Id);
+            entity.Property(verification => verification.Email).HasMaxLength(254).IsRequired();
+            entity.Property(verification => verification.TokenHash).HasMaxLength(44).IsRequired();
+            entity.HasIndex(verification => verification.TokenHash).IsUnique();
+            entity.HasIndex(verification => new
+            {
+                verification.Email,
+                verification.CreatedAtUtc
+            });
+            entity.HasIndex(verification => new
+            {
+                verification.ExpiresAtUtc,
+                verification.Id
+            }).HasFilter("\"ConsumedAtUtc\" IS NULL");
+        });
+
         builder.Entity<AuditLog>(entity =>
         {
             entity.ToTable("audit_logs");
@@ -179,6 +227,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(record => record.Action).HasMaxLength(40).IsRequired();
             entity.Property(record => record.AuthorizedBy).HasMaxLength(160).IsRequired();
             entity.HasIndex(record => record.Timestamp);
+            entity.HasIndex(record => new { record.Timestamp, record.Id });
             entity.HasIndex(record => new { record.BookingCode, record.Timestamp });
         });
 
@@ -189,6 +238,21 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(notification => notification.Message).HasMaxLength(2000).IsRequired();
             entity.Property(notification => notification.BookingCode).HasMaxLength(30);
             entity.HasIndex(notification => new { notification.UserId, notification.IsRead, notification.CreatedAt });
+        });
+
+        builder.Entity<NotificationReceipt>(entity =>
+        {
+            entity.ToTable("notification_receipts");
+            entity.HasKey(receipt => new { receipt.NotificationId, receipt.UserId });
+            entity.HasIndex(receipt => new { receipt.UserId, receipt.ReadAtUtc });
+            entity.HasOne(receipt => receipt.Notification)
+                .WithMany()
+                .HasForeignKey(receipt => receipt.NotificationId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(receipt => receipt.User)
+                .WithMany()
+                .HasForeignKey(receipt => receipt.UserId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         builder.Entity<MonnifyTransaction>(entity =>
@@ -214,6 +278,66 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .WithMany()
                 .HasForeignKey(transaction => transaction.BookingId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        builder.Entity<EmailOutboxMessage>(entity =>
+        {
+            entity.ToTable("email_outbox");
+            entity.HasKey(message => message.Id);
+            entity.Property(message => message.Template).HasMaxLength(50).IsRequired();
+            entity.Property(message => message.Recipient).HasMaxLength(254).IsRequired();
+            entity.Property(message => message.ProtectedPayload).HasColumnType("text").IsRequired();
+            entity.Property(message => message.LastErrorCode).HasMaxLength(80);
+            entity.HasIndex(message => new
+            {
+                message.NextAttemptAtUtc,
+                message.LockedUntilUtc,
+                message.AttemptCount
+            });
+            entity.HasIndex(message => message.CreatedAtUtc);
+        });
+
+        builder.Entity<AddOnService>(entity =>
+        {
+            entity.ToTable("addon_services", table => table.HasCheckConstraint(
+                "CK_addon_services_price_positive",
+                "\"Price\" > 0"));
+            entity.HasKey(a => a.Id);
+            entity.Property(a => a.Name).HasMaxLength(120).IsRequired();
+            entity.Property(a => a.Description).HasMaxLength(500);
+            entity.Property(a => a.Category).HasConversion<string>().HasMaxLength(40);
+            entity.Property(a => a.Price).HasPrecision(18, 2);
+            entity.HasIndex(a => new { a.IsActive, a.Category });
+        });
+
+        builder.Entity<BookingAddOn>(entity =>
+        {
+            entity.ToTable("booking_addons", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_booking_addons_quantity_positive",
+                    "\"Quantity\" > 0");
+                table.HasCheckConstraint(
+                    "CK_booking_addons_unit_price_positive",
+                    "\"UnitPrice\" > 0");
+                table.HasCheckConstraint(
+                    "CK_booking_addons_total_matches_quantity",
+                    "\"TotalPrice\" = \"UnitPrice\" * \"Quantity\"");
+            });
+            entity.HasKey(b => b.Id);
+            entity.Property(b => b.UnitPrice).HasPrecision(18, 2);
+            entity.Property(b => b.TotalPrice).HasPrecision(18, 2);
+            entity.Property(b => b.Notes).HasMaxLength(300);
+            entity.HasIndex(b => new { b.BookingId, b.AddedAtUtc });
+            entity.HasIndex(b => b.AddOnServiceId);
+            entity.HasOne(b => b.Booking)
+                .WithMany(booking => booking.AddOns)
+                .HasForeignKey(b => b.BookingId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(b => b.AddOnService)
+                .WithMany()
+                .HasForeignKey(b => b.AddOnServiceId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

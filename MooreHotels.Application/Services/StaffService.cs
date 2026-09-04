@@ -1,7 +1,7 @@
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging; // Added for diagnostic tracking
+using MooreHotels.Application.Common;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces;
@@ -17,8 +17,8 @@ public class StaffService : IStaffService
 {
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly IAuditService _auditService;
-    private readonly IEmailService _emailService;
-    private readonly ILogger<StaffService> _logger;
+    private readonly IEmailOutbox _emailOutbox;
+    private readonly IApplicationTransaction _transaction;
     private readonly IConfiguration _configuration;
 
     private static readonly string[] AllowedDepartments = { "Housekeeping", "Reception", "FrontDesk", "Concierge" };
@@ -26,14 +26,14 @@ public class StaffService : IStaffService
     public StaffService(
         UserManager<ApplicationUser> userManager,
         IAuditService auditService,
-        IEmailService emailService,
-        ILogger<StaffService> logger,
+        IEmailOutbox emailOutbox,
+        IApplicationTransaction transaction,
         IConfiguration configuration)
     {
         _userManager = userManager;
         _auditService = auditService;
-        _emailService = emailService;
-        _logger = logger;
+        _emailOutbox = emailOutbox;
+        _transaction = transaction;
         _configuration = configuration;
     }
 
@@ -131,53 +131,46 @@ public class StaffService : IStaffService
         // credential. A random bootstrap password is immediately superseded by
         // the single-use setup link sent to the staff member.
         var bootstrapPassword = $"Aa1!{WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(24))}";
-        var result = await _userManager.CreateAsync(user, bootstrapPassword);
-        if (!result.Succeeded)
+        await _transaction.ExecuteAsync(async () =>
         {
-            var errors = string.Join(", ", result.Errors.Select(e => e.Description));
-            throw new BadRequestException(errors);
-        }
+            var result = await _userManager.CreateAsync(user, bootstrapPassword);
+            if (!result.Succeeded)
+            {
+                var errors = string.Join(", ", result.Errors.Select(e => e.Description));
+                throw new BadRequestException(errors);
+            }
 
-        var roleResult = await _userManager.AddToRoleAsync(user, request.AssignedRole.ToString());
-        if (!roleResult.Succeeded)
-        {
-            await _userManager.DeleteAsync(user);
-            throw new InvalidOperationException("The staff role could not be assigned.");
-        }
+            var roleResult = await _userManager.AddToRoleAsync(user, request.AssignedRole.ToString());
+            if (!roleResult.Succeeded)
+            {
+                throw new InvalidOperationException("The staff role could not be assigned.");
+            }
 
-        try
-        {
             var token = await _userManager.GeneratePasswordResetTokenAsync(user);
             var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
             var publicAppUrl = _configuration["PublicAppUrl"]
                 ?? throw new InvalidOperationException("PublicAppUrl is not configured.");
-            var setupLink = QueryHelpers.AddQueryString(
-                $"{publicAppUrl.TrimEnd('/')}/reset-password",
+            var setupLink = FrontendLinkBuilder.WithFragment(
+                publicAppUrl,
+                "reset-password",
                 new Dictionary<string, string?>
                 {
                     ["email"] = user.Email,
                     ["token"] = encodedToken
                 });
-            await _emailService.SendStaffWelcomeEmailAsync(user.Email!, user.Name, setupLink, user.Role.ToString());
-        }
-        catch (Exception ex)
-        {
-            var cleanup = await _userManager.DeleteAsync(user);
-            _logger.LogError(
-                ex,
-                "Staff setup email failed for user {UserId}; compensation succeeded={CleanupSucceeded}.",
-                user.Id,
-                cleanup.Succeeded);
-            throw new InvalidOperationException("The setup email could not be delivered; no staff account was provisioned.");
-        }
+            await _emailOutbox.EnqueueAsync(
+                TransactionalEmailTemplates.StaffWelcome,
+                user.Email!,
+                new StaffWelcomeEmail(user.Name, setupLink, user.Role.ToString()));
 
-        await _auditService.LogActionAsync(
-            actingUserId, "USER_PROVISIONED", "User", user.Id.ToString(), null, new
-            {
-                Role = user.Role.ToString(),
-                Department = user.Department,
-                Timestamp = user.CreatedAt
-            });
+            await _auditService.LogActionAsync(
+                actingUserId, "USER_PROVISIONED", "User", user.Id.ToString(), null, new
+                {
+                    Role = user.Role.ToString(),
+                    Department = user.Department,
+                    Timestamp = user.CreatedAt
+                });
+        });
     }
 
     public async Task ChangeUserStatusAsync(
@@ -209,40 +202,43 @@ public class StaffService : IStaffService
 
         if (oldStatus != newStatus)
         {
-            user.Status = newStatus;
-
-            if (newStatus == ProfileStatus.Suspended)
-                await _userManager.UpdateSecurityStampAsync(user);
-
-            var updateResult = await _userManager.UpdateAsync(user);
-            if (!updateResult.Succeeded)
-                throw new Exception("Failed to update account status.");
-        }
-
-        if (!string.IsNullOrWhiteSpace(user.Email))
-        {
-            try
+            await _transaction.ExecuteWithUserLockAsync(userId, async () =>
             {
-                if (newStatus == ProfileStatus.Active)
-                    await _emailService.SendAccountActivatedAsync(user.Email!, user.Name);
-                else if (newStatus == ProfileStatus.Suspended)
-                    await _emailService.SendAccountSuspendedAsync(user.Email!, user.Name);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to send account status email.");
-            }
-        }
+                user.Status = newStatus;
+                IdentityResult updateResult;
+                if (newStatus == ProfileStatus.Suspended)
+                {
+                    updateResult = await _userManager.UpdateSecurityStampAsync(user);
+                }
+                else
+                {
+                    updateResult = await _userManager.UpdateAsync(user);
+                }
+                if (!updateResult.Succeeded)
+                {
+                    throw new InvalidOperationException("Failed to update account status.");
+                }
 
-        // Audit log
-        await _auditService.LogActionAsync(
-            actingUserId,
-            "ACCOUNT_STATUS_CHANGED",
-            "User",
-            user.Id.ToString(),
-            new { OldStatus = oldStatus.ToString() },
-            new { NewStatus = newStatus.ToString() }
-        );
+                if (!string.IsNullOrWhiteSpace(user.Email))
+                {
+                    var template = newStatus == ProfileStatus.Active
+                        ? TransactionalEmailTemplates.AccountActivated
+                        : TransactionalEmailTemplates.AccountSuspended;
+                    await _emailOutbox.EnqueueAsync(
+                        template,
+                        user.Email,
+                        new AccountStatusEmail(user.Name));
+                }
+
+                await _auditService.LogActionAsync(
+                    actingUserId,
+                    "ACCOUNT_STATUS_CHANGED",
+                    "User",
+                    user.Id.ToString(),
+                    new { OldStatus = oldStatus.ToString() },
+                    new { NewStatus = newStatus.ToString() });
+            });
+        }
     }
 
     public async Task UpdateUserAsync(Guid userId, UpdateStaffRequest request, Guid actingUserId)
@@ -271,34 +267,50 @@ public class StaffService : IStaffService
 
         var oldRole = user.Role;
         var emailChanged = !string.Equals(user.Email, normalizedEmail, StringComparison.OrdinalIgnoreCase);
-        user.Name = request.FullName.Trim();
-        user.Email = normalizedEmail;
-        user.UserName = normalizedEmail;
-        user.PhoneNumber = request.Phone?.Trim();
-        user.Role = request.AssignedRole;
-        user.Department = request.Department?.Trim();
-
-        var update = await _userManager.UpdateAsync(user);
-        if (!update.Succeeded)
-            throw new BadRequestException(string.Join(", ", update.Errors.Select(error => error.Description)));
-
-        var currentRoles = await _userManager.GetRolesAsync(user);
-        if (currentRoles.Count > 0)
+        await _transaction.ExecuteWithUserLockAsync(userId, async () =>
         {
-            var removeRoles = await _userManager.RemoveFromRolesAsync(user, currentRoles);
-            if (!removeRoles.Succeeded) throw new Exception("Staff role synchronization failed.");
-        }
-        var addRole = await _userManager.AddToRoleAsync(user, request.AssignedRole.ToString());
-        if (!addRole.Succeeded) throw new Exception("Staff role synchronization failed.");
+            user.Name = request.FullName.Trim();
+            user.Email = normalizedEmail;
+            user.UserName = normalizedEmail;
+            user.PhoneNumber = request.Phone?.Trim();
+            user.Role = request.AssignedRole;
+            user.Department = request.Department?.Trim();
 
-        await _userManager.UpdateSecurityStampAsync(user);
-        await _auditService.LogActionAsync(
-            actingUserId,
-            "STAFF_UPDATED",
-            "User",
-            user.Id.ToString(),
-            new { Role = oldRole.ToString() },
-            new { EmailChanged = emailChanged, Role = user.Role.ToString(), user.Department });
+            var update = await _userManager.UpdateAsync(user);
+            if (!update.Succeeded)
+            {
+                throw new BadRequestException(
+                    string.Join(", ", update.Errors.Select(error => error.Description)));
+            }
+
+            var currentRoles = await _userManager.GetRolesAsync(user);
+            if (currentRoles.Count > 0)
+            {
+                var removeRoles = await _userManager.RemoveFromRolesAsync(user, currentRoles);
+                if (!removeRoles.Succeeded)
+                {
+                    throw new InvalidOperationException("Staff role synchronization failed.");
+                }
+            }
+            var addRole = await _userManager.AddToRoleAsync(user, request.AssignedRole.ToString());
+            if (!addRole.Succeeded)
+            {
+                throw new InvalidOperationException("Staff role synchronization failed.");
+            }
+
+            var securityStamp = await _userManager.UpdateSecurityStampAsync(user);
+            if (!securityStamp.Succeeded)
+            {
+                throw new InvalidOperationException("Staff sessions could not be invalidated.");
+            }
+            await _auditService.LogActionAsync(
+                actingUserId,
+                "STAFF_UPDATED",
+                "User",
+                user.Id.ToString(),
+                new { Role = oldRole.ToString() },
+                new { EmailChanged = emailChanged, Role = user.Role.ToString(), user.Department });
+        });
     }
 
     public async Task DeleteUserAsync(Guid userId, Guid actingUserId)
@@ -306,13 +318,19 @@ public class StaffService : IStaffService
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (user == null) return;
         if (user.Role == UserRole.Admin) throw new BadRequestException("Administrator accounts are protected.");
-        var result = await _userManager.DeleteAsync(user);
-        if (!result.Succeeded) throw new InvalidOperationException("The staff account could not be deleted.");
-        await _auditService.LogActionAsync(
-            actingUserId,
-            "USER_DELETED",
-            "User",
-            userId.ToString(),
-            new { Role = user.Role.ToString() });
+        await _transaction.ExecuteWithUserLockAsync(userId, async () =>
+        {
+            var result = await _userManager.DeleteAsync(user);
+            if (!result.Succeeded)
+            {
+                throw new InvalidOperationException("The staff account could not be deleted.");
+            }
+            await _auditService.LogActionAsync(
+                actingUserId,
+                "USER_DELETED",
+                "User",
+                userId.ToString(),
+                new { Role = user.Role.ToString() });
+        });
     }
 }

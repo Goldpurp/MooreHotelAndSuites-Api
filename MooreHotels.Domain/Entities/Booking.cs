@@ -24,9 +24,13 @@ public class Booking
     public string? RefundReference { get; set; }
     public string? Notes { get; set; }
     public string? StatusHistoryJson { get; set; }
+    public string? GuestAccessTokenHash { get; set; }
+    public string? ProtectedGuestAccessToken { get; set; }
+    public DateTime? CancelledAtUtc { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public Room? Room { get; set; }
     public Guest? Guest { get; set; }
     public ApplicationUser? PaymentConfirmedByUser { get; set; }
+    public ICollection<BookingAddOn> AddOns { get; set; } = new List<BookingAddOn>();
 }

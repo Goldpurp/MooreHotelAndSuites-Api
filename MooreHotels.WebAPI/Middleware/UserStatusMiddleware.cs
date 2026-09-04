@@ -14,7 +14,10 @@ public class UserStatusMiddleware
         _next = next;
     }
 
-    public async Task InvokeAsync(HttpContext context, UserManager<ApplicationUser> userManager)
+    public async Task InvokeAsync(
+        HttpContext context,
+        UserManager<ApplicationUser> userManager,
+        IConfiguration configuration)
     {
         if (context.User.Identity?.IsAuthenticated == true)
         {
@@ -38,10 +41,27 @@ public class UserStatusMiddleware
                         : "This session is no longer valid. Please sign in again.";
                     context.Response.StatusCode = StatusCodes.Status403Forbidden;
                     context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new 
-                    { 
+                    await context.Response.WriteAsJsonAsync(new
+                    {
                         Message = message,
                         ErrorCode = errorCode
+                    });
+                    return;
+                }
+
+                var isStaff = user.Role is UserRole.Admin or UserRole.Manager or UserRole.Staff;
+                var mfaSetupRoute = context.Request.Path.StartsWithSegments("/api/mfa");
+                if (configuration.GetValue<bool>("Security:RequireStaffMfa") &&
+                    isStaff &&
+                    !user.TwoFactorEnabled &&
+                    !mfaSetupRoute)
+                {
+                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                    context.Response.ContentType = "application/json";
+                    await context.Response.WriteAsJsonAsync(new
+                    {
+                        Message = "Two-factor authentication setup is required.",
+                        ErrorCode = "MFA_SETUP_REQUIRED"
                     });
                     return;
                 }

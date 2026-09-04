@@ -1,3 +1,4 @@
+using MooreHotels.Application.DTOs;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 
@@ -19,5 +20,6 @@ public interface IRoomRepository
     Task UpdateAsync(Room room);
     Task DeleteAsync(Room room);
     Task<Room?> GetByIdWithImagesAsync(Guid id);
-
+    Task<AssetStatusDistribution> GetAssetStatusDistributionAsync(CancellationToken cancellationToken = default);
+    Task<(int TotalRooms, int OccupiedRooms)> GetRoomCountsAsync(CancellationToken cancellationToken = default);
 }

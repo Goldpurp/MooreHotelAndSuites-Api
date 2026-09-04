@@ -4,11 +4,17 @@ using MooreHotels.WebAPI.Configuration;
 using Microsoft.EntityFrameworkCore;
 using System.Net;
 using System.Text.Json;
+using Npgsql;
 
 namespace MooreHotels.WebAPI.Middleware;
 
 public class ExceptionHandlingMiddleware
 {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     private readonly RequestDelegate _next;
     private readonly ILogger<ExceptionHandlingMiddleware> _logger;
     private readonly IHostEnvironment _env;
@@ -39,7 +45,7 @@ public class ExceptionHandlingMiddleware
     private async Task HandleExceptionAsync(HttpContext context, Exception exception)
     {
         context.Response.ContentType = "application/problem+json";
-        
+
         var (statusCode, title) = exception switch
         {
             BadRequestException or ArgumentException => (HttpStatusCode.BadRequest, "Bad Request"),
@@ -49,6 +55,7 @@ public class ExceptionHandlingMiddleware
             ServiceUnavailableException => (HttpStatusCode.ServiceUnavailable, "Service Unavailable"),
             DbUpdateConcurrencyException => (HttpStatusCode.Conflict, "Concurrent Update Conflict"),
             DbUpdateException => (HttpStatusCode.Conflict, "Data Conflict"),
+            PostgresException => (HttpStatusCode.Conflict, "Data Conflict"),
             _ => (HttpStatusCode.InternalServerError, "Internal Server Error")
         };
 
@@ -67,18 +74,17 @@ public class ExceptionHandlingMiddleware
             {
                 HttpStatusCode.InternalServerError when !_env.IsLocal() =>
                     "An unexpected error occurred. Please contact system support.",
-                HttpStatusCode.Conflict when exception is DbUpdateException =>
+                HttpStatusCode.Conflict when exception is DbUpdateException or PostgresException =>
                     "The requested change conflicts with existing data. Refresh and try again.",
                 HttpStatusCode.ServiceUnavailable =>
-                    "The payment provider is temporarily unavailable. Please try again shortly.",
+                    "A required external service is temporarily unavailable. Please try again shortly.",
                 _ => exception.Message
             },
             Instance = context.Request.Path,
             Extensions = { ["traceId"] = context.TraceIdentifier }
         };
 
-        var options = new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
-        var json = JsonSerializer.Serialize(problem, options);
+        var json = JsonSerializer.Serialize(problem, JsonOptions);
 
         await context.Response.WriteAsync(json);
     }

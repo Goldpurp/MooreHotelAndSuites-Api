@@ -11,7 +11,7 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16-alpine
@@ -29,25 +29,52 @@ jobs:
     env:
       MOORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=postgres;Username=postgres;Password=postgres;SSL Mode=Disable
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
         with:
-          dotnet-version: 8.0.x
+          dotnet-version: 8.0.424
           cache: true
-          cache-dependency-path: '**/*.csproj'
+          cache-dependency-path: '**/packages.lock.json'
       - name: Restore
-        run: dotnet restore MooreHotels.sln
+        run: dotnet restore MooreHotels.sln --locked-mode
+      - name: Verify formatting
+        run: dotnet format MooreHotels.sln --no-restore --verify-no-changes
       - name: Build Release
-        run: dotnet build MooreHotels.sln --configuration Release --no-restore
+        run: dotnet build MooreHotels.sln --configuration Release --no-restore -warnaserror
+      - name: Run unit tests
+        run: dotnet test MooreHotels.UnitTests/MooreHotels.UnitTests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
       - name: Run integration tests
         run: dotnet test MooreHotels.IntegrationTests/MooreHotels.IntegrationTests.csproj --configuration Release --no-build --logger "console;verbosity=normal"
+      - name: Run recommended .NET analyzers
+        run: dotnet build MooreHotels.WebAPI/MooreHotels.WebAPI.csproj -t:Rebuild --configuration Release --no-restore -p:AnalysisLevel=latest-recommended -p:EnableNETAnalyzers=true -warnaserror
       - name: Scan NuGet dependencies
         run: ./scripts/check-nuget-vulnerabilities.sh
       - name: Restore pinned EF tooling
         run: dotnet tool restore
       - name: Validate EF model
-        run: dotnet tool run dotnet-ef migrations has-pending-model-changes --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build
+        run: dotnet tool run dotnet-ef migrations has-pending-model-changes --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
       - name: Build migration bundle
-        run: dotnet tool run dotnet-ef migrations bundle --project MooreHotels.Infrastructure --startup-project MooreHotels.WebAPI --configuration Release --no-build --output /tmp/moore-hotels-migrate
+        run: dotnet tool run dotnet-ef migrations bundle --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build --output /tmp/moore-hotels-migrate
       - name: Publish API
         run: dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --configuration Release --no-build --output /tmp/moore-hotels-api
+      - name: Build production container
+        run: docker build --tag moore-hotels-api:ci .
+
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: csharp
+          build-mode: manual
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.424
+      - run: dotnet restore MooreHotels.sln --locked-mode
+      - run: dotnet build MooreHotels.sln --configuration Release --no-restore
+      - uses: github/codeql-action/analyze@v4

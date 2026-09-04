@@ -223,6 +223,20 @@ public sealed class DataAndImageUpdateTests
     }
 
     [Fact]
+    public async Task Client_cannot_create_unattached_assets_through_generic_upload()
+    {
+        using var request = CreateAuthorizedFormRequest(
+            HttpMethod.Post,
+            "/api/images/upload?folder=avatars",
+            _fixture.ClientUser);
+        AddPng(request.Content!, "file", "unattached.png");
+
+        using var response = await _fixture.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Profile_update_keeps_identity_guest_and_audit_in_sync()
     {
         var guest = await _fixture.LinkGuestProfileAsync(_fixture.ClientUser);
@@ -307,7 +321,9 @@ public sealed class DataAndImageUpdateTests
                     department = "Reception"
                 });
             var response = await _fixture.Client.SendAsync(request);
-            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+            Assert.True(
+                response.StatusCode == HttpStatusCode.Conflict,
+                await response.Content.ReadAsStringAsync());
 
             var after = await _fixture.WithDbAsync(async db => new
             {
@@ -359,7 +375,7 @@ public sealed class DataAndImageUpdateTests
 
         var response = await _fixture.Client.SendAsync(request);
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var state = await _fixture.WithDbAsync(async db =>
         {
             var user = await db.Users.AsNoTracking().SingleAsync(item => item.Email == email);

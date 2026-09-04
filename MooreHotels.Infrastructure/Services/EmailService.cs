@@ -9,6 +9,8 @@ using MooreHotels.Application.Exceptions;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Mail;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace MooreHotels.Infrastructure.Services;
 
@@ -22,6 +24,7 @@ public sealed class EmailService : IEmailService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _publicAppUrl;
     private readonly string _dashboardUrl;
+    private readonly IEmailDeliveryContext _deliveryContext;
 
     private const string LogoUrl =
         "https://res.cloudinary.com/dxryndnhl/image/upload/v1777386016/slazzer-preview-ofc3f_uvulyz.png";
@@ -30,11 +33,13 @@ public sealed class EmailService : IEmailService
         IOptions<EmailSettings> settings,
         ILogger<EmailService> logger,
         IHttpClientFactory httpClientFactory,
+        IEmailDeliveryContext deliveryContext,
         IConfiguration configuration)
     {
         _settings = settings.Value;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _deliveryContext = deliveryContext;
         _publicAppUrl = (configuration["PublicAppUrl"] ?? "https://moorehotelandsuites.com").TrimEnd('/');
         _dashboardUrl = (configuration["DashboardUrl"] ?? "https://admin.moorehotelandsuites.com").TrimEnd('/');
     }
@@ -55,7 +60,13 @@ public sealed class EmailService : IEmailService
                 "The transactional email request is invalid.");
         }
 
-        var idempotencyKey = Guid.NewGuid();
+        // The same logical email always uses the same provider key. This makes
+        // outbox retries safe even if the process stops after Brevo accepted a
+        // message but before the outbox row was deleted.
+        var fingerprint = SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"{recipient.Address}\n{subject}\n{body}"));
+        var idempotencyKey = _deliveryContext.IdempotencyKey ??
+                             new Guid(fingerprint.AsSpan(0, 16));
         var payload = new
         {
             sender = new
@@ -94,6 +105,16 @@ public sealed class EmailService : IEmailService
                     await ValidateAcceptedResponseAsync(response);
                     _logger.LogInformation(
                         "Brevo accepted transactional email. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
+                        recipient.Host,
+                        attempt);
+                    return;
+                }
+
+                if (response.StatusCode == HttpStatusCode.BadRequest &&
+                    await IsDuplicateAcceptedAsync(response))
+                {
+                    _logger.LogInformation(
+                        "Brevo reported an already accepted idempotency key. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
                         recipient.Host,
                         attempt);
                     return;
@@ -183,6 +204,36 @@ public sealed class EmailService : IEmailService
         catch (JsonException exception)
         {
             throw DeliveryUnavailable(exception);
+        }
+    }
+
+    private static async Task<bool> IsDuplicateAcceptedAsync(HttpResponseMessage response)
+    {
+        if (response.Content.Headers.ContentLength > MaximumProviderResponseBytes)
+        {
+            return false;
+        }
+
+        try
+        {
+            var bytes = await response.Content.ReadAsByteArrayAsync();
+            if (bytes.Length > MaximumProviderResponseBytes) return false;
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 8
+            });
+            return document.RootElement.TryGetProperty("code", out var code) &&
+                   code.ValueKind == JsonValueKind.String &&
+                   string.Equals(
+                       code.GetString(),
+                       "duplicate_parameter",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 
@@ -340,8 +391,8 @@ public sealed class EmailService : IEmailService
 </body>
 </html>";
     }
-    
-    private string GetBookingSummaryHtml(
+
+    private static string GetBookingSummaryHtml(
         string bookingCode,
         string roomName,
         string roomCategory,
@@ -438,14 +489,21 @@ public sealed class EmailService : IEmailService
 
 
     // Guest emails
-    public async Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount)
+    public async Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null)
     {
         guestName = E(guestName);
+        var manageLink = string.IsNullOrWhiteSpace(manageBookingUrl)
+            ? string.Empty
+            : $@"<div style='margin:24px 0; text-align:center;'>
+                 <a class='mobile-button' href='{E(manageBookingUrl)}' style='display:inline-block; background-color:#C94B11; color:#FFFFFF; padding:14px 30px; border-radius:8px; text-decoration:none; font-weight:700;'>View or manage booking</a>
+                </div>";
         var content = $@"
         <p style='margin-top:0;'>Dear <strong>{guestName}</strong>,</p>
         <p>Your booking request at <strong>Moore Hotels & Suites</strong> has been received. Keep your reference below and complete payment where required; the hotel will confirm the stay after payment verification.</p>
         
         {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount)}
+
+        {manageLink}
 
         <div style='margin-top:25px; padding:17px 18px; background-color:#FAF5E9; border:1px solid #E7D5AE; border-radius:6px; font-size:14px; color:#5C4826;'>
             <strong>Important note:</strong> Please present a valid government-issued ID upon check-in. Our check-in time starts from 2:00 PM.
@@ -460,6 +518,52 @@ public sealed class EmailService : IEmailService
                 content,
                 "#B7792A",
                 $"We have received reservation {bookingCode}."));
+    }
+
+    public async Task SendBookingAccessLinkAsync(
+        string email,
+        string guestName,
+        string bookingCode,
+        string manageBookingUrl)
+    {
+        var content = $@"
+        <p style='margin-top:0;'>Dear <strong>{E(guestName)}</strong>,</p>
+        <p>Use the secure button below to view or manage reservation <strong>{E(bookingCode)}</strong>. This link replaces any older booking-management link.</p>
+        <div style='margin:24px 0; text-align:center;'>
+          <a class='mobile-button' href='{E(manageBookingUrl)}' style='display:inline-block; background-color:#C94B11; color:#FFFFFF; padding:14px 30px; border-radius:8px; text-decoration:none; font-weight:700;'>Open secure booking</a>
+        </div>
+        <p style='font-size:14px; color:#64748B;'>If you did not request this message, no action is required.</p>";
+
+        await SendEmailAsync(
+            email,
+            $"Secure booking access: {bookingCode}",
+            BuildTemplate(
+                "Secure Booking Access",
+                content,
+                "#B7792A",
+                $"Secure access to reservation {bookingCode}."));
+    }
+
+    public async Task SendBookingEmailVerificationAsync(
+        string email,
+        string verificationLink)
+    {
+        var safeLink = E(verificationLink);
+        var content = $@"
+        <p style='margin-top:0;'>Confirm that this email address belongs to you before reserving a room.</p>
+        <div style='margin:24px 0; text-align:center;'>
+          <a class='mobile-button' href='{safeLink}' style='display:inline-block; background-color:#C94B11; color:#FFFFFF; padding:14px 30px; border-radius:8px; text-decoration:none; font-weight:700;'>Continue my booking</a>
+        </div>
+        <p style='font-size:13px; color:#777067;'>This single-use link expires in 15 minutes. If you did not request it, no room has been reserved and no action is required.</p>";
+
+        await SendEmailAsync(
+            email,
+            "Verify your email to reserve a room",
+            BuildTemplate(
+                "Confirm Your Booking Email",
+                content,
+                "#B7792A",
+                "Confirm your email before reserving a room."));
     }
 
     public async Task SendCancellationNoticeAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, DateTime checkIn, string? reason = null)

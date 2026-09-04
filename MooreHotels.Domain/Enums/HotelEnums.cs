@@ -43,12 +43,15 @@ public enum PaymentStatus
     Unpaid,
     AwaitingVerification,
     RefundPending,
-    Refunded 
+    Refunded
 }
 
 public enum PaymentMethod
 {
     Monnify,
+    // Kept only so historical rows containing this value remain readable.
+    // Runtime validation rejects new Paystack bookings.
+    Paystack,
     DirectTransfer
 }
 
@@ -64,4 +67,14 @@ public enum ProfileStatus
 {
     Active,
     Suspended
+}
+
+public enum AddOnCategory
+{
+    Dining,
+    Wellness,
+    Transportation,
+    Laundry,
+    ExecutiveServices,
+    Other
 }

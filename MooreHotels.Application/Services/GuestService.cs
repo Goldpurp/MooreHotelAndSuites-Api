@@ -16,6 +16,13 @@ public class GuestService : IGuestService
         return guests.Select(MapToDto);
     }
 
+    public async Task<PagedResult<GuestDto>> GetPagedGuestsAsync(int pageNumber = 1, int pageSize = 20, string? search = null)
+    {
+        var paged = await _guestRepo.GetPagedGuestsAsync(pageNumber, pageSize, search);
+        var mapped = paged.Items.Select(MapToDto).ToList();
+        return PagedResult<GuestDto>.Create(mapped, paged.TotalCount, paged.PageNumber, paged.PageSize);
+    }
+
     public async Task<IEnumerable<GuestDto>> SearchGuestsAsync(string term)
     {
         var guests = await _guestRepo.SearchAsync(term);

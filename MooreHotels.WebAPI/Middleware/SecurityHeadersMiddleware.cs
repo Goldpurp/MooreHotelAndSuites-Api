@@ -19,6 +19,7 @@ public sealed class SecurityHeadersMiddleware
         headers["X-Content-Type-Options"] = "nosniff";
         headers["X-Frame-Options"] = "DENY";
         headers["Referrer-Policy"] = "no-referrer";
+        headers["X-Robots-Tag"] = "noindex, nofollow, noarchive";
         headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()";
         headers["Content-Security-Policy"] = _environment.IsDeployed()
             ? "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
@@ -34,7 +35,8 @@ public sealed class SecurityHeadersMiddleware
         }
 
         if (context.Request.Path.StartsWithSegments("/api/auth") ||
-            context.Request.Path.StartsWithSegments("/api/profile"))
+            context.Request.Path.StartsWithSegments("/api/profile") ||
+            context.Request.Path.StartsWithSegments("/api/bookings"))
         {
             headers["Cache-Control"] = "no-store";
             headers["Pragma"] = "no-cache";

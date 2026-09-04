@@ -3,7 +3,9 @@ namespace MooreHotels.Application.Interfaces;
 public interface IEmailService
 {
     // Guest Communications
-    Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount);
+    Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null);
+    Task SendBookingAccessLinkAsync(string email, string guestName, string bookingCode, string manageBookingUrl);
+    Task SendBookingEmailVerificationAsync(string email, string verificationLink);
     Task SendCancellationNoticeAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, DateTime checkIn, string? reason = null);
     Task SendCheckInReminderAsync(string email, string guestName, string bookingCode, string roomName, DateTime checkIn);
     Task SendEmailVerificationAsync(string email, string name, string link);

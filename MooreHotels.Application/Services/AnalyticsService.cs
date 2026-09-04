@@ -1,7 +1,6 @@
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
-using MooreHotels.Domain.Enums;
 
 namespace MooreHotels.Application.Services;
 
@@ -19,63 +18,75 @@ public class AnalyticsService : IAnalyticsService
     public async Task<DashboardOverviewDto> GetOverviewAsync()
     {
         var now = DateTime.UtcNow;
-        var bookings = (await _bookingRepo.GetAllAsync()).ToList();
-        var rooms = (await _roomRepo.GetAllAsync(onlyOnline: false)).ToList();
+        var current30DaysStart = now.AddDays(-30);
+        var previous30DaysStart = now.AddDays(-60);
+        var occupancyWindowEnd = now.Date.AddDays(1);
+        var currentOccupancyStart = occupancyWindowEnd.AddDays(-30);
+        var previousOccupancyStart = currentOccupancyStart.AddDays(-30);
 
-        var netRevenue = bookings
-            .Where(b => b.Status != BookingStatus.Cancelled && b.PaymentStatus == PaymentStatus.Paid)
-            .Sum(b => b.Amount);
+        // Both repositories share the request-scoped DbContext. EF Core does
+        // not permit parallel operations on one context, so each aggregation
+        // must complete before the next one begins.
+        var netRevenue = await _bookingRepo.GetNetRevenueAsync();
+        var priorPeriodRevenue = await _bookingRepo.GetNetRevenueAsync(
+            previous30DaysStart,
+            current30DaysStart);
+        var currentPeriodRevenue = await _bookingRepo.GetNetRevenueAsync(
+            current30DaysStart,
+            now);
+        var activeGuests = await _bookingRepo.GetActiveGuestsCountAsync();
+        var avgNightlyRate = await _bookingRepo.GetAverageNightlyRateAsync();
+        var revenueDynamics = await _bookingRepo.GetDailyRevenueDynamicsAsync(7);
+        var activeOperations = await _bookingRepo.GetActiveOperationsAsync(5);
+        var assetStatus = await _roomRepo.GetAssetStatusDistributionAsync();
+        var (totalRooms, _) = await _roomRepo.GetRoomCountsAsync();
+        var currentOccupiedNights = await _bookingRepo.GetOccupiedRoomNightsAsync(
+            currentOccupancyStart,
+            occupancyWindowEnd);
+        var previousOccupiedNights = await _bookingRepo.GetOccupiedRoomNightsAsync(
+            previousOccupancyStart,
+            currentOccupancyStart);
+        var availableRoomNights = totalRooms * 30d;
+        var occupancyRate = availableRoomNights > 0
+            ? currentOccupiedNights / availableRoomNights * 100d
+            : 0d;
+        var previousOccupancyRate = availableRoomNights > 0
+            ? previousOccupiedNights / availableRoomNights * 100d
+            : 0d;
 
-        var totalRooms = rooms.Count;
-        var occupiedRooms = rooms.Count(r => r.Status == RoomStatus.Occupied);
-        var occupancyRate = totalRooms > 0 ? (double)occupiedRooms / totalRooms * 100 : 0;
+        // Dynamic revenue growth rate calculation (period over period)
+        decimal revenueGrowthPercentage = 0m;
+        if (priorPeriodRevenue > 0)
+        {
+            revenueGrowthPercentage = Math.Round(((currentPeriodRevenue - priorPeriodRevenue) / priorPeriodRevenue) * 100m, 1);
+        }
+        else if (currentPeriodRevenue > 0)
+        {
+            revenueGrowthPercentage = 100m;
+        }
 
-        var activeGuests = bookings.Count(b => b.Status == BookingStatus.CheckedIn);
-        
-        var validBookings = bookings.Where(b => b.Status != BookingStatus.Cancelled).ToList();
-        var avgNightly = validBookings.Any() ? validBookings.Average(b => b.Amount) : 0;
+        var occupancyGrowthPercentage = previousOccupancyRate > 0
+            ? Math.Round(
+                (occupancyRate - previousOccupancyRate) /
+                previousOccupancyRate * 100d,
+                1)
+            : occupancyRate > 0
+                ? 100d
+                : 0d;
 
         var kpis = new DashboardKpis(
             NetRevenue: netRevenue,
-            OccupancyRate: occupancyRate,
+            OccupancyRate: Math.Round(occupancyRate, 1),
             ActiveGuests: activeGuests,
-            AvgNightlyRate: avgNightly,
-            RevenueGrowthPercentage: 12.5m,
-            OccupancyGrowthPercentage: 5.2
+            AvgNightlyRate: Math.Round(avgNightlyRate, 2),
+            RevenueGrowthPercentage: revenueGrowthPercentage,
+            OccupancyGrowthPercentage: occupancyGrowthPercentage
         );
 
-        var revenueDynamics = Enumerable.Range(0, 7)
-            .Select(i => now.AddDays(-i).Date)
-            .Reverse()
-            .Select(date => new RevenuePoint(
-                date.ToString("MMM dd"),
-                bookings.Where(b => b.CreatedAt.Date == date && b.Status != BookingStatus.Cancelled).Sum(b => b.Amount)
-            ))
-            .ToList();
-
-        var assetStatus = new AssetStatusDistribution(
-            Occupied: occupiedRooms,
-            Available: rooms.Count(r => r.Status == RoomStatus.Available),
-            Cleaning: rooms.Count(r => r.Status == RoomStatus.Cleaning),
-            Maintenance: rooms.Count(r => r.Status == RoomStatus.Maintenance)
-        );
-
-        var activeOps = bookings
-            .Where(b => b.Status == BookingStatus.CheckedIn)
-            .OrderByDescending(b => b.CreatedAt)
-            .Take(5)
-            .Select(b => new ActiveOperationDto(
-                $"{b.Guest?.FirstName} {b.Guest?.LastName}",
-                b.Guest?.AvatarUrl ?? "",
-                b.BookingCode,
-                b.Room?.Category.ToString() ?? "Unknown",
-                b.Room?.RoomNumber ?? "N/A",
-                "CHECKED IN",
-                b.Amount,
-                b.PaymentStatus.ToString()
-            ))
-            .ToList();
-
-        return new DashboardOverviewDto(kpis, revenueDynamics, assetStatus, activeOps);
+        return new DashboardOverviewDto(
+            kpis,
+            revenueDynamics.ToList(),
+            assetStatus,
+            activeOperations.ToList());
     }
 }

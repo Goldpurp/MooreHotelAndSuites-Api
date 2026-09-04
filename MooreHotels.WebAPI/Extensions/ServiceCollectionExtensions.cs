@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
+using FluentValidation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -26,6 +27,7 @@ using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.Infrastructure.Repositories;
 using MooreHotels.Infrastructure.Services;
 using MooreHotels.WebAPI.Configuration;
+using MooreHotels.WebAPI.Filters;
 using MooreHotels.WebAPI.Services;
 
 namespace MooreHotels.WebAPI.Extensions;
@@ -37,6 +39,7 @@ public static class ServiceCollectionExtensions
     public const string PublicWriteRateLimitPolicy = "PublicWrite";
     public const string LookupRateLimitPolicy = "Lookup";
     public const string WebhookRateLimitPolicy = "Webhook";
+    public const string ImageUploadRateLimitPolicy = "ImageUpload";
 
     public static IServiceCollection AddMooreHotelsApi(
         this IServiceCollection services,
@@ -59,8 +62,9 @@ public static class ServiceCollectionExtensions
         services.Configure<BankTransferSettings>(configuration.GetSection("BankTransferSettings"));
         services.Configure<ForwardedHeadersSettings>(configuration.GetSection("ForwardedHeaders"));
         services.Configure<EmailSettings>(configuration.GetSection("EmailSettings"));
-        services.Configure<global::CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
+        services.Configure<CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
         services.Configure<MonnifySettings>(configuration.GetSection("MonnifySettings"));
+        services.Configure<HotelSettings>(configuration.GetSection("HotelSettings"));
 
         if (forwardedHeaders.Enabled)
         {
@@ -93,7 +97,7 @@ public static class ServiceCollectionExtensions
                         var parts = network.Split('/', StringSplitOptions.TrimEntries);
                         options.KnownNetworks.Add(new IPNetwork(
                             System.Net.IPAddress.Parse(parts[0]),
-                            int.Parse(parts[1])));
+                            int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture)));
                     }
                 }
             });
@@ -102,6 +106,7 @@ public static class ServiceCollectionExtensions
         services.AddControllers(options =>
             {
                 options.SuppressAsyncSuffixInActionNames = false;
+                options.Filters.Add<FluentValidationActionFilter>();
             })
             .AddJsonOptions(options =>
             {
@@ -262,6 +267,21 @@ public static class ServiceCollectionExtensions
                 }, cancellationToken);
             };
 
+            if (!runtime.EnableRateLimiting)
+            {
+                options.AddPolicy(AuthRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(PublicWriteRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(LookupRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(WebhookRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(ImageUploadRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                return;
+            }
+
             options.AddPolicy(AuthRateLimitPolicy, context =>
                 RateLimitPartition.GetFixedWindowLimiter(
                     GetClientKey(context),
@@ -303,6 +323,17 @@ public static class ServiceCollectionExtensions
                     {
                         PermitLimit = 120,
                         Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
+
+            options.AddPolicy(ImageUploadRateLimitPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetAuthenticatedClientKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromHours(1),
                         QueueLimit = 0,
                         AutoReplenishment = true
                     }));
@@ -360,18 +391,29 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGuestRepository, GuestRepository>();
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();
         services.AddScoped<IVisitRecordRepository, VisitRecordRepository>();
+        services.AddScoped<IOperationLedgerRepository, OperationLedgerRepository>();
         services.AddScoped<IRoomService, RoomService>();
         services.AddScoped<IBookingService, BookingService>();
         services.AddScoped<IMonnifyPaymentProcessor, MonnifyPaymentProcessor>();
         services.AddScoped<IGuestService, GuestService>();
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<IVisitRecordService, VisitRecordService>();
+        services.AddScoped<IAddOnRepository, AddOnRepository>();
+        services.AddScoped<IAddOnService, MooreHotels.Application.Services.AddOnService>();
+        services.AddSingleton<IHotelTimeService, HotelTimeService>();
+        services.AddScoped<IPdfInvoiceGenerator, PdfInvoiceGenerator>();
         services.AddScoped<IAnalyticsService, MooreHotels.Application.Services.AnalyticsService>();
         services.AddScoped<IProfileService, MooreHotels.Application.Services.ProfileService>();
         services.AddScoped<IStaffService, MooreHotels.Application.Services.StaffService>();
         services.AddScoped<IOperationService, OperationService>();
         services.AddScoped<INotificationService, MooreHotels.Infrastructure.Services.NotificationService>();
+        services.AddScoped<IEmailOutbox, EmailOutbox>();
+        services.AddScoped<IEmailDeliveryContext, EmailDeliveryContext>();
+        services.AddScoped<IBookingGuestAccessProtector, BookingGuestAccessProtector>();
+        services.AddScoped<IApplicationTransaction, ApplicationTransaction>();
+        services.AddValidatorsFromAssemblyContaining<MooreHotels.Application.Validators.CreateBookingRequestValidator>();
         services.AddHostedService<PendingBookingExpirationWorker>();
+        services.AddHostedService<EmailOutboxWorker>();
 
         if (string.Equals(
                 email.DeliveryMode,
@@ -448,4 +490,8 @@ public static class ServiceCollectionExtensions
 
     private static string GetClientKey(HttpContext context) =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+    private static string GetAuthenticatedClientKey(HttpContext context) =>
+        context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+        ?? GetClientKey(context);
 }

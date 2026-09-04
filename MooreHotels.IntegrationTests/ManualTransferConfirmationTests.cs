@@ -50,6 +50,7 @@ public sealed class ManualTransferConfirmationTests
         Assert.StartsWith($"MANUAL-{booking.BookingCode}-", body.Data.TransactionReference);
         Assert.DoesNotContain("CLIENT-SUPPLIED", body.Data.TransactionReference);
         Assert.Equal(DateTimeKind.Utc, body.Data.ConfirmedAtUtc.Kind);
+        await _fixture.FlushEmailOutboxAsync();
 
         var stored = await _fixture.WithDbAsync(db => db.Bookings
             .AsNoTracking()
@@ -268,6 +269,58 @@ public sealed class ManualTransferConfirmationTests
                     """
                     DROP TRIGGER IF EXISTS fail_manual_transfer_audit_trigger ON audit_logs;
                     DROP FUNCTION IF EXISTS fail_manual_transfer_audit();
+                    """);
+                return true;
+            });
+        }
+    }
+
+    [Fact]
+    public async Task Confirmation_rolls_back_when_payment_email_cannot_be_queued()
+    {
+        var booking = await _fixture.CreateBookingAsync();
+        var guestEmail = await _fixture.WithDbAsync(db => db.Guests
+            .Where(guest => guest.Id == booking.GuestId)
+            .Select(guest => guest.Email)
+            .SingleAsync());
+        await _fixture.WithDbAsync(async db =>
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE OR REPLACE FUNCTION fail_payment_email_outbox() RETURNS trigger AS $$
+                BEGIN
+                    IF NEW."Template" = 'PaymentSuccess' THEN
+                        RAISE EXCEPTION 'forced payment email outbox failure';
+                    END IF;
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+                CREATE TRIGGER fail_payment_email_outbox_trigger
+                BEFORE INSERT ON email_outbox
+                FOR EACH ROW EXECUTE FUNCTION fail_payment_email_outbox();
+                """);
+            return true;
+        });
+
+        try
+        {
+            var response = await ConfirmAsync(booking.BookingCode, _fixture.Admin, "ACCEPT");
+            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+            await AssertBookingUnchangedAsync(booking.Id);
+            Assert.Equal(0, await _fixture.WithDbAsync(db => db.AuditLogs.CountAsync(log =>
+                log.EntityId == booking.Id.ToString())));
+            Assert.Equal(0, await _fixture.WithDbAsync(db => db.EmailOutboxMessages.CountAsync(message =>
+                message.Template == "PaymentSuccess" &&
+                message.Recipient == guestEmail)));
+        }
+        finally
+        {
+            await _fixture.WithDbAsync(async db =>
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """
+                    DROP TRIGGER IF EXISTS fail_payment_email_outbox_trigger ON email_outbox;
+                    DROP FUNCTION IF EXISTS fail_payment_email_outbox();
                     """);
                 return true;
             });

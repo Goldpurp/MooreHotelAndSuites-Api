@@ -3,8 +3,6 @@ using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Enums;
-using MooreHotels.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
 
 namespace MooreHotels.WebAPI.Controllers;
@@ -14,12 +12,10 @@ namespace MooreHotels.WebAPI.Controllers;
 public class StaffController : ControllerBase
 {
     private readonly IStaffService _staffService;
-    private readonly MooreHotelsDbContext _context;
 
-    public StaffController(IStaffService staffService, MooreHotelsDbContext context)
+    public StaffController(IStaffService staffService)
     {
         _staffService = staffService;
-        _context = context;
     }
 
     [HttpGet("stats")]
@@ -61,16 +57,7 @@ public class StaffController : ControllerBase
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
 
-        var strategy = _context.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
-        {
-            _context.ChangeTracker.Clear();
-            await using var transaction = await _context.Database.BeginTransactionAsync();
-            await _context.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT 1 FROM users WHERE \"Id\" = {id} FOR UPDATE");
-            await _staffService.UpdateUserAsync(id, request, actingUserId);
-            await transaction.CommitAsync();
-        });
+        await _staffService.UpdateUserAsync(id, request, actingUserId);
         return Ok(new { Message = "Staff profile updated. Existing sessions have been revoked." });
     }
 
@@ -111,16 +98,7 @@ public class StaffController : ControllerBase
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
-        var strategy = _context.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
-        {
-            _context.ChangeTracker.Clear();
-            await using var transaction = await _context.Database.BeginTransactionAsync();
-            await _context.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT 1 FROM users WHERE \"Id\" = {id} FOR UPDATE");
-            await _staffService.DeleteUserAsync(id, actingUserId);
-            await transaction.CommitAsync();
-        });
+        await _staffService.DeleteUserAsync(id, actingUserId);
         return NoContent();
     }
 }

@@ -164,17 +164,23 @@ public static class WebApplicationExtensions
 
         app.UseRouting();
         app.UseCors(ServiceCollectionExtensions.FrontendCorsPolicy);
-        app.UseRateLimiter();
         app.UseAuthentication();
+        app.UseRateLimiter();
         app.UseUserStatusEnforcement();
         app.UseAuthorization();
 
+        app.MapGet("/robots.txt", () => Results.Text(
+                "User-agent: *\nDisallow: /\n",
+                "text/plain"))
+            .AllowAnonymous()
+            .ExcludeFromDescription();
+
         app.MapGet("/health/live", () => Results.Ok(new
-            {
-                status = "Healthy",
-                timestamp = DateTimeOffset.UtcNow,
-                environment = app.Environment.ToClientName()
-            }))
+        {
+            status = "Healthy",
+            timestamp = DateTimeOffset.UtcNow,
+            environment = app.Environment.ToClientName()
+        }))
             .AllowAnonymous()
             .ExcludeFromDescription();
 

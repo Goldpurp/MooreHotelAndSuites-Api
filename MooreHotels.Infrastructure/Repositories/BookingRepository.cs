@@ -6,6 +6,7 @@ using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Domain.Common;
 using MooreHotels.Infrastructure.Persistence;
+using MooreHotels.Application.Interfaces;
 using System.Data;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -19,12 +20,17 @@ public class BookingRepository : IBookingRepository
     private const int BookingCodeAllocationAttempts = 64;
 
     private readonly MooreHotelsDbContext _db;
-    public BookingRepository(MooreHotelsDbContext db) => _db = db;
+    private readonly IEmailOutbox _emailOutbox;
+    public BookingRepository(MooreHotelsDbContext db, IEmailOutbox emailOutbox)
+    {
+        _db = db;
+        _emailOutbox = emailOutbox;
+    }
 
-    public async Task<Booking?> GetByIdAsync(Guid id) => 
+    public async Task<Booking?> GetByIdAsync(Guid id) =>
         await _db.Bookings.Include(b => b.Room).Include(b => b.Guest).FirstOrDefaultAsync(b => b.Id == id);
 
-    public async Task<Booking?> GetByCodeAsync(string code) => 
+    public async Task<Booking?> GetByCodeAsync(string code) =>
         await _db.Bookings.Include(b => b.Room).Include(b => b.Guest).FirstOrDefaultAsync(b => b.BookingCode == code);
 
     public async Task<Booking?> GetByPaymentReferenceAsync(string paymentReference) =>
@@ -33,7 +39,7 @@ public class BookingRepository : IBookingRepository
             .Include(booking => booking.Guest)
             .FirstOrDefaultAsync(booking => booking.TransactionReference == paymentReference);
 
-    public async Task<IEnumerable<Booking>> GetAllAsync() => 
+    public async Task<IEnumerable<Booking>> GetAllAsync() =>
         await _db.Bookings
             .AsNoTracking()
             .Include(b => b.Room)
@@ -97,42 +103,145 @@ public class BookingRepository : IBookingRepository
             booking.CheckOut > checkIn);
     }
 
-    public async Task AddAsync(Booking booking)
+    public async Task<bool> QueueBookingEmailVerificationAsync(
+        BookingEmailVerification verification,
+        EmailOutboxMessage emailMessage,
+        DateTime throttleCutoffUtc,
+        CancellationToken cancellationToken = default)
+    {
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+
+            // Serialize requests for the normalized email across API instances.
+            // This makes the cooldown an enforcement rule rather than a best-effort check.
+            await _db.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT pg_advisory_xact_lock(hashtextextended({verification.Email}, 0))",
+                cancellationToken);
+
+            var recentlyQueued = await _db.BookingEmailVerifications.AnyAsync(
+                existing =>
+                    existing.Email == verification.Email &&
+                    existing.ConsumedAtUtc == null &&
+                    existing.ExpiresAtUtc > verification.CreatedAtUtc &&
+                    existing.CreatedAtUtc >= throttleCutoffUtc,
+                cancellationToken);
+            if (recentlyQueued)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return false;
+            }
+
+            // A newly delivered link replaces older unconsumed links for the email.
+            await _db.BookingEmailVerifications
+                .Where(existing =>
+                    existing.Email == verification.Email &&
+                    existing.ConsumedAtUtc == null)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(
+                        existing => existing.ConsumedAtUtc,
+                        verification.CreatedAtUtc),
+                    cancellationToken);
+
+            _db.BookingEmailVerifications.Add(verification);
+            _db.EmailOutboxMessages.Add(emailMessage);
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return true;
+        });
+    }
+
+    public Task<bool> IsBookingEmailVerificationValidAsync(
+        string email,
+        string tokenHash,
+        DateTime utcNow,
+        CancellationToken cancellationToken = default) =>
+        _db.BookingEmailVerifications
+            .AsNoTracking()
+            .AnyAsync(
+                verification =>
+                    verification.Email == email &&
+                    verification.TokenHash == tokenHash &&
+                    verification.ConsumedAtUtc == null &&
+                    verification.ExpiresAtUtc > utcNow,
+                cancellationToken);
+
+    public async Task AddAsync(
+        Booking booking,
+        Guest? newGuest = null,
+        IReadOnlyCollection<EmailOutboxMessage>? emailMessages = null,
+        BookingEmailVerificationProof? emailVerification = null,
+        CancellationToken cancellationToken = default)
     {
         var strategy = _db.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
             _db.ChangeTracker.Clear();
-            await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted);
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+
+            BookingEmailVerification? verification = null;
+            if (emailVerification is not null)
+            {
+                verification = await _db.BookingEmailVerifications
+                    .FromSqlInterpolated(
+                        $"""
+                         SELECT * FROM booking_email_verifications
+                         WHERE "Email" = {emailVerification.Email}
+                           AND "TokenHash" = {emailVerification.TokenHash}
+                           AND "ConsumedAtUtc" IS NULL
+                           AND "ExpiresAtUtc" > {emailVerification.VerifiedAtUtc}
+                         FOR UPDATE
+                         """)
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (verification is null)
+                {
+                    throw new BadRequestException(
+                        "Verify the guest email again before creating this booking.");
+                }
+            }
 
             // Serialize booking creation per room across every API instance.
             // This closes the race between the availability check and INSERT
             // without locking unrelated rooms or holding a long transaction.
             var advisoryKey = BitConverter.ToInt64(booking.RoomId.ToByteArray(), 0);
             await _db.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT pg_advisory_xact_lock({advisoryKey})");
+                $"SELECT pg_advisory_xact_lock({advisoryKey})",
+                cancellationToken);
 
             var expirationCutoffUtc = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
             var conflict = await _db.Bookings.AnyAsync(existing =>
-                existing.RoomId == booking.RoomId &&
-                existing.Status != BookingStatus.Cancelled &&
-                existing.Status != BookingStatus.CheckedOut &&
-                existing.Status != BookingStatus.NoShow &&
-                !(existing.Status == BookingStatus.Pending &&
-                  (existing.PaymentStatus == PaymentStatus.Unpaid ||
-                   existing.PaymentStatus == PaymentStatus.AwaitingVerification) &&
-                  existing.CreatedAt <= expirationCutoffUtc) &&
-                existing.CheckIn < booking.CheckOut &&
-                existing.CheckOut > booking.CheckIn);
+                    existing.RoomId == booking.RoomId &&
+                    existing.Status != BookingStatus.Cancelled &&
+                    existing.Status != BookingStatus.CheckedOut &&
+                    existing.Status != BookingStatus.NoShow &&
+                    !(existing.Status == BookingStatus.Pending &&
+                      (existing.PaymentStatus == PaymentStatus.Unpaid ||
+                       existing.PaymentStatus == PaymentStatus.AwaitingVerification) &&
+                      existing.CreatedAt <= expirationCutoffUtc) &&
+                    existing.CheckIn < booking.CheckOut &&
+                    existing.CheckOut > booking.CheckIn,
+                cancellationToken);
 
             if (conflict)
             {
                 throw new BadRequestException("This room was just reserved for the selected dates. Please choose another room or date.");
             }
 
+            if (newGuest is not null)
+                await _db.Guests.AddAsync(newGuest);
             await _db.Bookings.AddAsync(booking);
-            await _db.SaveChangesAsync();
-            await transaction.CommitAsync();
+            if (emailMessages is not null)
+                await _db.EmailOutboxMessages.AddRangeAsync(emailMessages);
+            if (verification is not null)
+                verification.ConsumedAtUtc = emailVerification!.VerifiedAtUtc;
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
         });
     }
 
@@ -253,6 +362,25 @@ public class BookingRepository : IBookingRepository
                 CreatedAt = confirmedAtUtc
             });
 
+            var guest = await _db.Guests.SingleOrDefaultAsync(
+                item => item.Id == booking.GuestId,
+                cancellationToken);
+            var room = await _db.Rooms.SingleOrDefaultAsync(
+                item => item.Id == booking.RoomId,
+                cancellationToken);
+            if (guest is not null)
+            {
+                _db.EmailOutboxMessages.Add(_emailOutbox.Create(
+                    TransactionalEmailTemplates.PaymentSuccess,
+                    guest.Email,
+                    new PaymentSuccessEmail(
+                        guest.FirstName,
+                        booking.BookingCode,
+                        room?.Name ?? "Reserved Room",
+                        booking.Amount,
+                        internalReference)));
+            }
+
             await _db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
 
@@ -269,17 +397,7 @@ public class BookingRepository : IBookingRepository
     public async Task<int> CancelExpiredUnconfirmedAsync(
         DateTime utcNow,
         int batchSize = 100,
-        CancellationToken cancellationToken = default) =>
-        (await CancelExpiredUnconfirmedWithNotificationsAsync(
-            utcNow,
-            batchSize,
-            cancellationToken)).Count;
-
-    public async Task<IReadOnlyList<ExpiredBookingNotification>>
-        CancelExpiredUnconfirmedWithNotificationsAsync(
-            DateTime utcNow,
-            int batchSize = 100,
-            CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default)
     {
         if (utcNow.Kind != DateTimeKind.Utc)
             throw new ArgumentException("The expiration clock must be UTC.", nameof(utcNow));
@@ -317,21 +435,21 @@ public class BookingRepository : IBookingRepository
             var rooms = await _db.Rooms
                 .Where(item => roomIds.Contains(item.Id))
                 .ToDictionaryAsync(item => item.Id, cancellationToken);
-            var notifications =
-                new List<ExpiredBookingNotification>(expired.Count);
-
             foreach (var booking in expired)
             {
                 if (guests.TryGetValue(booking.GuestId, out var guest) &&
                     rooms.TryGetValue(booking.RoomId, out var room))
                 {
-                    notifications.Add(new ExpiredBookingNotification(
+                    _db.EmailOutboxMessages.Add(_emailOutbox.Create(
+                        TransactionalEmailTemplates.Cancellation,
                         guest.Email,
-                        $"{guest.FirstName} {guest.LastName}",
-                        booking.BookingCode,
-                        room.Name,
-                        room.Category.ToString(),
-                        booking.CheckIn));
+                        new CancellationEmail(
+                            $"{guest.FirstName} {guest.LastName}",
+                            booking.BookingCode,
+                            room.Name,
+                            room.Category.ToString(),
+                            booking.CheckIn,
+                            "Payment was not confirmed within one hour, so the room hold was released.")));
                 }
 
                 var previousStatus = booking.Status;
@@ -349,6 +467,7 @@ public class BookingRepository : IBookingRepository
                 });
 
                 booking.Status = BookingStatus.Cancelled;
+                booking.CancelledAtUtc = utcNow;
                 booking.PaymentCheckoutUrl = null;
                 booking.StatusHistoryJson = JsonSerializer.Serialize(history);
 
@@ -384,19 +503,231 @@ public class BookingRepository : IBookingRepository
             }
 
             await transaction.CommitAsync(cancellationToken);
-            return (IReadOnlyList<ExpiredBookingNotification>)notifications;
+            return expired.Count;
         });
     }
 
-    public async Task<IEnumerable<Booking>> GetPendingRefundsAsync()
-{
-    return await _db.Bookings
-        .Include(b => b.Guest)
-        .Include(b => b.Room)
-        .Where(b => b.Status == BookingStatus.Cancelled && 
-                    b.PaymentStatus == PaymentStatus.RefundPending)
-        .OrderByDescending(b => b.CreatedAt)
-        .ToListAsync();
-}
+    public async Task<int> DeleteExpiredEmailVerificationsAsync(
+        DateTime utcNow,
+        int batchSize = 500,
+        CancellationToken cancellationToken = default)
+    {
+        if (utcNow.Kind != DateTimeKind.Utc)
+            throw new ArgumentException("The cleanup clock must be UTC.", nameof(utcNow));
 
+        batchSize = Math.Clamp(batchSize, 1, 1000);
+        var deleteBeforeUtc = utcNow.Subtract(
+            BookingEmailVerificationPolicy.RetentionAfterExpiry);
+        return await _db.Database.ExecuteSqlInterpolatedAsync(
+            $"""
+             DELETE FROM booking_email_verifications
+             WHERE "Id" IN (
+                 SELECT "Id"
+                 FROM booking_email_verifications
+                 WHERE "ExpiresAtUtc" <= {deleteBeforeUtc}
+                 ORDER BY "ExpiresAtUtc", "Id"
+                 LIMIT {batchSize}
+                 FOR UPDATE SKIP LOCKED
+             )
+             """,
+            cancellationToken);
+    }
+
+    public async Task<IEnumerable<Booking>> GetPendingRefundsAsync()
+    {
+        return await _db.Bookings
+            .Include(b => b.Guest)
+            .Include(b => b.Room)
+            .Where(b => b.Status == BookingStatus.Cancelled &&
+                        b.PaymentStatus == PaymentStatus.RefundPending)
+            .OrderByDescending(b => b.CreatedAt)
+            .ToListAsync();
+    }
+
+    public async Task<decimal> GetNetRevenueAsync(DateTime? fromUtc = null, DateTime? toUtc = null, CancellationToken cancellationToken = default)
+    {
+        var query = _db.Bookings.AsNoTracking()
+            .Where(b => b.Status != BookingStatus.Cancelled && b.PaymentStatus == PaymentStatus.Paid);
+        if (fromUtc.HasValue)
+        {
+            query = query.Where(b =>
+                b.PaymentConfirmedAtUtc.HasValue &&
+                b.PaymentConfirmedAtUtc.Value >= fromUtc.Value);
+        }
+        if (toUtc.HasValue)
+        {
+            query = query.Where(b =>
+                b.PaymentConfirmedAtUtc.HasValue &&
+                b.PaymentConfirmedAtUtc.Value < toUtc.Value);
+        }
+        return await query.SumAsync(b => b.Amount, cancellationToken);
+    }
+
+    public async Task<int> GetActiveGuestsCountAsync(CancellationToken cancellationToken = default)
+    {
+        return await _db.Bookings.AsNoTracking()
+            .CountAsync(b => b.Status == BookingStatus.CheckedIn, cancellationToken);
+    }
+
+    public async Task<int> GetOccupiedRoomNightsAsync(
+        DateTime fromUtc,
+        DateTime toUtc,
+        CancellationToken cancellationToken = default)
+    {
+        if (toUtc <= fromUtc) return 0;
+
+        var stays = await _db.Bookings.AsNoTracking()
+            .Where(booking =>
+                booking.Status == BookingStatus.Confirmed ||
+                booking.Status == BookingStatus.CheckedIn ||
+                booking.Status == BookingStatus.CheckedOut)
+            .Where(booking => booking.CheckIn < toUtc && booking.CheckOut > fromUtc)
+            .Select(booking => new { booking.CheckIn, booking.CheckOut })
+            .ToListAsync(cancellationToken);
+
+        var firstDate = fromUtc.Date;
+        var exclusiveLastDate = toUtc.Date;
+        return stays.Sum(stay =>
+        {
+            var start = stay.CheckIn.Date > firstDate ? stay.CheckIn.Date : firstDate;
+            var end = stay.CheckOut.Date < exclusiveLastDate
+                ? stay.CheckOut.Date
+                : exclusiveLastDate;
+            return Math.Max(0, (end - start).Days);
+        });
+    }
+
+    public async Task<decimal> GetAverageNightlyRateAsync(DateTime? fromUtc = null, DateTime? toUtc = null, CancellationToken cancellationToken = default)
+    {
+        var query = _db.Bookings.AsNoTracking()
+            .Where(b => b.Status != BookingStatus.Cancelled &&
+                        b.Status != BookingStatus.NoShow);
+        if (fromUtc.HasValue) query = query.Where(b => b.CheckOut > fromUtc.Value);
+        if (toUtc.HasValue) query = query.Where(b => b.CheckIn < toUtc.Value);
+
+        var stays = await query
+            .Select(booking => new
+            {
+                booking.Amount,
+                booking.CheckIn,
+                booking.CheckOut
+            })
+            .ToListAsync(cancellationToken);
+        var totalNights = stays.Sum(stay =>
+            Math.Max(1, (stay.CheckOut.Date - stay.CheckIn.Date).Days));
+        return totalNights == 0
+            ? 0m
+            : stays.Sum(stay => stay.Amount) / totalNights;
+    }
+
+    public async Task<IReadOnlyList<RevenuePoint>> GetDailyRevenueDynamicsAsync(int days = 7, CancellationToken cancellationToken = default)
+    {
+        var now = DateTime.UtcNow;
+        var startDate = now.Date.AddDays(-(days - 1));
+        var dailyTotals = await _db.Bookings.AsNoTracking()
+            .Where(b => b.Status != BookingStatus.Cancelled &&
+                        b.PaymentStatus == PaymentStatus.Paid &&
+                        b.PaymentConfirmedAtUtc.HasValue &&
+                        b.PaymentConfirmedAtUtc.Value >= startDate)
+            .GroupBy(b => b.PaymentConfirmedAtUtc!.Value.Date)
+            .Select(g => new { Date = g.Key, Total = g.Sum(b => b.Amount) })
+            .ToListAsync(cancellationToken);
+
+        var result = new List<RevenuePoint>(days);
+        for (var i = days - 1; i >= 0; i--)
+        {
+            var date = now.AddDays(-i).Date;
+            var match = dailyTotals.FirstOrDefault(d => d.Date == date);
+            result.Add(new RevenuePoint(date.ToString("MMM dd", CultureInfo.InvariantCulture), match?.Total ?? 0m));
+        }
+        return result;
+    }
+
+    public async Task<IReadOnlyList<ActiveOperationDto>> GetActiveOperationsAsync(int limit = 5, CancellationToken cancellationToken = default)
+    {
+        return await _db.Bookings.AsNoTracking()
+            .Include(b => b.Guest)
+            .Include(b => b.Room)
+            .Where(b => b.Status == BookingStatus.CheckedIn)
+            .OrderByDescending(b => b.CreatedAt)
+            .Take(limit)
+            .Select(b => new ActiveOperationDto(
+                ((b.Guest != null ? b.Guest.FirstName + " " + b.Guest.LastName : "Unknown")).Trim(),
+                b.Guest != null ? (b.Guest.AvatarUrl ?? "") : "",
+                b.BookingCode,
+                b.Room != null ? b.Room.Category.ToString() : "Unknown",
+                b.Room != null ? b.Room.RoomNumber : "N/A",
+                "CHECKED IN",
+                b.Amount,
+                b.PaymentStatus.ToString()
+            ))
+            .ToListAsync(cancellationToken);
+    }
+
+    public async Task<int> GetCheckInsCountAsync(DateTime dateUtc, CancellationToken cancellationToken = default)
+    {
+        var day = dateUtc.Date;
+        return await _db.Bookings.AsNoTracking()
+            .CountAsync(b => b.CheckIn.Date == day && (b.Status == BookingStatus.CheckedIn || b.Status == BookingStatus.Confirmed), cancellationToken);
+    }
+
+    public async Task<int> GetCheckOutsCountAsync(DateTime dateUtc, CancellationToken cancellationToken = default)
+    {
+        var day = dateUtc.Date;
+        return await _db.Bookings.AsNoTracking()
+            .CountAsync(b => b.CheckOut.Date == day && (b.Status == BookingStatus.CheckedIn || b.Status == BookingStatus.CheckedOut), cancellationToken);
+    }
+
+    public async Task<int> GetTotalBookingsCountAsync(CancellationToken cancellationToken = default)
+    {
+        return await _db.Bookings.AsNoTracking()
+            .CountAsync(b => b.Status != BookingStatus.Cancelled, cancellationToken);
+    }
+
+    public async Task<PagedResult<Booking>> GetPagedBookingsAsync(
+        int pageNumber = 1,
+        int pageSize = 20,
+        BookingStatus? status = null,
+        PaymentStatus? paymentStatus = null,
+        string? search = null,
+        CancellationToken cancellationToken = default)
+    {
+        var normalizedPage = Math.Max(1, pageNumber);
+        var normalizedSize = Math.Clamp(pageSize, 1, 100);
+
+        var query = _db.Bookings
+            .AsNoTracking()
+            .Include(b => b.Room)
+            .Include(b => b.Guest)
+            .AsQueryable();
+
+        if (status.HasValue)
+        {
+            query = query.Where(b => b.Status == status.Value);
+        }
+
+        if (paymentStatus.HasValue)
+        {
+            query = query.Where(b => b.PaymentStatus == paymentStatus.Value);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var s = search.Trim();
+            query = query.Where(b =>
+                b.BookingCode.Contains(s) ||
+                (b.TransactionReference != null && b.TransactionReference.Contains(s)) ||
+                (b.Guest != null && (b.Guest.FirstName.Contains(s) || b.Guest.LastName.Contains(s) || b.Guest.Email.Contains(s) || b.Guest.Phone.Contains(s))) ||
+                (b.Room != null && b.Room.RoomNumber.Contains(s)));
+        }
+
+        var totalCount = await query.CountAsync(cancellationToken);
+        var items = await query
+            .OrderByDescending(b => b.CreatedAt)
+            .Skip((normalizedPage - 1) * normalizedSize)
+            .Take(normalizedSize)
+            .ToListAsync(cancellationToken);
+
+        return PagedResult<Booking>.Create(items, totalCount, normalizedPage, normalizedSize);
+    }
 }

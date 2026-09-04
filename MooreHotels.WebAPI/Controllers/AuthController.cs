@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces;
@@ -19,14 +20,13 @@ namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/[controller]")]
-[AllowAnonymous]
 public class AuthController : ControllerBase
 {
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly IJwtService _jwtService;
     private readonly IGuestRepository _guestRepository;
-    private readonly IEmailService _emailService;
+    private readonly IEmailOutbox _emailOutbox;
     private readonly MooreHotelsDbContext _dbContext;
     private readonly IConfiguration _configuration;
     private readonly ILogger<AuthController> _logger;
@@ -36,7 +36,7 @@ public class AuthController : ControllerBase
         SignInManager<ApplicationUser> signInManager,
         IJwtService jwtService,
         IGuestRepository guestRepository,
-        IEmailService emailService,
+        IEmailOutbox emailOutbox,
         MooreHotelsDbContext dbContext,
         IConfiguration configuration,
         ILogger<AuthController> logger)
@@ -45,13 +45,14 @@ public class AuthController : ControllerBase
         _signInManager = signInManager;
         _jwtService = jwtService;
         _guestRepository = guestRepository;
-        _emailService = emailService;
+        _emailOutbox = emailOutbox;
         _dbContext = dbContext;
         _configuration = configuration;
         _logger = logger;
     }
 
     [HttpPost("login")]
+    [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> Login([FromBody] LoginRequest request)
     {
@@ -76,40 +77,75 @@ public class AuthController : ControllerBase
             });
         }
 
-        if (!signIn.Succeeded)
+        if (signIn.RequiresTwoFactor)
+        {
+            if (string.IsNullOrWhiteSpace(request.TwoFactorCode))
+            {
+                return Accepted(new
+                {
+                    RequiresTwoFactor = true,
+                    Message = "A two-factor authentication code is required."
+                });
+            }
+
+            var code = request.TwoFactorCode.Replace(" ", string.Empty, StringComparison.Ordinal);
+            var twoFactorIsValid = request.UseRecoveryCode
+                ? (await _userManager.RedeemTwoFactorRecoveryCodeAsync(user, code)).Succeeded
+                : await _userManager.VerifyTwoFactorTokenAsync(
+                    user,
+                    TokenOptions.DefaultAuthenticatorProvider,
+                    code.Replace("-", string.Empty, StringComparison.Ordinal));
+            if (!twoFactorIsValid)
+            {
+                await _userManager.AccessFailedAsync(user);
+                return Unauthorized(new { Message = "Invalid email, password, or authentication code." });
+            }
+
+            await _userManager.ResetAccessFailedCountAsync(user);
+        }
+        else if (!signIn.Succeeded)
         {
             return Unauthorized(new { Message = "Invalid email or password." });
         }
 
         if (!user.EmailConfirmed)
         {
-            return Unauthorized(new { Message = "Please verify your email before signing in." });
+            return Unauthorized(new { Message = "Sign-in is unavailable for this account." });
         }
 
         if (user.Status == ProfileStatus.Suspended)
         {
-            return StatusCode(StatusCodes.Status403Forbidden, new
-            {
-                Message = "This account is suspended. Contact hotel administration."
-            });
+            return Unauthorized(new { Message = "Sign-in is unavailable for this account." });
         }
 
         var token = _jwtService.GenerateToken(user);
-        return Ok(new AuthResponse(token, user.Email!, user.Name, user.Role.ToString()));
+        var staffMfaRequired = _configuration.GetValue<bool>("Security:RequireStaffMfa") &&
+                               user.Role is UserRole.Admin or UserRole.Manager or UserRole.Staff &&
+                               !user.TwoFactorEnabled;
+        return Ok(new AuthResponse(
+            token,
+            user.Email!,
+            user.Name,
+            user.Role.ToString(),
+            staffMfaRequired));
     }
 
     [HttpPost("register")]
+    [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicWriteRateLimitPolicy)]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
         var email = request.Email.Trim().ToLowerInvariant();
-        if (await _userManager.FindByEmailAsync(email) is not null)
+        var existingUser = await _userManager.FindByEmailAsync(email);
+        if (existingUser is not null)
         {
-            return Conflict(new { Message = "An account already exists for this email address." });
+            // Perform equivalent password-hashing work so the early privacy
+            // response is not an obvious fast path for account enumeration.
+            _ = _userManager.PasswordHasher.HashPassword(existingUser, request.Password);
+            return RegistrationAccepted();
         }
 
         var autoConfirm = _configuration.GetValue<bool>("Runtime:AutoConfirmEmail");
-        ApplicationUser? user = null;
         var strategy = _dbContext.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
@@ -123,7 +159,7 @@ public class AuthController : ControllerBase
                 Phone = request.Phone.Trim(),
                 CreatedAt = DateTime.UtcNow
             };
-            user = new ApplicationUser
+            var user = new ApplicationUser
             {
                 Id = Guid.NewGuid(),
                 Email = email,
@@ -144,6 +180,16 @@ public class AuthController : ControllerBase
             var createResult = await _userManager.CreateAsync(user, request.Password);
             if (!createResult.Succeeded)
             {
+                if (createResult.Errors.Any(error =>
+                        error.Code is "DuplicateEmail" or "DuplicateUserName"))
+                {
+                    // A concurrent request created the account after the first
+                    // lookup. Roll back the guest row and keep the public
+                    // response indistinguishable from the existing-user case.
+                    await transaction.RollbackAsync();
+                    return;
+                }
+
                 throw new BadRequestException(
                     string.Join(", ", createResult.Errors.Select(error => error.Description)));
             }
@@ -154,23 +200,19 @@ public class AuthController : ControllerBase
                 throw new InvalidOperationException("The Client role is not initialized.");
             }
 
+            if (!autoConfirm)
+            {
+                await QueueVerificationEmailAsync(user);
+            }
+
             await transaction.CommitAsync();
         });
 
-        if (!autoConfirm)
-        {
-            await SendVerificationEmailAsync(user!);
-        }
-
-        return StatusCode(StatusCodes.Status201Created, new
-        {
-            Message = autoConfirm
-                ? "Account created and activated for the Local environment."
-                : "Account created. Check your email to activate it."
-        });
+        return RegistrationAccepted();
     }
 
     [HttpGet("verify-email")]
+    [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.LookupRateLimitPolicy)]
     public async Task<IActionResult> VerifyEmail([FromQuery] string userId, [FromQuery] string token)
     {
@@ -210,19 +252,28 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("resend-verification")]
+    [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> ResendVerification([FromBody] ForgotPasswordRequest request)
     {
         var user = await _userManager.FindByEmailAsync(request.Email.Trim().ToLowerInvariant());
         if (user is not null && !user.EmailConfirmed)
         {
-            await SendVerificationEmailAsync(user);
+            try
+            {
+                await QueueVerificationEmailAsync(user);
+            }
+            catch (Exception exception)
+            {
+                _logger.LogWarning(exception, "Verification email could not be queued.");
+            }
         }
 
         return Ok(new { Message = "If the account requires verification, a new link has been sent." });
     }
 
     [HttpPost("forgot-password")]
+    [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
     {
@@ -233,12 +284,15 @@ public class AuthController : ControllerBase
             {
                 var token = await _userManager.GeneratePasswordResetTokenAsync(user);
                 var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
-                var resetUrl = BuildFrontendUrl("reset-password", new Dictionary<string, string?>
+                var resetUrl = BuildFrontendFragmentUrl("reset-password", new Dictionary<string, string?>
                 {
                     ["email"] = user.Email,
                     ["token"] = encodedToken
                 });
-                await _emailService.SendPasswordResetAsync(user.Email!, user.Name, resetUrl);
+                await _emailOutbox.EnqueueAsync(
+                    TransactionalEmailTemplates.PasswordReset,
+                    user.Email!,
+                    new PasswordResetEmail(user.Name, resetUrl));
             }
             catch (Exception exception)
             {
@@ -250,6 +304,7 @@ public class AuthController : ControllerBase
     }
 
     [HttpPost("reset-password")]
+    [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
     {
@@ -289,29 +344,30 @@ public class AuthController : ControllerBase
         });
     }
 
-    private async Task SendVerificationEmailAsync(ApplicationUser user)
+    private AcceptedResult RegistrationAccepted() => Accepted(new
     {
-        try
+        Message = "If registration can be completed, activation instructions will be sent."
+    });
+
+    private async Task QueueVerificationEmailAsync(ApplicationUser user)
+    {
+        var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+        var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
+        var verificationUrl = BuildFrontendFragmentUrl("verify-email", new Dictionary<string, string?>
         {
-            var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
-            var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
-            var verificationUrl = BuildFrontendUrl("verify-email", new Dictionary<string, string?>
-            {
-                ["userId"] = user.Id.ToString(),
-                ["token"] = encodedToken
-            });
-            await _emailService.SendEmailVerificationAsync(user.Email!, user.Name, verificationUrl);
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(exception, "Email verification delivery failed after account creation.");
-        }
+            ["userId"] = user.Id.ToString(),
+            ["token"] = encodedToken
+        });
+        await _emailOutbox.EnqueueAsync(
+            TransactionalEmailTemplates.EmailVerification,
+            user.Email!,
+            new EmailVerificationEmail(user.Name, verificationUrl));
     }
 
-    private string BuildFrontendUrl(string path, IDictionary<string, string?> query)
+    private string BuildFrontendFragmentUrl(string path, IDictionary<string, string?> values)
     {
         var baseUrl = _configuration["PublicAppUrl"]
             ?? throw new InvalidOperationException("PublicAppUrl is not configured.");
-        return QueryHelpers.AddQueryString($"{baseUrl.TrimEnd('/')}/{path.TrimStart('/')}", query);
+        return FrontendLinkBuilder.WithFragment(baseUrl, path, values);
     }
 }

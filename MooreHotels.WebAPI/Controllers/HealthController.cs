@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -28,18 +29,65 @@ public class HealthController : ControllerBase
                 });
             }
 
-            return Ok(new
+            var pendingEmails = await _context.EmailOutboxMessages
+                .AsNoTracking()
+                .CountAsync(message => message.AttemptCount < 12);
+            var exhaustedEmails = await _context.EmailOutboxMessages
+                .AsNoTracking()
+                .CountAsync(message => message.AttemptCount >= 12);
+
+            var response = new
             {
-                Status = "Healthy",
+                Status = exhaustedEmails == 0 ? "Healthy" : "Degraded",
                 Timestamp = DateTimeOffset.UtcNow,
-                Database = "Connected"
-            });
+                Database = "Connected",
+                EmailQueue = new
+                {
+                    Status = exhaustedEmails == 0 ? "Operational" : "AttentionRequired",
+                    Pending = pendingEmails,
+                    Exhausted = exhaustedEmails
+                }
+            };
+
+            // Delivery failures require an operational alert, but they must not
+            // remove a database-connected API instance from the load balancer.
+            return Ok(response);
         }
         catch (Exception)
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new
             {
                 Status = "Unhealthy",
+                Timestamp = DateTimeOffset.UtcNow,
+                Database = "Disconnected"
+            });
+        }
+    }
+
+    [HttpGet("~/health/ready")]
+    public async Task<IActionResult> Ready(CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _context.Database.CanConnectAsync(cancellationToken)
+                ? Ok(new
+                {
+                    Status = "Ready",
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Database = "Connected"
+                })
+                : StatusCode(StatusCodes.Status503ServiceUnavailable, new
+                {
+                    Status = "NotReady",
+                    Timestamp = DateTimeOffset.UtcNow,
+                    Database = "Disconnected"
+                });
+        }
+        catch (Exception)
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new
+            {
+                Status = "NotReady",
                 Timestamp = DateTimeOffset.UtcNow,
                 Database = "Disconnected"
             });

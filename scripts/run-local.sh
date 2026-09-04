@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROJECT="$ROOT_DIR/MooreHotels.WebAPI/MooreHotels.WebAPI.csproj"
 
+"$ROOT_DIR/scripts/local-db.sh" start
+
 # Single-node, isolated compilation avoids stale compiler-server state and
 # makes repeated Local starts deterministic across IDE and terminal sessions.
 dotnet build "$PROJECT" \

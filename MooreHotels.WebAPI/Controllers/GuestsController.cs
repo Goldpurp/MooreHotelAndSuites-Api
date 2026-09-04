@@ -13,16 +13,16 @@ public class GuestsController : ControllerBase
     public GuestsController(IGuestService guestService) => _guestService = guestService;
 
     [HttpGet]
-    public async Task<IActionResult> GetGuests([FromQuery] string? search) 
+    public async Task<IActionResult> GetGuests(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? search = null)
     {
-        if (!string.IsNullOrEmpty(search))
-            return Ok(await _guestService.SearchGuestsAsync(search));
-        
-        return Ok(await _guestService.GetAllGuestsAsync());
+        return Ok(await _guestService.GetPagedGuestsAsync(page, pageSize, search));
     }
 
     [HttpGet("{id}")]
-    public async Task<IActionResult> GetGuest(string id) 
+    public async Task<IActionResult> GetGuest(string id)
     {
         var dto = await _guestService.GetGuestByIdAsync(id);
         return dto == null ? NotFound() : Ok(dto);

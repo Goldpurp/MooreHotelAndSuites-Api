@@ -6,8 +6,8 @@ namespace MooreHotels.Application.DTOs;
 public record CreateRoomRequest(
     [Required, StringLength(30, MinimumLength = 1)] string RoomNumber,
     [Required, StringLength(120, MinimumLength = 1)] string Name,
-    RoomCategory Category, 
-    PropertyFloor Floor, 
+    RoomCategory Category,
+    PropertyFloor Floor,
     RoomStatus Status,
     [Range(typeof(decimal), "0.01", "100000000")] decimal PricePerNight,
     [Range(1, 50)] int Capacity,

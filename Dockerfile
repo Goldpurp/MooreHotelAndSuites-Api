@@ -1,12 +1,12 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0.423 AS build
+FROM mcr.microsoft.com/dotnet/sdk:8.0.424 AS build
 WORKDIR /src
 
-COPY *.sln global.json ./
-COPY MooreHotels.WebAPI/*.csproj MooreHotels.WebAPI/
-COPY MooreHotels.Infrastructure/*.csproj MooreHotels.Infrastructure/
-COPY MooreHotels.Application/*.csproj MooreHotels.Application/
-COPY MooreHotels.Domain/*.csproj MooreHotels.Domain/
-RUN dotnet restore MooreHotels.WebAPI/MooreHotels.WebAPI.csproj
+COPY *.sln global.json Directory.Build.props ./
+COPY MooreHotels.WebAPI/*.csproj MooreHotels.WebAPI/packages.lock.json MooreHotels.WebAPI/
+COPY MooreHotels.Infrastructure/*.csproj MooreHotels.Infrastructure/packages.lock.json MooreHotels.Infrastructure/
+COPY MooreHotels.Application/*.csproj MooreHotels.Application/packages.lock.json MooreHotels.Application/
+COPY MooreHotels.Domain/*.csproj MooreHotels.Domain/packages.lock.json MooreHotels.Domain/
+RUN dotnet restore MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --locked-mode
 
 COPY . .
 RUN dotnet tool restore
@@ -17,12 +17,12 @@ RUN dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj \
     /p:UseAppHost=false
 RUN dotnet tool run dotnet-ef migrations bundle \
     --project MooreHotels.Infrastructure/MooreHotels.Infrastructure.csproj \
-    --startup-project MooreHotels.WebAPI/MooreHotels.WebAPI.csproj \
+    --startup-project MooreHotels.Infrastructure/MooreHotels.Infrastructure.csproj \
     --configuration Release \
     --no-build \
     --output /app/migrate
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0.29 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:8.0.30 AS runtime
 WORKDIR /app
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \

@@ -21,7 +21,9 @@ public class NotificationsController : ControllerBase
     [Authorize(Roles = "Admin,Manager,Staff")]
     public async Task<IActionResult> GetStaffNotifications()
     {
-        return Ok(await _notificationService.GetStaffNotificationsAsync());
+        var userId = GetUserId();
+        if (userId == Guid.Empty) return Unauthorized();
+        return Ok(await _notificationService.GetStaffNotificationsAsync(userId));
     }
 
     [HttpGet("my")]

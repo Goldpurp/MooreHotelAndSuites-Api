@@ -47,6 +47,7 @@ public sealed class BookingEmailLifecycleTests
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         using var document = JsonDocument.Parse(
             await response.Content.ReadAsStringAsync());
         var bookingCode = document.RootElement
@@ -80,6 +81,7 @@ public sealed class BookingEmailLifecycleTests
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         Assert.Contains(
             _fixture.Email.Messages,
             email => email.Template == "Cancellation" &&
@@ -101,6 +103,7 @@ public sealed class BookingEmailLifecycleTests
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         var stored = await _fixture.WithDbAsync(db => db.Bookings
             .AsNoTracking()
             .SingleAsync(item => item.Id == booking.Id));
@@ -134,6 +137,7 @@ public sealed class BookingEmailLifecycleTests
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         Assert.Contains(
             _fixture.Email.Messages,
             email => email.Template == "Cancellation" &&
@@ -152,6 +156,7 @@ public sealed class BookingEmailLifecycleTests
             .Single();
 
         var expired = await worker.SweepOnceAsync();
+        await _fixture.FlushEmailOutboxAsync();
 
         Assert.Equal(1, expired);
         var stored = await _fixture.WithDbAsync(db => db.Bookings

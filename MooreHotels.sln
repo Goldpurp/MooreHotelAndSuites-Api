@@ -1,17 +1,19 @@
-
+﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.Domain", "MooreHotels.Domain/MooreHotels.Domain.csproj", "{D1A2B3C4-E5F6-4A5B-8C9D-0E1F2A3B4C5D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.Domain", "MooreHotels.Domain\MooreHotels.Domain.csproj", "{D1A2B3C4-E5F6-4A5B-8C9D-0E1F2A3B4C5D}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.Application", "MooreHotels.Application/MooreHotels.Application.csproj", "{E2A3B4C5-D6E7-4F8A-9B0C-1D2E3F4G5H6I}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.Application", "MooreHotels.Application\MooreHotels.Application.csproj", "{E2A3B4C5-D6E7-4F8A-9B0C-1D2E3F4G5H6I}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.Infrastructure", "MooreHotels.Infrastructure/MooreHotels.Infrastructure.csproj", "{F3B4C5D6-E7F8-4G9A-0B1C-2D3E4F5G6H7I}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.Infrastructure", "MooreHotels.Infrastructure\MooreHotels.Infrastructure.csproj", "{F3B4C5D6-E7F8-4G9A-0B1C-2D3E4F5G6H7I}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.WebAPI", "MooreHotels.WebAPI/MooreHotels.WebAPI.csproj", "{A1B2C3D4-E5F6-4G7H-8I9J-0K1L2M3N4O5P}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.WebAPI", "MooreHotels.WebAPI\MooreHotels.WebAPI.csproj", "{A1B2C3D4-E5F6-4G7H-8I9J-0K1L2M3N4O5P}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.IntegrationTests", "MooreHotels.IntegrationTests/MooreHotels.IntegrationTests.csproj", "{B2C3D4E5-F6A7-48B9-9C0D-1E2F3A4B5C6D}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.IntegrationTests", "MooreHotels.IntegrationTests\MooreHotels.IntegrationTests.csproj", "{B2C3D4E5-F6A7-48B9-9C0D-1E2F3A4B5C6D}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MooreHotels.UnitTests", "MooreHotels.UnitTests\MooreHotels.UnitTests.csproj", "{455A0224-776C-4DDE-89DB-8A49072189DF}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -39,5 +41,9 @@ Global
 		{B2C3D4E5-F6A7-48B9-9C0D-1E2F3A4B5C6D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{B2C3D4E5-F6A7-48B9-9C0D-1E2F3A4B5C6D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{B2C3D4E5-F6A7-48B9-9C0D-1E2F3A4B5C6D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{455A0224-776C-4DDE-89DB-8A49072189DF}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{455A0224-776C-4DDE-89DB-8A49072189DF}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{455A0224-776C-4DDE-89DB-8A49072189DF}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{455A0224-776C-4DDE-89DB-8A49072189DF}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

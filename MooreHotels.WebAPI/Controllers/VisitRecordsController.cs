@@ -13,6 +13,10 @@ public class VisitRecordsController : ControllerBase
     public VisitRecordsController(IVisitRecordService visitService) => _visitService = visitService;
 
     [HttpGet]
-    public async Task<IActionResult> GetRecords() => Ok(await _visitService.GetAllRecordsAsync());
+    public async Task<IActionResult> GetRecords(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? search = null) =>
+        Ok(await _visitService.GetPagedRecordsAsync(page, pageSize, search));
 
 }

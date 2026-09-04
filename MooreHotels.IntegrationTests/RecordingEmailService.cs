@@ -38,8 +38,21 @@ public sealed class RecordingEmailService : IEmailService
         DateTime checkIn,
         DateTime checkOut,
         int nights,
-        decimal totalAmount) =>
+        decimal totalAmount,
+        string? manageBookingUrl = null) =>
         Record("BookingConfirmation", email, bookingCode);
+
+    public Task SendBookingAccessLinkAsync(
+        string email,
+        string guestName,
+        string bookingCode,
+        string manageBookingUrl) =>
+        Record("BookingAccessLink", email, bookingCode);
+
+    public Task SendBookingEmailVerificationAsync(
+        string email,
+        string verificationLink) =>
+        Record("BookingEmailVerification", email);
 
     public Task SendCancellationNoticeAsync(
         string email,
