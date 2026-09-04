@@ -23,6 +23,7 @@ using MooreHotels.Application.Services;
 using MooreHotels.Domain.Common;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Infrastructure.Identity;
+using MooreHotels.Infrastructure.Hubs;
 using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.Infrastructure.Repositories;
 using MooreHotels.Infrastructure.Services;
@@ -60,6 +61,7 @@ public static class ServiceCollectionExtensions
         services.Configure<DatabaseSettings>(configuration.GetSection("Database"));
         services.Configure<JwtSettings>(configuration.GetSection("Jwt"));
         services.Configure<BankTransferSettings>(configuration.GetSection("BankTransferSettings"));
+        services.Configure<FinancialControlsSettings>(configuration.GetSection("FinancialControls"));
         services.Configure<ForwardedHeadersSettings>(configuration.GetSection("ForwardedHeaders"));
         services.Configure<EmailSettings>(configuration.GetSection("EmailSettings"));
         services.Configure<CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
@@ -405,15 +407,21 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAnalyticsService, MooreHotels.Application.Services.AnalyticsService>();
         services.AddScoped<IProfileService, MooreHotels.Application.Services.ProfileService>();
         services.AddScoped<IStaffService, MooreHotels.Application.Services.StaffService>();
+        services.AddScoped<IClientGuestReconciliationService, ClientGuestReconciliationService>();
+        services.AddSingleton<StaffConnectionRegistry>();
+        services.AddSingleton<IStaffSessionRevocationService>(provider =>
+            provider.GetRequiredService<StaffConnectionRegistry>());
         services.AddScoped<IOperationService, OperationService>();
         services.AddScoped<INotificationService, MooreHotels.Infrastructure.Services.NotificationService>();
         services.AddScoped<IEmailOutbox, EmailOutbox>();
+        services.AddScoped<IMediaDeletionOutbox, MediaDeletionOutbox>();
         services.AddScoped<IEmailDeliveryContext, EmailDeliveryContext>();
-        services.AddScoped<IBookingGuestAccessProtector, BookingGuestAccessProtector>();
         services.AddScoped<IApplicationTransaction, ApplicationTransaction>();
         services.AddValidatorsFromAssemblyContaining<MooreHotels.Application.Validators.CreateBookingRequestValidator>();
         services.AddHostedService<PendingBookingExpirationWorker>();
         services.AddHostedService<EmailOutboxWorker>();
+        services.AddHostedService<MediaDeletionWorker>();
+        services.AddSingleton<OrphanedMediaCleanup>();
 
         if (string.Equals(
                 email.DeliveryMode,

@@ -39,6 +39,13 @@ public interface IBookingService
         Guid? accountUserId,
         string requestId,
         string? reason = null);
-    Task<BookingDto> CompleteRefundAsync(Guid bookingId, string transactionRef, Guid adminId);
+    Task<BookingDto> ApproveRefundAsync(
+        Guid bookingId,
+        ApproveRefundRequest request,
+        Guid approvingUserId);
+    Task<BookingDto> CompleteRefundAsync(
+        Guid bookingId,
+        CompleteRefundRequest request,
+        Guid processingUserId);
     Task<IEnumerable<BookingDto>> GetPendingRefundsAsync();
 }

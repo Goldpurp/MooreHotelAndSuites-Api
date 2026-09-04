@@ -41,7 +41,7 @@ public class NotificationService : INotificationService
         await _db.Notifications.AddAsync(notification);
         await _db.SaveChangesAsync();
 
-        await _hubContext.Clients.Group("StaffGroup").SendAsync("ReceiveNotification", new NotificationDto(
+        await _hubContext.Clients.Group(StaffConnectionRegistry.StaffGroup).SendAsync("ReceiveNotification", new NotificationDto(
             notification.Id,
             notification.Title,
             notification.Message,

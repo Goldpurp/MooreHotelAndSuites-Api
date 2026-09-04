@@ -23,7 +23,6 @@ public class BookingService : IBookingService
     private readonly IGuestRepository _guestRepo;
     private readonly IAuditLogRepository _auditRepo;
     private readonly IEmailOutbox _emailOutbox;
-    private readonly IBookingGuestAccessProtector _guestAccessProtector;
     private readonly IMonnifyService _monnifyService;
     private readonly IVisitRecordService _visitService;
     private readonly INotificationService _notificationService;
@@ -39,7 +38,6 @@ public class BookingService : IBookingService
         IGuestRepository guestRepo,
         IAuditLogRepository auditRepo,
         IEmailOutbox emailOutbox,
-        IBookingGuestAccessProtector guestAccessProtector,
         IMonnifyService monnifyService,
         IVisitRecordService visitService,
         INotificationService notificationService,
@@ -54,7 +52,6 @@ public class BookingService : IBookingService
         _guestRepo = guestRepo;
         _auditRepo = auditRepo;
         _emailOutbox = emailOutbox;
-        _guestAccessProtector = guestAccessProtector;
         _monnifyService = monnifyService;
         _visitService = visitService;
         _notificationService = notificationService;
@@ -220,6 +217,7 @@ public class BookingService : IBookingService
         // 4. Build the booking. For Monnify, initialize against a reference
         // generated and owned by this server before persisting the booking.
         var guestAccessToken = BookingGuestAccess.GenerateToken();
+        var guestAccessIssuedAtUtc = DateTime.UtcNow;
         var booking = new Booking
         {
             Id = Guid.NewGuid(),
@@ -235,8 +233,10 @@ public class BookingService : IBookingService
             Notes = request.Notes,
             StatusHistoryJson = "[]", // FIX: Initialised as empty JSON array to prevent Deserialization errors
             GuestAccessTokenHash = BookingGuestAccess.Hash(guestAccessToken),
-            ProtectedGuestAccessToken = _guestAccessProtector.Protect(guestAccessToken),
-            CreatedAt = DateTime.UtcNow
+            GuestAccessTokenIssuedAtUtc = guestAccessIssuedAtUtc,
+            GuestAccessTokenExpiresAtUtc = guestAccessIssuedAtUtc.Add(
+                BookingGuestAccessPolicy.InitialLinkLifetime),
+            CreatedAt = guestAccessIssuedAtUtc
         };
 
         string? paymentUrl = null;
@@ -355,17 +355,7 @@ public class BookingService : IBookingService
         if (b is null) return null;
 
         if (await IsAccountOwnerAsync(b, accountUserId) ||
-            BookingGuestAccess.Verify(guestAccessToken, b.GuestAccessTokenHash))
-        {
-            return MapToDto(b);
-        }
-
-        // Historical bookings created before secure guest tokens remain
-        // manageable by the old code-plus-email contract. Every new booking
-        // has a token, so this compatibility branch naturally ages out.
-        if (string.IsNullOrWhiteSpace(b.GuestAccessTokenHash) &&
-            !string.IsNullOrWhiteSpace(email) &&
-            b.Guest?.Email.Equals(email.Trim(), StringComparison.OrdinalIgnoreCase) == true)
+            BookingGuestAccessPolicy.IsValid(b, guestAccessToken, DateTime.UtcNow))
         {
             return MapToDto(b);
         }
@@ -381,33 +371,26 @@ public class BookingService : IBookingService
         if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(email)) return;
         var booking = await _bookingRepo.GetByCodeAsync(code.Trim().ToUpperInvariant());
         if (booking?.Guest is null ||
-            !booking.Guest.Email.Equals(email.Trim(), StringComparison.OrdinalIgnoreCase))
+            !booking.Guest.Email.Equals(email.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            booking.Status == BookingStatus.Cancelled)
         {
             return;
         }
 
-        string token;
-        try
+        var issuedAtUtc = DateTime.UtcNow;
+        if (booking.GuestAccessLinkLastRequestedAtUtc >
+            issuedAtUtc.Subtract(BookingGuestAccessPolicy.ReplacementRequestCooldown))
         {
-            token = string.IsNullOrWhiteSpace(booking.ProtectedGuestAccessToken)
-                ? string.Empty
-                : _guestAccessProtector.Unprotect(booking.ProtectedGuestAccessToken);
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(
-                exception,
-                "The stored guest access token for booking {BookingCode} could not be recovered; a replacement will be issued.",
-                booking.BookingCode);
-            token = string.Empty;
+            return;
         }
 
-        if (!BookingGuestAccess.Verify(token, booking.GuestAccessTokenHash))
-        {
-            token = BookingGuestAccess.GenerateToken();
-            booking.GuestAccessTokenHash = BookingGuestAccess.Hash(token);
-            booking.ProtectedGuestAccessToken = _guestAccessProtector.Protect(token);
-        }
+        var token = BookingGuestAccess.GenerateToken();
+        booking.GuestAccessTokenHash = BookingGuestAccess.Hash(token);
+        booking.GuestAccessTokenIssuedAtUtc = issuedAtUtc;
+        booking.GuestAccessTokenExpiresAtUtc = issuedAtUtc.Add(
+            BookingGuestAccessPolicy.ReplacementLinkLifetime);
+        booking.GuestAccessTokenRevokedAtUtc = null;
+        booking.GuestAccessLinkLastRequestedAtUtc = issuedAtUtc;
 
         await _bookingRepo.UpdateAsync(booking);
         await _auditRepo.AddAsync(new AuditLog
@@ -422,9 +405,11 @@ public class BookingService : IBookingService
                 booking.BookingCode,
                 booking.GuestId,
                 RequestId = requestId,
-                RequestedAtUtc = DateTime.UtcNow
+                RequestedAtUtc = issuedAtUtc,
+                ExpiresAtUtc = booking.GuestAccessTokenExpiresAtUtc,
+                ReplacedPreviousLink = true
             }),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = issuedAtUtc
         });
         await _emailOutbox.EnqueueAsync(
             TransactionalEmailTemplates.BookingAccessLink,
@@ -608,6 +593,7 @@ public class BookingService : IBookingService
 
         booking.Status = BookingStatus.Cancelled;
         booking.CancelledAtUtc = DateTime.UtcNow;
+        booking.GuestAccessTokenRevokedAtUtc = booking.CancelledAtUtc;
         booking.PaymentCheckoutUrl = null;
 
         // --- TRIGGER REFUND LOGIC ---
@@ -689,11 +675,11 @@ public class BookingService : IBookingService
             throw new UnauthorizedAccessException("Verification failed.");
 
         var isOwner = await IsAccountOwnerAsync(booking, accountUserId);
-        var validToken = BookingGuestAccess.Verify(guestAccessToken, booking.GuestAccessTokenHash);
-        var validLegacyCredentials = string.IsNullOrWhiteSpace(booking.GuestAccessTokenHash) &&
-            !string.IsNullOrWhiteSpace(email) &&
-            booking.Guest.Email.Equals(email.Trim(), StringComparison.OrdinalIgnoreCase);
-        if (!isOwner && !validToken && !validLegacyCredentials)
+        var validToken = BookingGuestAccessPolicy.IsValid(
+            booking,
+            guestAccessToken,
+            DateTime.UtcNow);
+        if (!isOwner && !validToken)
             throw new UnauthorizedAccessException("Verification failed.");
 
         if (booking.Status == BookingStatus.Cancelled) return MapToDto(booking);
@@ -708,6 +694,7 @@ public class BookingService : IBookingService
         var previousPaymentStatus = booking.PaymentStatus;
         booking.Status = BookingStatus.Cancelled;
         booking.CancelledAtUtc = DateTime.UtcNow;
+        booking.GuestAccessTokenRevokedAtUtc = booking.CancelledAtUtc;
         booking.PaymentCheckoutUrl = null;
         if (booking.PaymentStatus == PaymentStatus.Paid)
             booking.PaymentStatus = PaymentStatus.RefundPending;
@@ -779,28 +766,39 @@ public class BookingService : IBookingService
         return MapToDto(booking);
     }
 
-    public async Task<BookingDto> CompleteRefundAsync(Guid bookingId, string transactionRef, Guid adminId)
+    public async Task<BookingDto> ApproveRefundAsync(
+        Guid bookingId,
+        ApproveRefundRequest request,
+        Guid approvingUserId)
     {
-        if (string.IsNullOrWhiteSpace(transactionRef) || transactionRef.Trim().Length is < 4 or > 160)
-            throw new BadRequestException("A valid external refund reference is required.");
         var booking = await _bookingRepo.GetByIdAsync(bookingId);
         if (booking == null) throw new NotFoundException("Booking not found.");
-
         if (booking.PaymentStatus != PaymentStatus.RefundPending)
             throw new BadRequestException("This booking is not flagged for a manual refund.");
 
-        // Update the state
-        booking.PaymentStatus = PaymentStatus.Refunded;
-        booking.RefundReference = transactionRef.Trim();
+        var threshold = _config.GetValue(
+            "FinancialControls:HighValueRefundThreshold",
+            500000m);
+        if (booking.Amount < threshold)
+            throw new BadRequestException("This refund is below the dual-approval threshold.");
 
-        // Add to history for tracking
-        var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? new();
+        var approvingUser = await GetActiveRefundOperatorAsync(approvingUserId);
+        if (booking.RefundApprovedByUserId.HasValue)
+        {
+            if (booking.RefundApprovedByUserId == approvingUserId) return MapToDto(booking);
+            throw new BadRequestException("This refund already has its first approval.");
+        }
+
+        var approvedAtUtc = DateTime.UtcNow;
+        booking.RefundApprovedByUserId = approvingUserId;
+        booking.RefundApprovedAtUtc = approvedAtUtc;
+        var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? [];
         history.Add(new
         {
-            Action = "MANUAL_REFUND_COMPLETED",
-            Timestamp = DateTime.UtcNow,
-            Reference = transactionRef,
-            AdminId = adminId
+            Action = "HIGH_VALUE_REFUND_APPROVED",
+            Timestamp = approvedAtUtc,
+            ApproverId = approvingUserId,
+            ApproverRole = approvingUser.Role.ToString()
         });
         booking.StatusHistoryJson = JsonSerializer.Serialize(history);
 
@@ -808,7 +806,103 @@ public class BookingService : IBookingService
         await _auditRepo.AddAsync(new AuditLog
         {
             Id = Guid.NewGuid(),
-            ProfileId = adminId,
+            ProfileId = approvingUserId,
+            Action = "HIGH_VALUE_REFUND_APPROVED",
+            EntityType = "Booking",
+            EntityId = booking.Id.ToString(),
+            NewDataJson = JsonSerializer.Serialize(new
+            {
+                booking.BookingCode,
+                booking.Amount,
+                Threshold = threshold,
+                Reason = request.Reason.Trim(),
+                ApprovedAtUtc = approvedAtUtc
+            }),
+            CreatedAt = approvedAtUtc
+        });
+        return MapToDto(booking);
+    }
+
+    public async Task<BookingDto> CompleteRefundAsync(
+        Guid bookingId,
+        CompleteRefundRequest request,
+        Guid processingUserId)
+    {
+        var transactionRef = request.TransactionReference.Trim().ToUpperInvariant();
+        if (transactionRef.Length is < 4 or > 160)
+            throw new BadRequestException("A valid external refund reference is required.");
+        var booking = await _bookingRepo.GetByIdAsync(bookingId);
+        if (booking == null) throw new NotFoundException("Booking not found.");
+        if (booking.PaymentStatus == PaymentStatus.Refunded &&
+            string.Equals(booking.RefundReference, transactionRef, StringComparison.Ordinal) &&
+            booking.RefundAmount == request.Amount &&
+            string.Equals(booking.RefundChannel, request.Channel, StringComparison.Ordinal) &&
+            string.Equals(booking.RefundEvidenceType, request.EvidenceType, StringComparison.Ordinal))
+        {
+            return MapToDto(booking);
+        }
+        if (booking.PaymentStatus != PaymentStatus.RefundPending)
+            throw new BadRequestException("This booking is not flagged for a manual refund.");
+        if (request.Amount != booking.Amount)
+            throw new BadRequestException("The recorded refund amount must equal the paid booking amount.");
+        var validEvidenceForChannel = request.Channel switch
+        {
+            "BankTransfer" => request.EvidenceType == "BankStatement",
+            "Monnify" => request.EvidenceType == "ProviderReceipt",
+            "Cash" => request.EvidenceType == "CashVoucher",
+            _ => false
+        };
+        if (!validEvidenceForChannel)
+            throw new BadRequestException("The evidence type does not match the refund channel.");
+
+        var processingUser = await GetActiveRefundOperatorAsync(processingUserId);
+        var threshold = _config.GetValue(
+            "FinancialControls:HighValueRefundThreshold",
+            500000m);
+        if (booking.Amount >= threshold)
+        {
+            if (!booking.RefundApprovedByUserId.HasValue ||
+                !booking.RefundApprovedAtUtc.HasValue)
+            {
+                throw new BadRequestException(
+                    "This high-value refund requires approval from a different administrator or manager.");
+            }
+            if (booking.RefundApprovedByUserId == processingUserId)
+            {
+                throw new BadRequestException(
+                    "The person who approved a high-value refund cannot also complete it.");
+            }
+        }
+
+        var processedAtUtc = DateTime.UtcNow;
+        booking.PaymentStatus = PaymentStatus.Refunded;
+        booking.RefundReference = transactionRef;
+        booking.RefundAmount = request.Amount;
+        booking.RefundChannel = request.Channel.Trim();
+        booking.RefundEvidenceType = request.EvidenceType.Trim();
+        booking.RefundNotes = request.Notes?.Trim();
+        booking.RefundProcessedByUserId = processingUserId;
+        booking.RefundProcessedAtUtc = processedAtUtc;
+
+        var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? [];
+        history.Add(new
+        {
+            Action = "MANUAL_REFUND_COMPLETED",
+            Timestamp = processedAtUtc,
+            Reference = transactionRef,
+            Amount = request.Amount,
+            Channel = booking.RefundChannel,
+            EvidenceType = booking.RefundEvidenceType,
+            ProcessorId = processingUserId,
+            ProcessorRole = processingUser.Role.ToString()
+        });
+        booking.StatusHistoryJson = JsonSerializer.Serialize(history);
+
+        await _bookingRepo.UpdateAsync(booking);
+        await _auditRepo.AddAsync(new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ProfileId = processingUserId,
             Action = "REFUND_COMPLETED",
             EntityType = "Booking",
             EntityId = booking.Id.ToString(),
@@ -817,9 +911,14 @@ public class BookingService : IBookingService
                 booking.BookingCode,
                 PaymentStatus = booking.PaymentStatus.ToString(),
                 RefundReference = booking.RefundReference,
-                booking.Amount
+                RefundAmount = booking.RefundAmount,
+                RefundChannel = booking.RefundChannel,
+                RefundEvidenceType = booking.RefundEvidenceType,
+                RefundApprovedByUserId = booking.RefundApprovedByUserId,
+                RefundProcessedByUserId = processingUserId,
+                RefundProcessedAtUtc = processedAtUtc
             }),
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = processedAtUtc
         });
         var room = await _roomRepo.GetByIdAsync(booking.RoomId);
         await _emailOutbox.EnqueueAsync(
@@ -885,7 +984,15 @@ public class BookingService : IBookingService
                     : null,
             NotificationMessage: msg,
             RefundReference: b.RefundReference,
-            PaymentExpiresAtUtc: paymentExpiresAtUtc);
+            PaymentExpiresAtUtc: paymentExpiresAtUtc,
+            RefundAmount: b.RefundAmount,
+            RefundChannel: b.RefundChannel,
+            RefundEvidenceType: b.RefundEvidenceType,
+            RefundApprovedByUserId: b.RefundApprovedByUserId,
+            RefundApprovedAtUtc: b.RefundApprovedAtUtc,
+            RefundProcessedByUserId: b.RefundProcessedByUserId,
+            RefundProcessedAtUtc: b.RefundProcessedAtUtc,
+            GuestAccessExpiresAtUtc: b.GuestAccessTokenExpiresAtUtc);
     }
 
     private string GetTransferInstructions()
@@ -907,6 +1014,20 @@ public class BookingService : IBookingService
         return account?.Role == UserRole.Client &&
                !string.IsNullOrWhiteSpace(account.GuestId) &&
                string.Equals(account.GuestId, booking.GuestId, StringComparison.Ordinal);
+    }
+
+    private async Task<ApplicationUser> GetActiveRefundOperatorAsync(Guid userId)
+    {
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user is null ||
+            user.Status != ProfileStatus.Active ||
+            user.Role is not (UserRole.Admin or UserRole.Manager))
+        {
+            throw new UnauthorizedAccessException(
+                "Only an active administrator or manager can process refunds.");
+        }
+
+        return user;
     }
 
     private string BuildManageBookingUrl(string bookingCode, string guestAccessToken)

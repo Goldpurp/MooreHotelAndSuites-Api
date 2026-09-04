@@ -27,6 +27,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<BookingAddOn> BookingAddOns => Set<BookingAddOn>();
     public DbSet<MediaAsset> MediaAssets => Set<MediaAsset>();
     public DbSet<NotificationReceipt> NotificationReceipts => Set<NotificationReceipt>();
+    public DbSet<MediaDeletionJob> MediaDeletionJobs => Set<MediaDeletionJob>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -113,6 +114,26 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .OnDelete(DeleteBehavior.SetNull);
         });
 
+        builder.Entity<MediaDeletionJob>(entity =>
+        {
+            entity.ToTable("media_deletion_outbox", table => table.HasCheckConstraint(
+                "CK_media_deletion_outbox_attempt_count",
+                "\"AttemptCount\" >= 0"));
+            entity.HasKey(job => job.Id);
+            entity.Property(job => job.PublicId).HasMaxLength(512).IsRequired();
+            entity.Property(job => job.SourceType).HasMaxLength(50).IsRequired();
+            entity.Property(job => job.SourceId).HasMaxLength(160).IsRequired();
+            entity.Property(job => job.LastErrorCode).HasMaxLength(80);
+            entity.HasIndex(job => job.PublicId).IsUnique();
+            entity.HasIndex(job => new
+            {
+                job.NextAttemptAtUtc,
+                job.LockedUntilUtc,
+                job.AttemptCount
+            });
+            entity.HasIndex(job => job.CreatedAtUtc);
+        });
+
         builder.Entity<Guest>(entity =>
         {
             entity.ToTable("guests");
@@ -129,20 +150,33 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
 
         builder.Entity<Booking>(entity =>
         {
-            entity.ToTable("bookings", table => table.HasCheckConstraint(
-                "CK_bookings_valid_dates",
-                "\"CheckOut\" > \"CheckIn\""));
+            entity.ToTable("bookings", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_bookings_valid_dates",
+                    "\"CheckOut\" > \"CheckIn\"");
+                table.HasCheckConstraint(
+                    "CK_bookings_guest_access_window",
+                    "\"GuestAccessTokenExpiresAtUtc\" IS NULL OR (\"GuestAccessTokenIssuedAtUtc\" IS NOT NULL AND \"GuestAccessTokenExpiresAtUtc\" > \"GuestAccessTokenIssuedAtUtc\")");
+            });
             entity.HasIndex(booking => booking.BookingCode).IsUnique();
             entity.HasIndex(booking => booking.TransactionReference).IsUnique()
                 .HasFilter("\"TransactionReference\" IS NOT NULL");
             entity.HasIndex(booking => booking.PaymentProviderReference).IsUnique()
                 .HasFilter("\"PaymentProviderReference\" IS NOT NULL");
+            entity.HasIndex(booking => booking.RefundReference).IsUnique()
+                .HasFilter("\"RefundReference\" IS NOT NULL");
             entity.HasIndex(booking => new { booking.RoomId, booking.CheckIn, booking.CheckOut, booking.Status });
             entity.HasIndex(booking => new { booking.GuestId, booking.CreatedAt });
             entity.HasIndex(booking => new { booking.PaymentStatus, booking.CreatedAt });
             entity.HasIndex(booking => new { booking.CreatedAt, booking.Id });
             entity.HasIndex(booking => new { booking.CancelledAtUtc, booking.Id })
                 .HasFilter("\"Status\" = 'Cancelled' AND \"CancelledAtUtc\" IS NOT NULL");
+            entity.HasIndex(booking => new
+            {
+                booking.GuestAccessTokenExpiresAtUtc,
+                booking.Id
+            }).HasFilter("\"GuestAccessTokenRevokedAtUtc\" IS NULL AND \"GuestAccessTokenExpiresAtUtc\" IS NOT NULL");
             entity.Property(booking => booking.BookingCode).HasMaxLength(30).IsRequired();
             entity.Property(booking => booking.Status).HasConversion<string>().HasMaxLength(40);
             entity.Property(booking => booking.PaymentStatus).HasConversion<string>().HasMaxLength(40);
@@ -152,11 +186,14 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(booking => booking.PaymentCheckoutUrl).HasMaxLength(2048);
             entity.Property(booking => booking.PaymentConfirmationMethod).HasMaxLength(50);
             entity.Property(booking => booking.RefundReference).HasMaxLength(160);
+            entity.Property(booking => booking.RefundAmount).HasPrecision(18, 2);
+            entity.Property(booking => booking.RefundChannel).HasMaxLength(40);
+            entity.Property(booking => booking.RefundEvidenceType).HasMaxLength(40);
+            entity.Property(booking => booking.RefundNotes).HasMaxLength(500);
             entity.Property(booking => booking.Notes).HasMaxLength(1000);
             entity.Property(booking => booking.Amount).HasPrecision(18, 2);
             entity.Property(booking => booking.StatusHistoryJson).HasColumnType("jsonb");
             entity.Property(booking => booking.GuestAccessTokenHash).HasMaxLength(44);
-            entity.Property(booking => booking.ProtectedGuestAccessToken).HasColumnType("text");
             entity.HasOne(booking => booking.Room)
                 .WithMany()
                 .HasForeignKey(booking => booking.RoomId)
@@ -170,6 +207,16 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .HasForeignKey(booking => booking.PaymentConfirmedByUserId)
                 .OnDelete(DeleteBehavior.SetNull);
             entity.HasIndex(booking => booking.PaymentConfirmedByUserId);
+            entity.HasOne(booking => booking.RefundApprovedByUser)
+                .WithMany()
+                .HasForeignKey(booking => booking.RefundApprovedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(booking => booking.RefundProcessedByUser)
+                .WithMany()
+                .HasForeignKey(booking => booking.RefundProcessedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+            entity.HasIndex(booking => booking.RefundApprovedByUserId);
+            entity.HasIndex(booking => booking.RefundProcessedByUserId);
         });
 
         builder.Entity<BookingCodeAllocation>(entity =>

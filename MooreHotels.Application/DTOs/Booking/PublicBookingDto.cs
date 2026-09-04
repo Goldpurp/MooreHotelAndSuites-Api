@@ -20,4 +20,5 @@ public sealed record PublicBookingDto(
     string? PaymentInstruction = null,
     string? NotificationMessage = null,
     DateTime? PaymentExpiresAtUtc = null,
-    string? GuestAccessToken = null);
+    string? GuestAccessToken = null,
+    DateTime? GuestAccessExpiresAtUtc = null);

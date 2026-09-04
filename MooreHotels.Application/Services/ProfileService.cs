@@ -22,6 +22,7 @@ public class ProfileService : IProfileService
     private readonly IGuestRepository _guestRepo;
     private readonly IEmailOutbox _emailOutbox;
     private readonly IApplicationTransaction _transaction;
+    private readonly IStaffSessionRevocationService _sessionRevocation;
     private readonly IConfiguration _configuration;
 
     public ProfileService(
@@ -31,6 +32,7 @@ public class ProfileService : IProfileService
         IGuestRepository guestRepo,
         IEmailOutbox emailOutbox,
         IApplicationTransaction transaction,
+        IStaffSessionRevocationService sessionRevocation,
         IConfiguration configuration)
     {
         _userManager = userManager;
@@ -39,6 +41,7 @@ public class ProfileService : IProfileService
         _guestRepo = guestRepo;
         _emailOutbox = emailOutbox;
         _transaction = transaction;
+        _sessionRevocation = sessionRevocation;
         _configuration = configuration;
     }
 
@@ -184,6 +187,11 @@ public class ProfileService : IProfileService
                         new EmailVerificationEmail(user.Name, verificationUrl));
                 }
             });
+
+            if (emailChanged)
+            {
+                await _sessionRevocation.RevokeAsync(userId, "ACCOUNT_EMAIL_CHANGED");
+            }
         }
     }
 
@@ -245,6 +253,7 @@ public class ProfileService : IProfileService
                 userId.ToString(),
                 new { Message = "Security credentials updated." });
         });
+        await _sessionRevocation.RevokeAsync(userId, "CREDENTIALS_ROTATED");
     }
 
     public async Task DeactivateAccountAsync(Guid userId)
@@ -271,6 +280,7 @@ public class ProfileService : IProfileService
                 userId.ToString(),
                 new { Status = "Suspended" });
         });
+        await _sessionRevocation.RevokeAsync(userId, "ACCOUNT_DEACTIVATED");
     }
 
     public async Task ActivateAccountAsync(Guid userId)

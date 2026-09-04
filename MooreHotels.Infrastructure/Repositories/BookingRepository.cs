@@ -468,6 +468,7 @@ public class BookingRepository : IBookingRepository
 
                 booking.Status = BookingStatus.Cancelled;
                 booking.CancelledAtUtc = utcNow;
+                booking.GuestAccessTokenRevokedAtUtc = utcNow;
                 booking.PaymentCheckoutUrl = null;
                 booking.StatusHistoryJson = JsonSerializer.Serialize(history);
 

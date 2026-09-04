@@ -139,7 +139,9 @@ guest name/e-mail fields from the payment ledger.
 with collision-safe random references and reserves every existing booking code
 against reuse.
 `SecureGuestAccessAndEmailOutbox` adds secure guest-management tokens and the
-encrypted transactional email outbox.
+encrypted transactional email outbox. `HardenRemainingProductionControls`
+adds expiring guest access, durable media deletion, refund evidence/approval
+metadata and the indexes and constraints used by the final production gates.
 
 ## Public booking references
 
@@ -149,13 +151,14 @@ row count, date, customer count, or booking volume. A database primary-key
 reservation makes allocation atomic across concurrent requests and multiple API
 instances. Existing references are preserved and are never reissued.
 
-New public bookings are managed through a 256-bit secure link. The API stores a
-hash for validation and a Data-Protection-encrypted copy for email recovery;
-the raw token is never written to audit logs. The browser sends the token in
-`X-Booking-Access-Token`, not an API URL, and email links put it in the URL
-fragment so it is not sent to the website host or CDN. Code plus email alone
-cannot read or cancel a new booking. Historical bookings without a token retain
-the previous lookup behavior until they age out.
+New public bookings are managed through a 256-bit secure link that expires
+after 24 hours. The API stores only its hash and validity window; it does not
+retain a reversible copy, and the raw token is never written to audit logs.
+The browser sends the token in `X-Booking-Access-Token`, not an API URL, and
+email links put it in the URL fragment so it is not sent to the website host or
+CDN. A non-enumerating access-link request rotates the token and emails a
+two-hour replacement. Code plus email alone cannot read or cancel either new or
+historical bookings, and cancellation revokes the active link.
 
 Anonymous guests must first call `POST /api/bookings/verification/request` with
 their email address. The single-use token delivered by email is submitted as
@@ -240,6 +243,9 @@ Monnify credentials into source files, tickets, logs, or chat.
 Production startup fails closed when any of these are missing or unsafe:
 
 - verified-TLS PostgreSQL with a least-privileged application user;
+- a separate schema-owning migration credential and matching
+  `DATABASE_RUNTIME_ROLE`; startup rejects runtime DDL, ownership, superuser,
+  role-management, replication, database-creation and `BYPASSRLS` privileges;
 - non-placeholder JWT, email, Cloudinary and bank-transfer settings;
 - Monnify credentials and its strict webhook boundary when Monnify is enabled;
 - explicit HTTPS origins, hosts, public application URLs, and API URL;
@@ -254,9 +260,9 @@ consumed. On another host, disable this mode and configure the platform's exact
 trusted proxy address or CIDR. Never use `0.0.0.0/0`.
 
 Keep the API behind the configured reverse proxy, rotate credentials through the
-cloud secret manager, persist `/var/data/moorehotels-keys`, use the compiled
-`./migrate` bundle as a Render pre-deploy command, and run restore and rollback
-rehearsals before the Production migration window. See
+cloud secret manager, persist `/var/data/moorehotels-keys`, use
+`./scripts/predeploy-production.sh` as the Render pre-deploy command, and run
+restore and rollback rehearsals before the Production migration window. See
 `PRODUCTION_DEPLOYMENT.md` and `render.yaml`.
 
 ## Verification commands

@@ -141,6 +141,9 @@ public sealed class ProductionConfigurationSecurityTests
         "Runtime:RequirePublicBookingEmailVerification",
         "false")]
     [InlineData(
+        "Runtime:EnableMediaDeletion",
+        "false")]
+    [InlineData(
         "Security:RequireStaffMfa",
         "false")]
     public void Production_rejects_security_boundary_weakening(
@@ -201,8 +204,10 @@ public sealed class ProductionConfigurationSecurityTests
         ["Runtime:EnableExternalServices"] = "true",
         ["Runtime:EnableRateLimiting"] = "true",
         ["Runtime:RequirePublicBookingEmailVerification"] = "true",
+        ["Runtime:EnableMediaDeletion"] = "true",
         ["Runtime:AutoConfirmEmail"] = "false",
         ["Security:RequireStaffMfa"] = "true",
+        ["DATABASE_RUNTIME_ROLE"] = "moore_runtime",
         ["DataProtection:KeysPath"] = "/var/data/moorehotels-keys",
         ["DataProtection:CertificatePath"] =
             "/etc/secrets/moorehotels-data-protection.pfx",

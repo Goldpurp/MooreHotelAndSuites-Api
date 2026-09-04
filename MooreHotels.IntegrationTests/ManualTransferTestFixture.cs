@@ -76,6 +76,7 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         SetEnvironment("Runtime__EnableBookingExpiration", "false");
         SetEnvironment("Runtime__EnableRateLimiting", "false");
         SetEnvironment("Runtime__RequirePublicBookingEmailVerification", "false");
+        SetEnvironment("Runtime__EnableMediaDeletion", "false");
         SetEnvironment("MonnifySettings__Enabled", "true");
         SetEnvironment("EmailSettings__DeliveryMode", "Capture");
         SetEnvironment(
@@ -228,6 +229,24 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
 
         throw new TimeoutException("The test email outbox did not drain.");
     }
+
+    public async Task FlushMediaDeletionOutboxAsync()
+    {
+        var worker = Services.GetServices<IHostedService>()
+            .OfType<MediaDeletionWorker>()
+            .Single();
+        for (var attempt = 0; attempt < 50; attempt++)
+        {
+            await worker.ProcessOnceAsync();
+            var pending = await WithDbAsync(db => db.MediaDeletionJobs.CountAsync());
+            if (pending == 0) return;
+            await Task.Delay(100);
+        }
+
+        throw new TimeoutException("The test media-deletion outbox did not drain.");
+    }
+
+    public Task<TestUser> CreateUserAsync(UserRole role) => SeedUserAsync(role);
 
     public async Task<Room> CreateRoomAsync()
     {

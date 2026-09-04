@@ -47,6 +47,13 @@ public static class WebApplicationExtensions
                 }
             }
 
+            if (app.Environment.IsDeployed())
+            {
+                await EnsureRuntimeDatabaseRoleIsLeastPrivilegedAsync(
+                    context,
+                    app.Configuration["DATABASE_RUNTIME_ROLE"]!);
+            }
+
             await DbInitializer.SeedRolesAsync(scope.ServiceProvider);
 
             if (app.Configuration.GetValue<bool>("SeedAdmin"))
@@ -60,6 +67,76 @@ public static class WebApplicationExtensions
         {
             logger.LogCritical(exception, "Database initialization failed; the API will not start.");
             throw;
+        }
+    }
+
+    private static async Task EnsureRuntimeDatabaseRoleIsLeastPrivilegedAsync(
+        MooreHotelsDbContext context,
+        string expectedRuntimeRole)
+    {
+        await context.Database.OpenConnectionAsync();
+        try
+        {
+            await using var command = context.Database.GetDbConnection().CreateCommand();
+            command.CommandText =
+                """
+                SELECT
+                    r.rolsuper,
+                    r.rolcreaterole,
+                    r.rolcreatedb,
+                    r.rolreplication,
+                    r.rolbypassrls,
+                    has_database_privilege(current_user, current_database(), 'CREATE'),
+                    has_schema_privilege(current_user, 'public', 'CREATE'),
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_class c
+                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                        WHERE n.nspname = 'public'
+                          AND c.relkind IN ('r', 'p', 'S')
+                          AND pg_get_userbyid(c.relowner) = current_user
+                    ),
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_roles powerful
+                        WHERE powerful.rolname IN (
+                            'pg_read_all_data',
+                            'pg_write_all_data',
+                            'pg_read_server_files',
+                            'pg_write_server_files',
+                            'pg_execute_server_program',
+                            'pg_signal_backend'
+                        )
+                          AND pg_has_role(current_user, powerful.oid, 'MEMBER')
+                    ),
+                    current_user
+                FROM pg_roles r
+                WHERE r.rolname = current_user
+                """;
+            await using var reader = await command.ExecuteReaderAsync();
+            if (!await reader.ReadAsync())
+                throw new InvalidOperationException("The runtime PostgreSQL role could not be inspected.");
+
+            var hasDangerousPrivilege = Enumerable.Range(0, 9)
+                .Any(index => reader.GetBoolean(index));
+            var actualRuntimeRole = reader.GetString(9);
+            if (!string.Equals(
+                    actualRuntimeRole,
+                    expectedRuntimeRole,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The configured production database connection does not use DATABASE_RUNTIME_ROLE.");
+            }
+            if (hasDangerousPrivilege)
+            {
+                throw new InvalidOperationException(
+                    "The production runtime PostgreSQL role must not own application objects or have superuser, role-management, database-creation, replication, BYPASSRLS, database CREATE, or public-schema CREATE privileges.");
+            }
+        }
+        finally
+        {
+            await context.Database.CloseConnectionAsync();
         }
     }
 

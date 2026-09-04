@@ -171,10 +171,12 @@ public sealed class LocalImageService : IImageService
         var relativePath = publicId["local/".Length..].Replace('/', Path.DirectorySeparatorChar);
         var fullPath = Path.GetFullPath(Path.Combine(_uploadRoot, relativePath));
         var root = Path.GetFullPath(_uploadRoot) + Path.DirectorySeparatorChar;
-        if (!fullPath.StartsWith(root, StringComparison.Ordinal) || !File.Exists(fullPath))
+        if (!fullPath.StartsWith(root, StringComparison.Ordinal))
         {
             return Task.FromResult(false);
         }
+
+        if (!File.Exists(fullPath)) return Task.FromResult(true);
 
         File.Delete(fullPath);
         return Task.FromResult(true);

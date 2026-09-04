@@ -54,6 +54,41 @@ values after `#`, not in the query string. On the destination page:
 5. Treat a `409 Conflict` while adding an add-on as a stale/closed checkout and
    refresh the booking instead of retrying automatically.
 
+## Guest booking links
+
+1. Read `guestAccessExpiresAtUtc` from the booking response. The original link
+   lasts 24 hours; show a “send new access link” action after it expires.
+2. `POST /api/bookings/access-link` invalidates the previous link and emails a
+   replacement that lasts two hours. Duplicate requests within one minute are
+   suppressed, so disable the action briefly after submission. Never promise
+   that an older tab or link will continue working.
+3. Send the fragment token only in `X-Booking-Access-Token`. Code plus email no
+   longer authorizes lookup, invoice download, or cancellation for historical
+   bookings either.
+4. A successful guest or staff cancellation revokes the guest link.
+
+## Staff operations
+
+1. Listen for SignalR `AccessRevoked`. Immediately clear dashboard state and
+   authentication material and return to sign-in. Suspension, deletion, role
+   changes and security-stamp changes also make reconnect attempts fail.
+2. Image detach/delete responses can be `202 Accepted` with
+   `storageDeletion: "Pending"`; the application reference is already gone and
+   provider cleanup is durable. Show exhausted jobs from
+   `GET /api/admin/media-deletions/failed` and allow an Admin/Manager to call
+   `POST /api/admin/media-deletions/{id}/retry`.
+3. Admins must resolve every result from
+   `GET /api/admin/client-guest-links/issues` with
+   `POST /api/admin/client-guest-links/{userId}/reconcile`, supplying the chosen
+   guest ID, allowed evidence type, and a non-sensitive reason. Do not put ID
+   numbers or document images in the reason field.
+4. Complete a refund by posting JSON to
+   `POST /api/bookings/{id}/complete-refund` with `transactionReference`, exact
+   `amount`, `channel`, matching `evidenceType`, and optional `notes`. For an
+   amount at or above the configured high-value threshold, a different
+   Admin/Manager must first call `POST /api/bookings/{id}/approve-refund` with a
+   reason.
+
 ## Release acceptance
 
 Test desktop and mobile paths for registration, email verification, login,

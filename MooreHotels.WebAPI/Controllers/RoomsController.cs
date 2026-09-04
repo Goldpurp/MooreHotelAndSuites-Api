@@ -5,6 +5,7 @@ using MooreHotels.WebAPI.Services;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Interfaces;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Persistence;
@@ -20,18 +21,21 @@ public class RoomsController : ControllerBase
     private readonly IRoomService _roomService;
     private readonly IImageService _imageService;
     private readonly MooreHotelsDbContext _context;
-    private readonly ILogger<RoomsController> _logger;
+    private readonly IMediaDeletionOutbox _mediaDeletionOutbox;
+    private readonly OrphanedMediaCleanup _orphanedMediaCleanup;
 
     public RoomsController(
         IRoomService roomService,
         IImageService imageService,
         MooreHotelsDbContext context,
-        ILogger<RoomsController> logger)
+        IMediaDeletionOutbox mediaDeletionOutbox,
+        OrphanedMediaCleanup orphanedMediaCleanup)
     {
         _roomService = roomService;
         _imageService = imageService;
         _context = context;
-        _logger = logger;
+        _mediaDeletionOutbox = mediaDeletionOutbox;
+        _orphanedMediaCleanup = orphanedMediaCleanup;
     }
 
     [HttpGet]
@@ -131,17 +135,10 @@ public class RoomsController : ControllerBase
         {
             foreach (var result in uploadResults)
             {
-                try
-                {
-                    await _imageService.DeleteImageAsync(result.PublicId);
-                }
-                catch (Exception cleanupException)
-                {
-                    _logger.LogWarning(
-                        cleanupException,
-                        "Could not remove orphaned image {PublicId} after room creation failed.",
-                        result.PublicId);
-                }
+                await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                    result.PublicId,
+                    "OrphanedRoomCreate",
+                    HttpContext.TraceIdentifier);
             }
 
             throw;
@@ -218,17 +215,10 @@ public class RoomsController : ControllerBase
         {
             foreach (var result in uploadResults)
             {
-                try
-                {
-                    await _imageService.DeleteImageAsync(result.PublicId);
-                }
-                catch (Exception cleanupException)
-                {
-                    _logger.LogWarning(
-                        cleanupException,
-                        "Could not remove orphaned image {PublicId} after room image failure.",
-                        result.PublicId);
-                }
+                await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                    result.PublicId,
+                    "OrphanedRoomImage",
+                    id.ToString());
             }
 
             throw;
@@ -356,6 +346,14 @@ public class RoomsController : ControllerBase
                     });
                 }
 
+                foreach (var publicId in publicIdsToDelete.Distinct(StringComparer.Ordinal))
+                {
+                    _context.MediaDeletionJobs.Add(_mediaDeletionOutbox.Create(
+                        publicId,
+                        "Room",
+                        id.ToString()));
+                }
+
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
             });
@@ -364,37 +362,13 @@ public class RoomsController : ControllerBase
         {
             foreach (var result in uploadResults)
             {
-                try
-                {
-                    await _imageService.DeleteImageAsync(result.PublicId);
-                }
-                catch (Exception cleanupException)
-                {
-                    _logger.LogWarning(
-                        cleanupException,
-                        "Could not remove orphaned image {PublicId} after room update failure.",
-                        result.PublicId);
-                }
+                await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                    result.PublicId,
+                    "OrphanedRoomUpdate",
+                    id.ToString());
             }
 
             throw;
-        }
-
-        // Database truth is committed before removing old cloud assets. A cloud
-        // cleanup outage must not roll back or misreport a successful room edit.
-        foreach (var publicId in publicIdsToDelete.Distinct(StringComparer.Ordinal))
-        {
-            try
-            {
-                await _imageService.DeleteImageAsync(publicId);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(
-                    cleanupException,
-                    "Could not remove superseded room image {PublicId}.",
-                    publicId);
-            }
         }
 
         _context.ChangeTracker.Clear();
@@ -426,28 +400,25 @@ public class RoomsController : ControllerBase
             _context.ChangeTracker.Clear();
             await using var transaction = await _context.Database.BeginTransactionAsync();
             var deletedPublicIds = await _roomService.DeleteRoomAsync(id);
+            foreach (var publicId in deletedPublicIds
+                         .Where(value => !string.IsNullOrWhiteSpace(value))
+                         .Distinct(StringComparer.Ordinal))
+            {
+                _context.MediaDeletionJobs.Add(_mediaDeletionOutbox.Create(
+                    publicId,
+                    "Room",
+                    id.ToString()));
+            }
             await _context.SaveChangesAsync();
             await transaction.CommitAsync();
             return deletedPublicIds;
         });
 
-        foreach (var publicId in publicIds.Where(value => !string.IsNullOrWhiteSpace(value)))
+        return Accepted(new
         {
-            try
-            {
-                await _imageService.DeleteImageAsync(publicId);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(
-                    cleanupException,
-                    "Room {RoomId} was deleted, but cloud image {PublicId} could not be removed.",
-                    id,
-                    publicId);
-            }
-        }
-
-        return Ok(new { message = "Room and all associated images deleted successfully." });
+            message = "Room deleted and durable image cleanup queued.",
+            queuedImageCount = publicIds.Count
+        });
     }
 
     private static PublicRoomDto ToPublicRoom(RoomDto room) => new(

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.DTOs;
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.WebAPI.Services;
@@ -20,14 +21,20 @@ public class ImagesController : ControllerBase
     private readonly IImageService _imageService;
     private readonly MooreHotels.Infrastructure.Persistence.MooreHotelsDbContext _context;
     private readonly ILogger<ImagesController> _logger;
+    private readonly IMediaDeletionOutbox _mediaDeletionOutbox;
+    private readonly OrphanedMediaCleanup _orphanedMediaCleanup;
 
     public ImagesController(
         IImageService imageService,
         MooreHotels.Infrastructure.Persistence.MooreHotelsDbContext context,
+        IMediaDeletionOutbox mediaDeletionOutbox,
+        OrphanedMediaCleanup orphanedMediaCleanup,
         ILogger<ImagesController> logger)
     {
         _imageService = imageService;
         _context = context;
+        _mediaDeletionOutbox = mediaDeletionOutbox;
+        _orphanedMediaCleanup = orphanedMediaCleanup;
         _logger = logger;
     }
 
@@ -89,17 +96,10 @@ public class ImagesController : ControllerBase
         {
             if (result is not null)
             {
-                try
-                {
-                    await _imageService.DeleteImageAsync(result.PublicId);
-                }
-                catch (Exception cleanupException)
-                {
-                    _logger.LogWarning(
-                        cleanupException,
-                        "Could not remove untracked image {PublicId} after persistence failure.",
-                        result.PublicId);
-                }
+                await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                    result.PublicId,
+                    "OrphanedMediaAsset",
+                    HttpContext.TraceIdentifier);
             }
             _logger.LogError(exception, "Image upload failed for folder {Folder}.", folder);
             return StatusCode(500, new { message = "The image could not be uploaded." });
@@ -139,25 +139,16 @@ public class ImagesController : ControllerBase
             _context.RoomImages.Remove(dbImage);
         }
         if (mediaAsset is not null) _context.MediaAssets.Remove(mediaAsset);
-        await _context.SaveChangesAsync();
+        _context.MediaDeletionJobs.Add(_mediaDeletionOutbox.Create(
+            publicId,
+            dbImage is null ? "MediaAsset" : "RoomImage",
+            (dbImage?.Id ?? mediaAsset!.Id).ToString()));
+        await _context.SaveChangesAsync(HttpContext.RequestAborted);
 
-        bool providerDeleted;
-        try
+        return Accepted(new
         {
-            providerDeleted = await _imageService.DeleteImageAsync(publicId);
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(exception, "Image {PublicId} was detached but provider cleanup failed.", publicId);
-            providerDeleted = false;
-        }
-
-        return Ok(new
-        {
-            message = providerDeleted
-                ? "Image removed successfully."
-                : "Image removed from the application; storage cleanup will need to be retried.",
-            storageDeleted = providerDeleted
+            message = "Image removed from the application; durable storage cleanup is queued.",
+            storageDeletion = "Pending"
         });
     }
 

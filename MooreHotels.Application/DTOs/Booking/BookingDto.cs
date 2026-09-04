@@ -25,4 +25,12 @@ public record BookingDto(
     string? NotificationMessage = null,
     string? RefundReference = null,
     DateTime? PaymentExpiresAtUtc = null,
-    string? GuestAccessToken = null);
+    string? GuestAccessToken = null,
+    decimal? RefundAmount = null,
+    string? RefundChannel = null,
+    string? RefundEvidenceType = null,
+    Guid? RefundApprovedByUserId = null,
+    DateTime? RefundApprovedAtUtc = null,
+    Guid? RefundProcessedByUserId = null,
+    DateTime? RefundProcessedAtUtc = null,
+    DateTime? GuestAccessExpiresAtUtc = null);

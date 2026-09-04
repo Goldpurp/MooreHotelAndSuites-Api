@@ -7,7 +7,7 @@ services:
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health/ready
-    preDeployCommand: ./migrate --connection "$MIGRATION_CONNECTION_STRING"
+    preDeployCommand: ./scripts/predeploy-production.sh
     autoDeployTrigger: checksPass
     maxShutdownDelaySeconds: 60
     disk:
@@ -26,6 +26,8 @@ services:
       # A separate schema-owner credential used only by the pre-deploy
       # migration bundle. The running API uses DefaultConnection above.
       - key: MIGRATION_CONNECTION_STRING
+        sync: false
+      - key: DATABASE_RUNTIME_ROLE
         sync: false
       - key: Jwt__Key
         generateValue: true
@@ -97,6 +99,8 @@ services:
         sync: false
       - key: BankTransferSettings__AccountNumber
         sync: false
+      - key: FinancialControls__HighValueRefundThreshold
+        value: 500000
       - key: Security__RequireStaffMfa
         value: true
       - key: Runtime__EnableSwagger
@@ -112,6 +116,8 @@ services:
       - key: Runtime__EnableRateLimiting
         value: true
       - key: Runtime__RequirePublicBookingEmailVerification
+        value: true
+      - key: Runtime__EnableMediaDeletion
         value: true
       - key: Database__CreateIfMissing
         value: false

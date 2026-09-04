@@ -13,8 +13,10 @@ the attached PostgreSQL database are the production source of truth.
 - Configure the API health check as `/health/ready`.
 - Keep automatic deploy set to **After CI checks pass**.
 
-The Docker image contains a reviewed EF Core migration bundle. Render runs it
-with `MIGRATION_CONNECTION_STRING` before starting the new service version.
+The Docker image contains a reviewed EF Core migration bundle and PostgreSQL
+client. Render runs `scripts/predeploy-production.sh`, which validates existing
+data, applies the bundle with `MIGRATION_CONNECTION_STRING`, and refreshes
+runtime DML grants for `DATABASE_RUNTIME_ROLE` before starting the new version.
 The running API uses the separate least-privileged
 `ConnectionStrings__DefaultConnection`; startup removes the migration variable
 from its process before configuration is built, does not apply schema changes,
@@ -25,12 +27,24 @@ The image is pinned to the supported .NET 8.0.30 runtime and 8.0.424 SDK.
 .NET 10 and fully regression-tested before that date. Do not deploy this .NET 8
 line after its end-of-support date.
 
+Keep this release at one API instance. Live SignalR connection revocation uses
+the same process-local connection registry as the current SignalR broadcast
+setup. Before scaling to multiple instances, add and test a shared SignalR
+backplane plus a cross-instance revocation channel.
+
 ## 2. Database
 
 Before the first deployment:
 
 1. Create or upgrade the paid PostgreSQL database.
-2. Keep the API and database in the same Render account and Frankfurt region,
+2. Create two separate database logins with an administrative database
+   credential: a migration owner and a runtime login. The migration login must
+   own the database's `public` schema; the runtime login must not own the
+   database, schema, tables, sequences, or migrations history. Set
+   `DATABASE_RUNTIME_ROLE` to the runtime role name. The checked-in pre-deploy
+   script refuses to continue if it cannot remove schema creation from that
+   role.
+3. Keep the API and database in the same Render account and Frankfurt region,
    then copy the database's **internal** host, port, database, username and
    password into `ConnectionStrings__DefaultConnection` using Npgsql key/value
    syntax:
@@ -43,16 +57,26 @@ Before the first deployment:
    public database allowlist. If the API and database are not in the same
    account and region, stop and correct that instead of using the slower
    external URL for production.
-3. Configure `MIGRATION_CONNECTION_STRING` with the database/schema owner. Use
+4. Configure `MIGRATION_CONNECTION_STRING` with the database/schema owner. Use
    that credential only for Render's pre-deploy command and migration rehearsal.
-4. Create a separate runtime user for `ConnectionStrings__DefaultConnection`.
-   Grant only the schema usage and table/sequence DML permissions needed by the
-   API; do not grant database ownership, role creation or schema alteration.
-5. Disable public/external database access unless an approved administration or
+5. Run the grant script once during setup and verify the runtime credential:
+
+   ```bash
+   MIGRATION_CONNECTION_STRING='...' \
+   DATABASE_RUNTIME_ROLE='moore_runtime' \
+   ./scripts/provision-runtime-database-role.sh
+
+   RUNTIME_CONNECTION_STRING='...' \
+   ./scripts/validate-runtime-database-role.sh
+   ```
+
+   The same provisioning runs after every production migration so new tables
+   do not accidentally become inaccessible or over-privileged.
+6. Disable public/external database access unless an approved administration or
    backup system genuinely requires it.
-6. Take a backup of an existing database before every migration.
-7. Rehearse the migration against a restored copy before the production deploy.
-8. Run `MIGRATION_CONNECTION_STRING='...' ./scripts/validate-production-database.sh`
+7. Take a backup of an existing database before every migration.
+8. Rehearse the migration against a restored copy before the production deploy.
+9. Run `MIGRATION_CONNECTION_STRING='...' ./scripts/validate-production-database.sh`
    against the restored copy before applying the migration bundle.
 
 Do not paste database credentials into GitHub, chat, tickets, screenshots or
@@ -65,6 +89,7 @@ credentials must be rotated. Enter the new values only in Render:
 
 - `ConnectionStrings__DefaultConnection`
 - `MIGRATION_CONNECTION_STRING`
+- `DATABASE_RUNTIME_ROLE`
 - `CloudinarySettings__CloudName`
 - `CloudinarySettings__ApiKey`
 - `CloudinarySettings__ApiSecret`
@@ -74,6 +99,7 @@ credentials must be rotated. Enter the new values only in Render:
 - `BankTransferSettings__BankName`
 - `BankTransferSettings__AccountName`
 - `BankTransferSettings__AccountNumber`
+- `FinancialControls__HighValueRefundThreshold`
 - `DataProtection__CertificateBase64`
 - `DataProtection__CertificatePassword`
 
@@ -159,8 +185,9 @@ Do not reuse a password previously shared in chat.
 Do not deploy the dashboard or guest website until all checks pass:
 
 - `/health/live` and `/health/ready` return HTTP 200.
-- `/api/health` reports `Healthy` when the email queue is operational and
-  `Degraded`—without taking the API out of service—when messages are exhausted.
+- `/api/health` reports `Healthy` when the email and media-deletion queues are
+  operational and `Degraded`—without taking the API out of service—when either
+  queue has exhausted work.
 - An untrusted CORS origin receives no access-control allow-origin header.
 - Admin, Manager, Staff and Client permissions behave correctly.
 - Room create/update/delete and image replacement work.
@@ -169,8 +196,19 @@ Do not deploy the dashboard or guest website until all checks pass:
   missing, expired, mismatched and replayed tokens are rejected.
 - An unpaid booking expires after one hour and releases its room.
 - All required emails are delivered.
-- Secure booking links work, repeated access-link requests preserve the current
-  valid link, and code-plus-email alone cannot read a new booking.
+- Secure booking links expire; an accepted rotation invalidates the old link
+  and sends a two-hour replacement. Duplicate requests within one minute are
+  suppressed, cancellation revokes the link, and code-plus-email alone cannot
+  read any booking.
+- `GET /api/admin/client-guest-links/issues` is empty; every reconciliation was
+  performed by an Admin with recorded evidence and an audit entry.
+- Low-value refunds require an exact amount, channel, matching evidence type and
+  unique external reference. Refunds at or above
+  `FinancialControls__HighValueRefundThreshold` were approved and completed by
+  two different active Admin/Manager accounts.
+- Replacing or deleting managed media creates a durable deletion job; simulate
+  one provider failure, verify retry, and verify exhausted jobs appear in the
+  administrator recovery endpoint.
 - `scripts/check-nuget-vulnerabilities.sh` reports that the release dependency
   gate passed.
 - Logs contain no passwords, JWTs, API keys or full connection strings.

@@ -360,16 +360,37 @@ public class BookingsController : ControllerBase
         });
     }
 
+    [HttpPost("{id}/approve-refund")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> ApproveRefund(
+        Guid id,
+        [FromBody] ApproveRefundRequest request)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var approvingUserId)) return Unauthorized();
+
+        var dto = await ExecuteBookingMutationAsync(
+            id,
+            () => _bookingService.ApproveRefundAsync(id, request, approvingUserId));
+        return Ok(new
+        {
+            Message = "High-value refund approved for independent completion.",
+            Data = dto
+        });
+    }
+
     [HttpPost("{id}/complete-refund")]
     [Authorize(Roles = "Admin,Manager")]
-    public async Task<IActionResult> CompleteRefund(Guid id, [FromQuery] string transactionRef)
+    public async Task<IActionResult> CompleteRefund(
+        Guid id,
+        [FromBody] CompleteRefundRequest request)
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (!Guid.TryParse(userIdStr, out var adminId)) return Unauthorized();
 
         var dto = await ExecuteBookingMutationAsync(
             id,
-            () => _bookingService.CompleteRefundAsync(id, transactionRef, adminId));
+            () => _bookingService.CompleteRefundAsync(id, request, adminId));
         return Ok(new { Message = "Refund marked as completed in system.", Data = dto });
     }
 
@@ -442,7 +463,8 @@ public class BookingsController : ControllerBase
         booking.PaymentInstruction,
         booking.NotificationMessage,
         booking.PaymentExpiresAtUtc,
-        booking.GuestAccessToken);
+        booking.GuestAccessToken,
+        booking.GuestAccessExpiresAtUtc);
 
 
 

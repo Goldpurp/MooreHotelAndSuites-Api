@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Interfaces;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.WebAPI.Services;
@@ -21,18 +22,21 @@ public class ProfileController : ControllerBase
     private readonly IProfileService _profileService;
     private readonly IImageService _imageService;
     private readonly MooreHotelsDbContext _context;
-    private readonly ILogger<ProfileController> _logger;
+    private readonly IMediaDeletionOutbox _mediaDeletionOutbox;
+    private readonly OrphanedMediaCleanup _orphanedMediaCleanup;
 
     public ProfileController(
         IProfileService profileService,
         IImageService imageService,
         MooreHotelsDbContext context,
-        ILogger<ProfileController> logger)
+        IMediaDeletionOutbox mediaDeletionOutbox,
+        OrphanedMediaCleanup orphanedMediaCleanup)
     {
         _profileService = profileService;
         _imageService = imageService;
         _context = context;
-        _logger = logger;
+        _mediaDeletionOutbox = mediaDeletionOutbox;
+        _orphanedMediaCleanup = orphanedMediaCleanup;
     }
 
     [HttpGet("me")]
@@ -134,41 +138,27 @@ public class ProfileController : ControllerBase
                     CreatedAt = updatedAtUtc
                 });
 
+                if (!string.IsNullOrWhiteSpace(previousPublicId) &&
+                    !string.Equals(previousPublicId, uploaded.PublicId, StringComparison.Ordinal))
+                {
+                    _context.MediaDeletionJobs.Add(_mediaDeletionOutbox.Create(
+                        previousPublicId,
+                        "ProfileAvatar",
+                        userId.ToString()));
+                }
+
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
             });
         }
         catch
         {
-            try
-            {
-                await _imageService.DeleteImageAsync(uploaded.PublicId);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(
-                    cleanupException,
-                    "Could not remove new avatar {PublicId} after persistence failure.",
-                    uploaded.PublicId);
-            }
+            await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                uploaded.PublicId,
+                "OrphanedProfileAvatar",
+                userId.ToString());
 
             throw;
-        }
-
-        if (!string.IsNullOrWhiteSpace(previousPublicId) &&
-            !string.Equals(previousPublicId, uploaded.PublicId, StringComparison.Ordinal))
-        {
-            try
-            {
-                await _imageService.DeleteImageAsync(previousPublicId);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(
-                    cleanupException,
-                    "Avatar changed, but the superseded asset {PublicId} could not be removed.",
-                    previousPublicId);
-            }
         }
 
         return Ok(new AvatarUpdateResponse(

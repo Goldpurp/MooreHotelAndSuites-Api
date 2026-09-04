@@ -26,7 +26,6 @@ public sealed class GuestBookingSecurityTests
             .AsNoTracking()
             .SingleAsync(item => item.BookingCode == created.BookingCode));
         Assert.NotEqual(created.AccessToken, stored.GuestAccessTokenHash);
-        Assert.DoesNotContain(created.AccessToken, stored.ProtectedGuestAccessToken ?? string.Empty);
         Assert.True(BookingGuestAccess.Verify(created.AccessToken, stored.GuestAccessTokenHash));
 
         using var emailOnly = PublicRequest(
@@ -109,7 +108,28 @@ public sealed class GuestBookingSecurityTests
     }
 
     [Fact]
-    public async Task Access_link_request_is_non_enumerating_reuses_secure_token_and_queues_email()
+    public async Task Expired_guest_token_fails_closed()
+    {
+        var created = await CreatePublicBookingAsync();
+        await _fixture.WithDbAsync(async db =>
+        {
+            var booking = await db.Bookings.SingleAsync(item => item.Id == created.BookingId);
+            booking.GuestAccessTokenIssuedAtUtc = DateTime.UtcNow.AddHours(-2);
+            booking.GuestAccessTokenExpiresAtUtc = DateTime.UtcNow.AddMinutes(-1);
+            await db.SaveChangesAsync();
+            return true;
+        });
+
+        using var lookup = PublicRequest(
+            HttpMethod.Get,
+            $"/api/bookings/lookup?code={created.BookingCode}");
+        lookup.Headers.Add("X-Booking-Access-Token", created.AccessToken);
+        using var response = await _fixture.Client.SendAsync(lookup);
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Access_link_request_is_non_enumerating_rotates_secure_token_and_queues_email()
     {
         var created = await CreatePublicBookingAsync();
         _fixture.Email.Reset();
@@ -121,16 +141,52 @@ public sealed class GuestBookingSecurityTests
         await _fixture.FlushEmailOutboxAsync();
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
-        Assert.Contains(_fixture.Email.Messages, message =>
+        var accessEmail = Assert.Single(_fixture.Email.Messages, message =>
             message.Template == "BookingAccessLink" &&
             message.BookingCode == created.BookingCode);
+        Assert.NotNull(accessEmail.Link);
+        var replacementToken = Uri.UnescapeDataString(
+            accessEmail.Link!.Split("#accessToken=", StringSplitOptions.None)[1]);
+        Assert.NotEqual(created.AccessToken, replacementToken);
         using var originalLink = PublicRequest(HttpMethod.Get, $"/api/bookings/lookup?code={created.BookingCode}");
         originalLink.Headers.Add("X-Booking-Access-Token", created.AccessToken);
         using var originalLinkResponse = await _fixture.Client.SendAsync(originalLink);
-        Assert.Equal(HttpStatusCode.OK, originalLinkResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, originalLinkResponse.StatusCode);
+        using var replacementLink = PublicRequest(HttpMethod.Get, $"/api/bookings/lookup?code={created.BookingCode}");
+        replacementLink.Headers.Add("X-Booking-Access-Token", replacementToken);
+        using var replacementLinkResponse = await _fixture.Client.SendAsync(replacementLink);
+        Assert.Equal(HttpStatusCode.OK, replacementLinkResponse.StatusCode);
         Assert.Equal(1, await _fixture.WithDbAsync(db => db.AuditLogs.CountAsync(log =>
             log.Action == "BOOKING_ACCESS_LINK_REQUESTED" &&
             log.EntityId == created.BookingId.ToString())));
+
+        var tokenWindow = await _fixture.WithDbAsync(db => db.Bookings
+            .Where(booking => booking.Id == created.BookingId)
+            .Select(booking => new
+            {
+                booking.GuestAccessTokenIssuedAtUtc,
+                booking.GuestAccessTokenExpiresAtUtc
+            })
+            .SingleAsync());
+        Assert.NotNull(tokenWindow.GuestAccessTokenIssuedAtUtc);
+        Assert.InRange(
+            tokenWindow.GuestAccessTokenExpiresAtUtc!.Value -
+            tokenWindow.GuestAccessTokenIssuedAtUtc!.Value,
+            TimeSpan.FromHours(1.99),
+            TimeSpan.FromHours(2.01));
+
+        _fixture.Email.Reset();
+        using (var repeatedRequest = PublicJsonRequest(
+                   "/api/bookings/access-link",
+                   new { bookingCode = created.BookingCode, email = created.Email }))
+        using (var repeatedResponse = await _fixture.Client.SendAsync(repeatedRequest))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, repeatedResponse.StatusCode);
+        }
+        await _fixture.FlushEmailOutboxAsync();
+        Assert.DoesNotContain(_fixture.Email.Messages, message =>
+            message.Template == "BookingAccessLink" &&
+            message.BookingCode == created.BookingCode);
 
         using var unknown = PublicJsonRequest(
             "/api/bookings/access-link",
@@ -180,6 +236,7 @@ public sealed class GuestBookingSecurityTests
                 message.Template == "Cancellation")
         });
         Assert.Equal(BookingStatus.Cancelled, state.Booking.Status);
+        Assert.NotNull(state.Booking.GuestAccessTokenRevokedAtUtc);
         Assert.Contains("RequestId", state.Audit.NewDataJson);
         Assert.DoesNotContain(created.AccessToken, state.Audit.NewDataJson);
         Assert.True(

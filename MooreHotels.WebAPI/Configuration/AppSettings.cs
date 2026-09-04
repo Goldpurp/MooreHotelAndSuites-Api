@@ -43,6 +43,7 @@ public sealed class RuntimeSettings
     public bool EnableBookingExpiration { get; init; } = true;
     public bool EnableRateLimiting { get; init; } = true;
     public bool RequirePublicBookingEmailVerification { get; init; } = true;
+    public bool EnableMediaDeletion { get; init; } = true;
     public int ExternalRequestTimeoutSeconds { get; init; } = 20;
 }
 
@@ -78,6 +79,11 @@ public sealed class BankTransferSettings
     public string BankName { get; init; } = string.Empty;
     public string AccountName { get; init; } = string.Empty;
     public string AccountNumber { get; init; } = string.Empty;
+}
+
+public sealed class FinancialControlsSettings
+{
+    public decimal HighValueRefundThreshold { get; init; } = 500000m;
 }
 
 public static class ConfigurationBootstrap
@@ -165,6 +171,8 @@ public static class ConfigurationBootstrap
             .Get<EmailSettings>() ?? new EmailSettings();
         var hotel = configuration.GetSection("HotelSettings")
             .Get<HotelSettings>() ?? new HotelSettings();
+        var financialControls = configuration.GetSection("FinancialControls")
+            .Get<FinancialControlsSettings>() ?? new FinancialControlsSettings();
 
         if (IsMissingOrPlaceholder(connectionString))
         {
@@ -329,6 +337,22 @@ public static class ConfigurationBootstrap
         {
             errors.Add(
                 "Runtime:RequirePublicBookingEmailVerification must be true in Production.");
+        }
+
+        if (environment.IsDeployed() && !runtime.EnableMediaDeletion)
+        {
+            errors.Add("Runtime:EnableMediaDeletion must be true in Production.");
+        }
+
+        if (environment.IsDeployed() && financialControls.HighValueRefundThreshold <= 0)
+        {
+            errors.Add("FinancialControls:HighValueRefundThreshold must be greater than zero in Production.");
+        }
+
+        if (environment.IsDeployed() &&
+            IsMissingOrPlaceholder(configuration["DATABASE_RUNTIME_ROLE"]))
+        {
+            errors.Add("DATABASE_RUNTIME_ROLE must identify the dedicated PostgreSQL runtime role in Production.");
         }
 
         if (environment.IsDeployed() &&

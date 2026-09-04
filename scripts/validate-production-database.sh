@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_directory/database-connection.sh"
+
 if [[ -z "${MIGRATION_CONNECTION_STRING:-}" ]]; then
   echo "MIGRATION_CONNECTION_STRING is required." >&2
   exit 2
@@ -11,78 +14,7 @@ if ! command -v psql >/dev/null 2>&1; then
   exit 2
 fi
 
-use_connection_argument=false
-if [[ "$MIGRATION_CONNECTION_STRING" == *"="* &&
-      "$MIGRATION_CONNECTION_STRING" != postgresql://* &&
-      "$MIGRATION_CONNECTION_STRING" != postgres://* ]]; then
-  # Convert the Npgsql key/value connection string used by the migration
-  # bundle into libpq environment variables without printing credentials.
-  fields=()
-  field=""
-  quote=""
-  for ((index = 0; index < ${#MIGRATION_CONNECTION_STRING}; index++)); do
-    character="${MIGRATION_CONNECTION_STRING:index:1}"
-    if [[ -n "$quote" ]]; then
-      if [[ "$character" == "$quote" ]]; then
-        quote=""
-      else
-        field+="$character"
-      fi
-    elif [[ "$character" == "'" || "$character" == '"' ]]; then
-      quote="$character"
-    elif [[ "$character" == ";" ]]; then
-      fields+=("$field")
-      field=""
-    else
-      field+="$character"
-    fi
-  done
-  [[ -z "$quote" ]] || { echo "Unterminated quote in MIGRATION_CONNECTION_STRING." >&2; exit 2; }
-  fields+=("$field")
-
-  for field in "${fields[@]}"; do
-    [[ -z "${field//[[:space:]]/}" ]] && continue
-    [[ "$field" == *"="* ]] || { echo "Invalid database connection option." >&2; exit 2; }
-    key="${field%%=*}"
-    value="${field#*=}"
-    key="${key#"${key%%[![:space:]]*}"}"
-    key="${key%"${key##*[![:space:]]}"}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    normalized_key="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
-    normalized_key="${normalized_key// /}"
-    case "$normalized_key" in
-      host) export PGHOST="$value" ;;
-      port) export PGPORT="$value" ;;
-      database) export PGDATABASE="$value" ;;
-      username|userid|user) export PGUSER="$value" ;;
-      password) export PGPASSWORD="$value" ;;
-      sslmode)
-        lower_value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
-        case "$lower_value" in
-          verifyfull) export PGSSLMODE="verify-full" ;;
-          verifyca) export PGSSLMODE="verify-ca" ;;
-          *) export PGSSLMODE="$lower_value" ;;
-        esac
-        ;;
-      rootcertificate) export PGSSLROOTCERT="$value" ;;
-      timeout) export PGCONNECT_TIMEOUT="$value" ;;
-      commandtimeout) export PGOPTIONS="-c statement_timeout=${value}s" ;;
-      maximumpoolsize|pooling|enlist|multiplexing) ;;
-      *) echo "Unsupported database connection option: $key" >&2; exit 2 ;;
-    esac
-  done
-else
-  use_connection_argument=true
-fi
-
-run_psql() {
-  if [[ "$use_connection_argument" == true ]]; then
-    psql "$MIGRATION_CONNECTION_STRING" --no-psqlrc --set ON_ERROR_STOP=1
-  else
-    psql --no-psqlrc --set ON_ERROR_STOP=1
-  fi
-}
+configure_psql_connection "$MIGRATION_CONNECTION_STRING" "MIGRATION_CONNECTION_STRING"
 
 run_psql <<'SQL'
 DO $$
@@ -100,6 +32,18 @@ BEGIN
        OR length("BookingCode") > 30;
     IF invalid_count > 0 THEN
         RAISE EXCEPTION 'Preflight failed: % invalid booking rows.', invalid_count;
+    END IF;
+
+    SELECT count(*) INTO invalid_count
+    FROM (
+        SELECT "RefundReference"
+        FROM bookings
+        WHERE "RefundReference" IS NOT NULL
+        GROUP BY "RefundReference"
+        HAVING count(*) > 1
+    ) duplicate_refunds;
+    IF invalid_count > 0 THEN
+        RAISE EXCEPTION 'Preflight failed: % duplicate refund references.', invalid_count;
     END IF;
 
     SELECT count(*) INTO invalid_count
@@ -165,6 +109,17 @@ BEGIN
         ) duplicates;
         IF invalid_count > 0 THEN
             RAISE EXCEPTION 'Preflight failed: % image public IDs are referenced more than once.', invalid_count;
+        END IF;
+    END IF;
+
+    IF to_regclass('public.users') IS NOT NULL AND to_regclass('public.guests') IS NOT NULL THEN
+        SELECT count(*) INTO invalid_count
+        FROM users u
+        LEFT JOIN guests g ON g."Id" = u."GuestId"
+        WHERE u."Role" = 'Client'
+          AND (u."GuestId" IS NULL OR g."Id" IS NULL);
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % client accounts require guest-profile reconciliation.', invalid_count;
         END IF;
     END IF;
 END

@@ -19,6 +19,7 @@ public class StaffService : IStaffService
     private readonly IAuditService _auditService;
     private readonly IEmailOutbox _emailOutbox;
     private readonly IApplicationTransaction _transaction;
+    private readonly IStaffSessionRevocationService _sessionRevocation;
     private readonly IConfiguration _configuration;
 
     private static readonly string[] AllowedDepartments = { "Housekeeping", "Reception", "FrontDesk", "Concierge" };
@@ -28,12 +29,14 @@ public class StaffService : IStaffService
         IAuditService auditService,
         IEmailOutbox emailOutbox,
         IApplicationTransaction transaction,
+        IStaffSessionRevocationService sessionRevocation,
         IConfiguration configuration)
     {
         _userManager = userManager;
         _auditService = auditService;
         _emailOutbox = emailOutbox;
         _transaction = transaction;
+        _sessionRevocation = sessionRevocation;
         _configuration = configuration;
     }
 
@@ -238,6 +241,11 @@ public class StaffService : IStaffService
                     new { OldStatus = oldStatus.ToString() },
                     new { NewStatus = newStatus.ToString() });
             });
+
+            if (newStatus == ProfileStatus.Suspended)
+            {
+                await _sessionRevocation.RevokeAsync(userId, "ACCOUNT_SUSPENDED");
+            }
         }
     }
 
@@ -311,6 +319,7 @@ public class StaffService : IStaffService
                 new { Role = oldRole.ToString() },
                 new { EmailChanged = emailChanged, Role = user.Role.ToString(), user.Department });
         });
+        await _sessionRevocation.RevokeAsync(userId, "STAFF_PROFILE_CHANGED");
     }
 
     public async Task DeleteUserAsync(Guid userId, Guid actingUserId)
@@ -332,5 +341,6 @@ public class StaffService : IStaffService
                 userId.ToString(),
                 new { Role = user.Role.ToString() });
         });
+        await _sessionRevocation.RevokeAsync(userId, "ACCOUNT_DELETED");
     }
 }

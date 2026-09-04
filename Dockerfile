@@ -25,6 +25,10 @@ RUN dotnet tool run dotnet-ef migrations bundle \
 FROM mcr.microsoft.com/dotnet/aspnet:8.0.30 AS runtime
 WORKDIR /app
 
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends postgresql-client \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV ASPNETCORE_HTTP_PORTS=8080 \
     ASPNETCORE_ENVIRONMENT=Production \
     DOTNET_EnableDiagnostics=0 \
@@ -32,6 +36,7 @@ ENV ASPNETCORE_HTTP_PORTS=8080 \
 
 COPY --from=build --chown=app:app /app/publish .
 COPY --from=build --chown=app:app /app/migrate ./migrate
+COPY --from=build --chown=app:app /src/scripts ./scripts
 
 USER app
 EXPOSE 8080

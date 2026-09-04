@@ -6,12 +6,13 @@ Audit date: 4 September 2026
 
 The API repository was reviewed across its Domain, Application,
 Infrastructure, WebAPI, unit-test, integration-test, database migration,
-deployment, CI and operational documentation layers (214 C# source files plus
+deployment, CI and operational documentation layers (238 C# source files plus
 the release configuration and scripts).
 
 The API source is ready for review and a staging release: deterministic
 restore, formatting, compilation, analyzers, tests, migrations, publish and the
-production Linux container all pass. No commit or push was performed.
+production Linux container all pass. Changes are committed locally only; no
+push or deployment was performed.
 
 The whole product cannot yet be called production-accepted because this
 repository does not contain the guest website or staff dashboard, and live
@@ -50,9 +51,10 @@ acceptance steps, not hidden code failures; see the checklist below.
 10. Added per-user notification receipts so one staff member cannot mark a
     broadcast notification read for everyone. Cancellation timestamps and
     stable operation-ledger IDs are now durable.
-11. Added four reviewed migrations for secure guest access/email outbox,
-    add-ons, general media and durable notification/cancellation state. Foreign
-    keys, uniqueness rules, check constraints and query indexes are included.
+11. Added five reviewed migrations for secure guest access/email outbox,
+    add-ons, general media, durable notification/cancellation state and the
+    remaining production controls. Foreign keys, uniqueness rules, check
+    constraints and query indexes are included.
 12. Pinned .NET 8.0.30 runtime/framework packages, SDK 8.0.424, EF tooling and
     dependency lock files. CI now enforces locked restore, formatting,
     warning-as-error build, unit/integration tests, strict runtime analyzers,
@@ -61,6 +63,22 @@ acceptance steps, not hidden code failures; see the checklist below.
 13. Fixed the production database preflight so the documented Npgsql
     connection string is safely translated for `psql`; it also verifies add-on
     totals and cross-table media ownership.
+14. Added immediate SignalR staff-session revocation with database role/status
+    and security-stamp revalidation at connection time.
+15. Added a transactional media-deletion outbox, leased retries, health
+    diagnostics and audited administrator recovery for exhausted deletions.
+16. Replaced permanent guest booking links with 24-hour initial and two-hour
+    rotating links, removed the historical code-plus-email authorization path,
+    and revoke links on cancellation or automatic expiry.
+17. Added an Admin-only account-to-guest reconciliation queue with row locks,
+    identity-evidence rules, uniqueness enforcement, audit records and session
+    invalidation.
+18. Added unique refund references, exact amount/channel/evidence records,
+    idempotent retries, row-locked completion and two-person approval above the
+    configured high-value threshold.
+19. Automated production data preflight, migrations and least-privilege grants
+    with separate credentials. Production startup rejects a mismatched or
+    privileged runtime role.
 
 ## Verification evidence
 
@@ -69,11 +87,11 @@ acceptance steps, not hidden code failures; see the checklist below.
 - Recommended runtime analyzer rebuild: 0 warnings, 0 errors.
 - Formatting verification: 0 files require changes.
 - Unit tests: 14 passed, 0 failed, 0 skipped.
-- PostgreSQL integration tests: 114 passed, 0 failed, 0 skipped.
+- PostgreSQL integration tests: 126 passed, 0 failed, 0 skipped.
 - Live NuGet advisory scan, including transitive dependencies: passed with no
   reported vulnerable packages.
 - EF model comparison: no model changes pending migration.
-- Linux migration bundle: applied all 15 migrations to an empty PostgreSQL 16
+- Linux migration bundle: applied all 17 migrations to an empty PostgreSQL 16
   database and then completed a second run with no migrations required.
 - Database invariant preflight: passed.
 - Local Release publish: passed.
@@ -85,8 +103,8 @@ acceptance steps, not hidden code failures; see the checklist below.
   permissions policy, no-referrer and no-index were present.
 - An untrusted browser origin received no CORS allow-origin header.
 - Secret-pattern and diff whitespace checks: passed.
-- No files were staged, committed or pushed; all disposable verification
-  containers, database, image and certificate files were removed.
+- No files were pushed or deployed; all disposable verification containers,
+  databases, roles, images, bundles and certificate files were removed.
 
 ## Required release-owner steps
 

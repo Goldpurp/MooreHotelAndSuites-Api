@@ -88,7 +88,7 @@ public class CloudinaryService : IImageService
         };
 
         var result = await _cloudinary.DestroyAsync(deleteParams);
-        return result.Result == "ok";
+        return result.Result is "ok" or "not found";
     }
 
 }

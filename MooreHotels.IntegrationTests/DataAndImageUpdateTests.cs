@@ -58,6 +58,10 @@ public sealed class DataAndImageUpdateTests
         var response = await _fixture.Client.SendAsync(update);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, await _fixture.WithDbAsync(db => db.MediaDeletionJobs.CountAsync(
+            job => job.PublicId == oldImage.PublicId)));
+        Assert.True(File.Exists(_fixture.GetLocalAssetPath(oldImage.PublicId)));
+        await _fixture.FlushMediaDeletionOutboxAsync();
         var stored = await _fixture.WithDbAsync(db => db.Rooms
             .AsNoTracking()
             .Include(item => item.Images)
@@ -132,6 +136,10 @@ public sealed class DataAndImageUpdateTests
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
         var secondBody = await second.Content.ReadFromJsonAsync<AvatarUpdateResponse>();
         Assert.NotNull(secondBody);
+        Assert.Equal(1, await _fixture.WithDbAsync(db => db.MediaDeletionJobs.CountAsync(
+            job => job.PublicId == firstState.User.AvatarPublicId)));
+        Assert.True(File.Exists(_fixture.GetLocalAssetPath(firstState.User.AvatarPublicId!)));
+        await _fixture.FlushMediaDeletionOutboxAsync();
 
         var secondState = await _fixture.WithDbAsync(async db => new
         {
