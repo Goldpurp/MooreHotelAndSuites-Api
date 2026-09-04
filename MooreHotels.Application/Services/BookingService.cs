@@ -13,6 +13,7 @@ using MooreHotels.Domain.Enums;
 using MooreHotels.Domain.Common;
 using System.Security.Claims;
 using System.Text.Json;
+using MooreHotels.Application.DTOs.Pricing;
 
 namespace MooreHotels.Application.Services;
 
@@ -30,6 +31,7 @@ public class BookingService : IBookingService
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly IConfiguration _config;
     private readonly ILogger<BookingService> _logger;
+    private readonly IPricingService _pricingService;
 
 
     public BookingService(
@@ -44,7 +46,8 @@ public class BookingService : IBookingService
         IHotelTimeService hotelTime,
         UserManager<ApplicationUser> userManager,
         IConfiguration config,
-        ILogger<BookingService> logger)
+        ILogger<BookingService> logger,
+        IPricingService pricingService)
 
     {
         _bookingRepo = bookingRepo;
@@ -59,6 +62,7 @@ public class BookingService : IBookingService
         _userManager = userManager;
         _config = config;
         _logger = logger;
+        _pricingService = pricingService;
     }
 
     public async Task RequestBookingEmailVerificationAsync(
@@ -219,6 +223,31 @@ public class BookingService : IBookingService
         if (await _bookingRepo.IsRoomBookedAsync(room.Id, checkIn, checkOut))
             throw new BadRequestException("This room is already reserved for the selected dates.");
 
+        ValidatedBookingQuote? quote = null;
+        var quoteWasSupplied = request.QuoteId.HasValue ||
+                               !string.IsNullOrWhiteSpace(request.QuoteToken);
+        if (quoteWasSupplied &&
+            (!request.QuoteId.HasValue || string.IsNullOrWhiteSpace(request.QuoteToken)))
+            throw new BadRequestException("quoteId and quoteToken must be supplied together.");
+        if (quoteWasSupplied)
+        {
+            quote = await _pricingService.ValidateBookingQuoteAsync(
+                request.QuoteId!.Value,
+                request.QuoteToken!,
+                request);
+        }
+        else if (_config.GetValue<bool>("Pricing:RequireQuoteForBooking"))
+        {
+            throw new BadRequestException(
+                "Request a current pricing quote before creating this booking.");
+        }
+        if (request.PaymentMethod == PaymentMethod.Monnify && quote is not null &&
+            !string.Equals(quote.Currency, "NGN", StringComparison.Ordinal))
+        {
+            throw new BadRequestException(
+                "Monnify checkout is available only for NGN pricing quotes.");
+        }
+
         // Anonymous reservations retain the public booking flow and identify an
         // existing guest only by an exact normalized e-mail and name match.
         guest ??= await _guestRepo.GetByEmailAndNameAsync(
@@ -240,7 +269,8 @@ public class BookingService : IBookingService
         }
 
         var nights = Math.Max(1, checkOutDate.DayNumber - checkInDate.DayNumber);
-        var totalAmount = room.PricePerNight * nights;
+        var legacyRoomSubtotal = room.PricePerNight * nights;
+        var totalAmount = quote?.TotalAmount ?? legacyRoomSubtotal;
         var bookingCode = await _bookingRepo.GenerateBookingCodeAsync();
 
         // 4. Build the booking. For Monnify, initialize against a reference
@@ -261,6 +291,15 @@ public class BookingService : IBookingService
             AdultCount = request.AdultCount,
             ChildCount = request.ChildCount,
             Status = BookingStatus.Pending,
+            QuoteId = quote?.QuoteId,
+            Currency = quote?.Currency ??
+                       _config["Pricing:DefaultCurrency"] ??
+                       "NGN",
+            RoomSubtotal = quote?.RoomSubtotal ?? legacyRoomSubtotal,
+            DiscountAmount = quote?.DiscountAmount ?? 0m,
+            IncludedTaxAmount = quote?.IncludedTaxAmount ?? 0m,
+            TaxAmount = quote?.TaxAmount ?? 0m,
+            FeeAmount = quote?.FeeAmount ?? 0m,
             Amount = totalAmount,
             PaymentStatus = request.PaymentMethod == PaymentMethod.DirectTransfer ? PaymentStatus.AwaitingVerification : PaymentStatus.Unpaid,
             PaymentMethod = request.PaymentMethod.Value,
@@ -357,7 +396,8 @@ public class BookingService : IBookingService
             booking,
             newGuest ? guest : null,
             emailMessages,
-            emailVerification);
+            emailVerification,
+            quote);
 
         // 6. Notifications & Admin Alerts. Scoped services are awaited so work
         // cannot be lost when the request scope is disposed.
@@ -1042,7 +1082,27 @@ public class BookingService : IBookingService
             ChildCount: b.ChildCount,
             PrivacyPolicyVersion: b.PrivacyPolicyVersion,
             BookingTermsVersion: b.BookingTermsVersion,
-            PoliciesAcceptedAtUtc: b.PoliciesAcceptedAtUtc);
+            PoliciesAcceptedAtUtc: b.PoliciesAcceptedAtUtc,
+            QuoteId: b.QuoteId,
+            Currency: b.Currency,
+            RoomSubtotal: b.RoomSubtotal,
+            DiscountAmount: b.DiscountAmount,
+            IncludedTaxAmount: b.IncludedTaxAmount,
+            TaxAmount: b.TaxAmount,
+            FeeAmount: b.FeeAmount,
+            PriceBreakdown: b.Quote?.Lines
+                .OrderBy(line => line.SortOrder)
+                .ThenBy(line => line.Id)
+                .Select(line => new PricingQuoteLineDto(
+                    line.Type,
+                    line.Code,
+                    line.Description,
+                    line.StayDate,
+                    line.Quantity,
+                    line.UnitAmount,
+                    line.Amount,
+                    line.IsInclusive))
+                .ToArray());
     }
 
     private string GetTransferInstructions()

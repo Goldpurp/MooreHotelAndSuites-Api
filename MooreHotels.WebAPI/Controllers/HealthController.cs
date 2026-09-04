@@ -3,6 +3,9 @@ using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.WebAPI.Services;
+using Microsoft.Extensions.Options;
+using MooreHotels.WebAPI.Configuration;
+using MooreHotels.Domain.Common;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -11,7 +14,21 @@ namespace MooreHotels.WebAPI.Controllers;
 public class HealthController : ControllerBase
 {
     private readonly MooreHotelsDbContext _context;
-    public HealthController(MooreHotelsDbContext context) => _context = context;
+    private readonly OperationalReadinessSettings _operations;
+    private readonly ProviderAcceptanceSettings _providerAcceptance;
+    private readonly MonnifySettings _monnify;
+
+    public HealthController(
+        MooreHotelsDbContext context,
+        IOptions<OperationalReadinessSettings> operations,
+        IOptions<ProviderAcceptanceSettings> providerAcceptance,
+        IOptions<MonnifySettings> monnify)
+    {
+        _context = context;
+        _operations = operations.Value;
+        _providerAcceptance = providerAcceptance.Value;
+        _monnify = monnify.Value;
+    }
 
     [HttpGet]
     [Authorize(Roles = "Admin")]
@@ -42,25 +59,100 @@ public class HealthController : ControllerBase
             var exhaustedMediaDeletions = await _context.MediaDeletionJobs
                 .AsNoTracking()
                 .CountAsync(job => job.AttemptCount >= MediaDeletionWorker.MaximumAttempts);
+            var oldestPendingEmailAtUtc = await _context.EmailOutboxMessages
+                .AsNoTracking()
+                .Where(message => message.AttemptCount < 12)
+                .MinAsync(message => (DateTime?)message.CreatedAtUtc);
+            var oldestPendingMediaDeletionAtUtc = await _context.MediaDeletionJobs
+                .AsNoTracking()
+                .Where(job => job.AttemptCount < MediaDeletionWorker.MaximumAttempts)
+                .MinAsync(job => (DateTime?)job.CreatedAtUtc);
+            var failedPaymentsLastDay = await _context.MonnifyTransactions
+                .AsNoTracking()
+                .CountAsync(transaction =>
+                    transaction.Status == "FAILED" &&
+                    transaction.CreatedAt >= DateTime.UtcNow.AddDays(-1));
+            var stalePendingPayments = await _context.MonnifyTransactions
+                .AsNoTracking()
+                .CountAsync(transaction =>
+                    transaction.Status == "PENDING" &&
+                    transaction.CreatedAt <= DateTime.UtcNow.AddMinutes(
+                        -_operations.PaymentPendingWarningMinutes));
+
+            var now = DateTimeOffset.UtcNow;
+            var emailQueueAgeMinutes = GetAgeMinutes(oldestPendingEmailAtUtc, now);
+            var mediaQueueAgeMinutes = GetAgeMinutes(oldestPendingMediaDeletionAtUtc, now);
+            var restoreDrillAgeDays = _operations.LastRestoreDrillAtUtc.HasValue
+                ? Math.Max(0, (now - _operations.LastRestoreDrillAtUtc.Value).TotalDays)
+                : (double?)null;
+            var restoreDrillCurrent = restoreDrillAgeDays.HasValue &&
+                                      restoreDrillAgeDays <= _operations.RestoreDrillMaximumAgeDays;
+            var emailQueueHealthy = exhaustedEmails == 0 &&
+                                    emailQueueAgeMinutes.GetValueOrDefault() <=
+                                    _operations.QueueAgeWarningMinutes;
+            var mediaQueueHealthy = exhaustedMediaDeletions == 0 &&
+                                    mediaQueueAgeMinutes.GetValueOrDefault() <=
+                                    _operations.QueueAgeWarningMinutes;
+            var paymentHealth = failedPaymentsLastDay == 0 && stalePendingPayments == 0;
 
             var response = new
             {
-                Status = exhaustedEmails == 0 && exhaustedMediaDeletions == 0
+                Status = emailQueueHealthy && mediaQueueHealthy && paymentHealth && restoreDrillCurrent
                     ? "Healthy"
                     : "Degraded",
-                Timestamp = DateTimeOffset.UtcNow,
+                Timestamp = now,
                 Database = "Connected",
                 EmailQueue = new
                 {
-                    Status = exhaustedEmails == 0 ? "Operational" : "AttentionRequired",
+                    Status = emailQueueHealthy ? "Operational" : "AttentionRequired",
                     Pending = pendingEmails,
-                    Exhausted = exhaustedEmails
+                    Exhausted = exhaustedEmails,
+                    OldestPendingAgeMinutes = emailQueueAgeMinutes,
+                    WarningThresholdMinutes = _operations.QueueAgeWarningMinutes
                 },
                 MediaDeletionQueue = new
                 {
-                    Status = exhaustedMediaDeletions == 0 ? "Operational" : "AttentionRequired",
+                    Status = mediaQueueHealthy ? "Operational" : "AttentionRequired",
                     Pending = pendingMediaDeletions,
-                    Exhausted = exhaustedMediaDeletions
+                    Exhausted = exhaustedMediaDeletions,
+                    OldestPendingAgeMinutes = mediaQueueAgeMinutes,
+                    WarningThresholdMinutes = _operations.QueueAgeWarningMinutes
+                },
+                Payments = new
+                {
+                    Status = paymentHealth ? "Operational" : "AttentionRequired",
+                    FailedLast24Hours = failedPaymentsLastDay,
+                    StalePending = stalePendingPayments,
+                    PendingWarningThresholdMinutes = _operations.PaymentPendingWarningMinutes
+                },
+                Recovery = new
+                {
+                    Status = restoreDrillCurrent ? "Verified" : "AttentionRequired",
+                    _operations.ManagedBackupsEnabled,
+                    _operations.PointInTimeRecoveryEnabled,
+                    _operations.EncryptedOffProviderBackupsEnabled,
+                    _operations.RecoveryPointObjectiveMinutes,
+                    _operations.RecoveryTimeObjectiveMinutes,
+                    _operations.LastRestoreDrillAtUtc,
+                    RestoreDrillAgeDays = restoreDrillAgeDays,
+                    _operations.RestoreDrillMaximumAgeDays,
+                    _operations.RestoreDrillEvidenceReference
+                },
+                Providers = new
+                {
+                    Brevo = ToAcceptanceStatus(_providerAcceptance.Brevo),
+                    Cloudinary = ToAcceptanceStatus(_providerAcceptance.Cloudinary),
+                    Monnify = new
+                    {
+                        Enabled = _monnify.Enabled,
+                        HostedPaymentPageOnly = _providerAcceptance.HostedPaymentPageOnly,
+                        Sandbox = ToAcceptanceStatus(_providerAcceptance.MonnifySandbox),
+                        Webhook = ToAcceptanceStatus(_providerAcceptance.MonnifyWebhook),
+                        LivePaymentAndRefund = ToAcceptanceStatus(
+                            _providerAcceptance.MonnifyLivePaymentAndRefund),
+                        PciResponsibilityReview = ToAcceptanceStatus(
+                            _providerAcceptance.PciResponsibilityReview)
+                    }
                 }
             };
 
@@ -78,6 +170,24 @@ public class HealthController : ControllerBase
             });
         }
     }
+
+    private static double? GetAgeMinutes(DateTime? createdAtUtc, DateTimeOffset now) =>
+        createdAtUtc.HasValue
+            ? Math.Round(
+                Math.Max(0, (now.UtcDateTime - createdAtUtc.Value).TotalMinutes),
+                1,
+                MidpointRounding.AwayFromZero)
+            : null;
+
+    private static object ToAcceptanceStatus(AcceptanceEvidence evidence) => new
+    {
+        Accepted = evidence.AcceptedAtUtc.HasValue &&
+                   !string.IsNullOrWhiteSpace(evidence.EvidenceReference) &&
+                   !string.IsNullOrWhiteSpace(evidence.CredentialRotationReference),
+        evidence.AcceptedAtUtc,
+        evidence.EvidenceReference,
+        evidence.CredentialRotationReference
+    };
 
     [HttpGet("~/health/ready")]
     [AllowAnonymous]

@@ -101,6 +101,84 @@ services:
         sync: false
       - key: FinancialControls__HighValueRefundThreshold
         value: 500000
+      - key: Pricing__DefaultCurrency
+        value: NGN
+      - key: Pricing__QuoteLifetimeMinutes
+        value: 15
+      - key: Pricing__RequireQuoteForBooking
+        value: true
+      # These values are declarations backed by provider/dashboard evidence.
+      # Do not set them until the linked acceptance action has really passed.
+      - key: OperationalReadiness__ManagedBackupsEnabled
+        sync: false
+      - key: OperationalReadiness__PointInTimeRecoveryEnabled
+        sync: false
+      - key: OperationalReadiness__EncryptedOffProviderBackupsEnabled
+        sync: false
+      - key: OperationalReadiness__RecoveryPointObjectiveMinutes
+        value: 60
+      - key: OperationalReadiness__RecoveryTimeObjectiveMinutes
+        value: 240
+      - key: OperationalReadiness__RestoreDrillMaximumAgeDays
+        value: 100
+      - key: OperationalReadiness__LastRestoreDrillAtUtc
+        sync: false
+      - key: OperationalReadiness__RestoreDrillEvidenceReference
+        sync: false
+      - key: OperationalReadiness__UptimeAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__ApiErrorAndLatencyAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__QueueAgeAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__PaymentAndWebhookAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__AlertRoutingEvidenceReference
+        sync: false
+      - key: OperationalReadiness__QueueAgeWarningMinutes
+        value: 15
+      - key: OperationalReadiness__PaymentPendingWarningMinutes
+        value: 30
+      - key: ProviderAcceptance__Brevo__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__Brevo__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__Brevo__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__Cloudinary__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__Cloudinary__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__Cloudinary__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__HostedPaymentPageOnly
+        value: false
+      # Required only when MonnifySettings__Enabled=true. Add the evidence
+      # values in Render and change HostedPaymentPageOnly only after acceptance.
+      - key: ProviderAcceptance__MonnifySandbox__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__MonnifySandbox__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__MonnifySandbox__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyWebhook__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyWebhook__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__MonnifyWebhook__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyLivePaymentAndRefund__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyLivePaymentAndRefund__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__MonnifyLivePaymentAndRefund__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__PciResponsibilityReview__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__PciResponsibilityReview__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__PciResponsibilityReview__EvidenceReference
+        sync: false
       - key: Privacy__RequirePolicyAcceptance
         value: true
       - key: Privacy__CurrentPrivacyPolicyVersion

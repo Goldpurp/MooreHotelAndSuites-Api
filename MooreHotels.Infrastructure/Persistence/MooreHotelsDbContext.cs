@@ -29,6 +29,12 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<NotificationReceipt> NotificationReceipts => Set<NotificationReceipt>();
     public DbSet<MediaDeletionJob> MediaDeletionJobs => Set<MediaDeletionJob>();
     public DbSet<PrivacyRequest> PrivacyRequests => Set<PrivacyRequest>();
+    public DbSet<RatePlan> RatePlans => Set<RatePlan>();
+    public DbSet<DailyRoomRate> DailyRoomRates => Set<DailyRoomRate>();
+    public DbSet<PricingRule> PricingRules => Set<PricingRule>();
+    public DbSet<Promotion> Promotions => Set<Promotion>();
+    public DbSet<BookingQuote> BookingQuotes => Set<BookingQuote>();
+    public DbSet<BookingQuoteLine> BookingQuoteLines => Set<BookingQuoteLine>();
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -169,6 +175,12 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 table.HasCheckConstraint(
                     "CK_bookings_guest_access_window",
                     "\"GuestAccessTokenExpiresAtUtc\" IS NULL OR (\"GuestAccessTokenIssuedAtUtc\" IS NOT NULL AND \"GuestAccessTokenExpiresAtUtc\" > \"GuestAccessTokenIssuedAtUtc\")");
+                table.HasCheckConstraint(
+                    "CK_bookings_price_breakdown",
+                    "\"Amount\" >= 0 AND \"RoomSubtotal\" >= 0 AND \"DiscountAmount\" >= 0 AND \"IncludedTaxAmount\" >= 0 AND \"TaxAmount\" >= 0 AND \"FeeAmount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_bookings_currency",
+                    "\"Currency\" ~ '^[A-Z]{3}$'");
             });
             entity.HasIndex(booking => booking.BookingCode).IsUnique();
             entity.HasIndex(booking => booking.TransactionReference).IsUnique()
@@ -203,6 +215,13 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(booking => booking.RefundEvidenceType).HasMaxLength(40);
             entity.Property(booking => booking.RefundNotes).HasMaxLength(500);
             entity.Property(booking => booking.Notes).HasMaxLength(1000);
+            entity.Property(booking => booking.Currency).HasMaxLength(3).IsRequired()
+                .HasDefaultValue("NGN");
+            entity.Property(booking => booking.RoomSubtotal).HasPrecision(18, 2);
+            entity.Property(booking => booking.DiscountAmount).HasPrecision(18, 2);
+            entity.Property(booking => booking.IncludedTaxAmount).HasPrecision(18, 2);
+            entity.Property(booking => booking.TaxAmount).HasPrecision(18, 2);
+            entity.Property(booking => booking.FeeAmount).HasPrecision(18, 2);
             entity.Property(booking => booking.Amount).HasPrecision(18, 2);
             entity.Property(booking => booking.StatusHistoryJson).HasColumnType("jsonb");
             entity.Property(booking => booking.GuestAccessTokenHash).HasMaxLength(44);
@@ -216,6 +235,12 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .WithMany(guest => guest.Bookings)
                 .HasForeignKey(booking => booking.GuestId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(booking => booking.Quote)
+                .WithOne(quote => quote.Booking)
+                .HasForeignKey<Booking>(booking => booking.QuoteId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(booking => booking.QuoteId).IsUnique()
+                .HasFilter("\"QuoteId\" IS NOT NULL");
             entity.HasOne(booking => booking.PaymentConfirmedByUser)
                 .WithMany()
                 .HasForeignKey(booking => booking.PaymentConfirmedByUserId)
@@ -231,6 +256,165 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .OnDelete(DeleteBehavior.SetNull);
             entity.HasIndex(booking => booking.RefundApprovedByUserId);
             entity.HasIndex(booking => booking.RefundProcessedByUserId);
+        });
+
+        builder.Entity<RatePlan>(entity =>
+        {
+            entity.ToTable("rate_plans", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_rate_plans_nights",
+                    "\"MinimumNights\" >= 1 AND \"MaximumNights\" >= \"MinimumNights\" AND \"MaximumNights\" <= 90");
+                table.HasCheckConstraint(
+                    "CK_rate_plans_adjustment",
+                    "\"BaseAdjustmentValue\" >= 0 AND (\"BaseAdjustmentType\" <> 'None' OR \"BaseAdjustmentValue\" = 0)");
+                table.HasCheckConstraint(
+                    "CK_rate_plans_sell_dates",
+                    "\"SellUntilDate\" IS NULL OR \"SellFromDate\" IS NULL OR \"SellUntilDate\" >= \"SellFromDate\"");
+                table.HasCheckConstraint("CK_rate_plans_currency", "\"Currency\" ~ '^[A-Z]{3}$'");
+            });
+            entity.HasKey(plan => plan.Id);
+            entity.Property(plan => plan.Code).HasMaxLength(30).IsRequired();
+            entity.Property(plan => plan.Name).HasMaxLength(120).IsRequired();
+            entity.Property(plan => plan.Description).HasMaxLength(1000);
+            entity.Property(plan => plan.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(plan => plan.BaseAdjustmentType).HasConversion<string>().HasMaxLength(30);
+            entity.Property(plan => plan.BaseAdjustmentValue).HasPrecision(18, 4);
+            entity.HasIndex(plan => plan.Code).IsUnique();
+            entity.HasIndex(plan => plan.IsDefault).IsUnique()
+                .HasFilter("\"IsDefault\" = TRUE AND \"IsActive\" = TRUE");
+            entity.HasIndex(plan => new { plan.IsActive, plan.SellFromDate, plan.SellUntilDate });
+        });
+
+        builder.Entity<DailyRoomRate>(entity =>
+        {
+            entity.ToTable("daily_room_rates", table =>
+            {
+                table.HasCheckConstraint("CK_daily_room_rates_amount", "\"Amount\" > 0");
+                table.HasCheckConstraint(
+                    "CK_daily_room_rates_scope",
+                    "(\"RoomId\" IS NOT NULL AND \"RoomCategory\" IS NULL) OR (\"RoomId\" IS NULL AND \"RoomCategory\" IS NOT NULL)");
+            });
+            entity.HasKey(rate => rate.Id);
+            entity.Property(rate => rate.RoomCategory).HasConversion<string>().HasMaxLength(40);
+            entity.Property(rate => rate.Amount).HasPrecision(18, 2);
+            entity.HasOne(rate => rate.RatePlan)
+                .WithMany(plan => plan.DailyRates)
+                .HasForeignKey(rate => rate.RatePlanId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(rate => rate.Room)
+                .WithMany()
+                .HasForeignKey(rate => rate.RoomId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(rate => new { rate.RatePlanId, rate.RoomId, rate.StayDate })
+                .IsUnique()
+                .HasFilter("\"RoomId\" IS NOT NULL");
+            entity.HasIndex(rate => new { rate.RatePlanId, rate.RoomCategory, rate.StayDate })
+                .IsUnique()
+                .HasFilter("\"RoomCategory\" IS NOT NULL");
+        });
+
+        builder.Entity<PricingRule>(entity =>
+        {
+            entity.ToTable("pricing_rules", table =>
+            {
+                table.HasCheckConstraint("CK_pricing_rules_value", "\"Value\" > 0");
+                table.HasCheckConstraint(
+                    "CK_pricing_rules_dates",
+                    "\"EffectiveUntilDate\" IS NULL OR \"EffectiveFromDate\" IS NULL OR \"EffectiveUntilDate\" >= \"EffectiveFromDate\"");
+                table.HasCheckConstraint(
+                    "CK_pricing_rules_inclusive",
+                    "NOT \"IsInclusive\" OR (\"Kind\" = 'Tax' AND \"Calculation\" = 'Percentage')");
+                table.HasCheckConstraint("CK_pricing_rules_currency", "\"Currency\" ~ '^[A-Z]{3}$'");
+            });
+            entity.HasKey(rule => rule.Id);
+            entity.Property(rule => rule.Code).HasMaxLength(30).IsRequired();
+            entity.Property(rule => rule.Name).HasMaxLength(120).IsRequired();
+            entity.Property(rule => rule.Kind).HasConversion<string>().HasMaxLength(20);
+            entity.Property(rule => rule.Calculation).HasConversion<string>().HasMaxLength(30);
+            entity.Property(rule => rule.Value).HasPrecision(18, 4);
+            entity.Property(rule => rule.Currency).HasMaxLength(3).IsRequired();
+            entity.HasIndex(rule => rule.Code).IsUnique();
+            entity.HasIndex(rule => new { rule.IsActive, rule.SortOrder });
+        });
+
+        builder.Entity<Promotion>(entity =>
+        {
+            entity.ToTable("promotions", table =>
+            {
+                table.HasCheckConstraint("CK_promotions_value", "\"Value\" > 0");
+                table.HasCheckConstraint("CK_promotions_window", "\"ValidUntilUtc\" > \"ValidFromUtc\"");
+                table.HasCheckConstraint("CK_promotions_redemptions", "\"RedemptionCount\" >= 0 AND (\"RedemptionLimit\" IS NULL OR \"RedemptionLimit\" > 0)");
+                table.HasCheckConstraint("CK_promotions_minimum_nights", "\"MinimumNights\" BETWEEN 1 AND 90");
+                table.HasCheckConstraint("CK_promotions_currency", "\"Currency\" ~ '^[A-Z]{3}$'");
+                table.HasCheckConstraint(
+                    "CK_promotions_percentage",
+                    "\"DiscountType\" <> 'Percentage' OR \"Value\" <= 100");
+            });
+            entity.HasKey(promotion => promotion.Id);
+            entity.Property(promotion => promotion.Code).HasMaxLength(40).IsRequired();
+            entity.Property(promotion => promotion.Name).HasMaxLength(120).IsRequired();
+            entity.Property(promotion => promotion.DiscountType).HasConversion<string>().HasMaxLength(30);
+            entity.Property(promotion => promotion.Value).HasPrecision(18, 4);
+            entity.Property(promotion => promotion.MaximumDiscountAmount).HasPrecision(18, 2);
+            entity.Property(promotion => promotion.Currency).HasMaxLength(3).IsRequired();
+            entity.HasIndex(promotion => promotion.Code).IsUnique();
+            entity.HasIndex(promotion => new { promotion.IsActive, promotion.ValidFromUtc, promotion.ValidUntilUtc });
+            entity.HasOne(promotion => promotion.RatePlan)
+                .WithMany()
+                .HasForeignKey(promotion => promotion.RatePlanId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<BookingQuote>(entity =>
+        {
+            entity.ToTable("booking_quotes", table =>
+            {
+                table.HasCheckConstraint("CK_booking_quotes_window", "\"ExpiresAtUtc\" > \"CreatedAtUtc\"");
+                table.HasCheckConstraint("CK_booking_quotes_dates", "\"CheckOutDate\" > \"CheckInDate\"");
+                table.HasCheckConstraint("CK_booking_quotes_occupancy", "\"AdultCount\" >= 1 AND \"ChildCount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_booking_quotes_totals",
+                    "\"RoomSubtotal\" >= 0 AND \"DiscountAmount\" BETWEEN 0 AND \"RoomSubtotal\" AND \"IncludedTaxAmount\" >= 0 AND \"TaxAmount\" >= 0 AND \"FeeAmount\" >= 0 AND \"TotalAmount\" = \"RoomSubtotal\" - \"DiscountAmount\" + \"TaxAmount\" + \"FeeAmount\"");
+                table.HasCheckConstraint("CK_booking_quotes_currency", "\"Currency\" ~ '^[A-Z]{3}$'");
+            });
+            entity.HasKey(quote => quote.Id);
+            entity.Property(quote => quote.AccessTokenHash).HasMaxLength(44).IsRequired();
+            entity.Property(quote => quote.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(quote => quote.RoomSubtotal).HasPrecision(18, 2);
+            entity.Property(quote => quote.DiscountAmount).HasPrecision(18, 2);
+            entity.Property(quote => quote.IncludedTaxAmount).HasPrecision(18, 2);
+            entity.Property(quote => quote.TaxAmount).HasPrecision(18, 2);
+            entity.Property(quote => quote.FeeAmount).HasPrecision(18, 2);
+            entity.Property(quote => quote.TotalAmount).HasPrecision(18, 2);
+            entity.HasIndex(quote => quote.AccessTokenHash).IsUnique();
+            entity.HasIndex(quote => new { quote.ExpiresAtUtc, quote.ConsumedAtUtc });
+            entity.HasOne(quote => quote.Room).WithMany().HasForeignKey(quote => quote.RoomId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(quote => quote.RatePlan).WithMany().HasForeignKey(quote => quote.RatePlanId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(quote => quote.Promotion).WithMany().HasForeignKey(quote => quote.PromotionId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasMany(quote => quote.Lines)
+                .WithOne(line => line.BookingQuote)
+                .HasForeignKey(line => line.BookingQuoteId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        builder.Entity<BookingQuoteLine>(entity =>
+        {
+            entity.ToTable("booking_quote_lines", table =>
+            {
+                table.HasCheckConstraint("CK_booking_quote_lines_quantity", "\"Quantity\" > 0");
+                table.HasCheckConstraint("CK_booking_quote_lines_amount", "\"Amount\" >= 0");
+                table.HasCheckConstraint(
+                    "CK_booking_quote_lines_stay_date",
+                    "(\"Type\" = 'RoomNight' AND \"StayDate\" IS NOT NULL) OR (\"Type\" <> 'RoomNight' AND \"StayDate\" IS NULL)");
+            });
+            entity.HasKey(line => line.Id);
+            entity.Property(line => line.Type).HasConversion<string>().HasMaxLength(30);
+            entity.Property(line => line.Code).HasMaxLength(40).IsRequired();
+            entity.Property(line => line.Description).HasMaxLength(200).IsRequired();
+            entity.Property(line => line.UnitAmount).HasPrecision(18, 2);
+            entity.Property(line => line.Amount).HasPrecision(18, 2);
+            entity.HasIndex(line => new { line.BookingQuoteId, line.SortOrder, line.Id });
         });
 
         builder.Entity<PrivacyRequest>(entity =>

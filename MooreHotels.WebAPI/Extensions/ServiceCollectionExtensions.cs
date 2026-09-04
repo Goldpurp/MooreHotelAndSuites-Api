@@ -64,6 +64,9 @@ public static class ServiceCollectionExtensions
         services.Configure<JwtSettings>(configuration.GetSection("Jwt"));
         services.Configure<BankTransferSettings>(configuration.GetSection("BankTransferSettings"));
         services.Configure<FinancialControlsSettings>(configuration.GetSection("FinancialControls"));
+        services.Configure<OperationalReadinessSettings>(configuration.GetSection("OperationalReadiness"));
+        services.Configure<ProviderAcceptanceSettings>(configuration.GetSection("ProviderAcceptance"));
+        services.Configure<PricingSettings>(configuration.GetSection("Pricing"));
         services.Configure<ForwardedHeadersSettings>(configuration.GetSection("ForwardedHeaders"));
         services.Configure<EmailSettings>(configuration.GetSection("EmailSettings"));
         services.Configure<CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
@@ -84,7 +87,7 @@ public static class ServiceCollectionExtensions
                 // still bounded to the trusted right-most hop below.
                 options.RequireHeaderSymmetry = !forwardedHeaders.TrustRenderEdge;
                 options.KnownProxies.Clear();
-                options.KnownNetworks.Clear();
+                options.KnownIPNetworks.Clear();
 
                 // Render's public container port is reachable only through its
                 // edge proxy. With ForwardLimit=1, ASP.NET consumes only the
@@ -100,7 +103,7 @@ public static class ServiceCollectionExtensions
                     foreach (var network in forwardedHeaders.KnownNetworks)
                     {
                         var parts = network.Split('/', StringSplitOptions.TrimEntries);
-                        options.KnownNetworks.Add(new IPNetwork(
+                        options.KnownIPNetworks.Add(new System.Net.IPNetwork(
                             System.Net.IPAddress.Parse(parts[0]),
                             int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture)));
                     }
@@ -188,7 +191,7 @@ public static class ServiceCollectionExtensions
         if (!string.IsNullOrWhiteSpace(certificateBase64) &&
             !string.IsNullOrWhiteSpace(certificatePassword))
         {
-            dataProtection.ProtectKeysWithCertificate(new X509Certificate2(
+            dataProtection.ProtectKeysWithCertificate(X509CertificateLoader.LoadPkcs12(
                 Convert.FromBase64String(certificateBase64),
                 certificatePassword,
                 X509KeyStorageFlags.EphemeralKeySet));
@@ -196,7 +199,7 @@ public static class ServiceCollectionExtensions
         else if (!string.IsNullOrWhiteSpace(certificatePath) &&
                  !string.IsNullOrWhiteSpace(certificatePassword))
         {
-            dataProtection.ProtectKeysWithCertificate(new X509Certificate2(
+            dataProtection.ProtectKeysWithCertificate(X509CertificateLoader.LoadPkcs12FromFile(
                 certificatePath,
                 certificatePassword,
                 X509KeyStorageFlags.EphemeralKeySet));
@@ -449,6 +452,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IOperationLedgerRepository, OperationLedgerRepository>();
         services.AddScoped<IRoomService, RoomService>();
         services.AddScoped<IBookingService, BookingService>();
+        services.AddScoped<IPricingService, PricingService>();
         services.AddScoped<IMonnifyPaymentProcessor, MonnifyPaymentProcessor>();
         services.AddScoped<IGuestService, GuestService>();
         services.AddScoped<IAuditService, AuditService>();

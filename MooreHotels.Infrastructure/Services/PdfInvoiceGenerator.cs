@@ -80,7 +80,9 @@ public class PdfInvoiceGenerator : IPdfInvoiceGenerator
     {
         var addOnItems = addOns?.ToList() ?? [];
         var addOnTotal = addOnItems.Sum(item => item.TotalPrice);
-        var roomSubtotal = Math.Max(0, booking.Amount - addOnTotal);
+        var roomSubtotal = booking.RoomSubtotal > 0
+            ? booking.RoomSubtotal
+            : Math.Max(0, booking.Amount - addOnTotal);
         var localCheckIn = _hotelTime.ToHotelLocalTime(booking.CheckIn);
         var localCheckOut = _hotelTime.ToHotelLocalTime(booking.CheckOut);
         var nights = Math.Max(1, (localCheckOut.Date - localCheckIn.Date).Days);
@@ -128,16 +130,56 @@ public class PdfInvoiceGenerator : IPdfInvoiceGenerator
                 {
                     header.Cell().Background(Colors.Teal.Darken4).Padding(6).Text("Item / Service Description").Bold().FontColor(Colors.White).FontSize(9);
                     header.Cell().Background(Colors.Teal.Darken4).Padding(6).AlignCenter().Text("Qty / Nights").Bold().FontColor(Colors.White).FontSize(9);
-                    header.Cell().Background(Colors.Teal.Darken4).Padding(6).AlignRight().Text("Rate (NGN)").Bold().FontColor(Colors.White).FontSize(9);
-                    header.Cell().Background(Colors.Teal.Darken4).Padding(6).AlignRight().Text("Amount (NGN)").Bold().FontColor(Colors.White).FontSize(9);
+                    header.Cell().Background(Colors.Teal.Darken4).Padding(6).AlignRight().Text($"Rate ({booking.Currency})").Bold().FontColor(Colors.White).FontSize(9);
+                    header.Cell().Background(Colors.Teal.Darken4).Padding(6).AlignRight().Text($"Amount ({booking.Currency})").Bold().FontColor(Colors.White).FontSize(9);
                 });
 
-                var nightlyRate = roomSubtotal / nights;
+                var pricingLines = booking.PriceBreakdown ?? [];
+                var nightlyLines = pricingLines
+                    .Where(line => line.Type == PricingLineType.RoomNight)
+                    .OrderBy(line => line.StayDate)
+                    .ToArray();
+                if (nightlyLines.Length == 0)
+                {
+                    var nightlyRate = roomSubtotal / nights;
+                    AddInvoiceRow(
+                        table,
+                        $"Room Accommodation - Reservation #{booking.BookingCode}",
+                        nights,
+                        nightlyRate,
+                        roomSubtotal,
+                        bold: true);
+                }
+                else
+                {
+                    foreach (var line in nightlyLines)
+                    {
+                        AddInvoiceRow(
+                            table,
+                            line.Description,
+                            line.Quantity,
+                            line.UnitAmount,
+                            line.Amount,
+                            bold: true);
+                    }
+                }
 
-                table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3).Padding(6).Text($"Room Accommodation - Reservation #{booking.BookingCode}").Bold();
-                table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3).Padding(6).AlignCenter().Text($"{nights}");
-                table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3).Padding(6).AlignRight().Text($"{nightlyRate:N2}");
-                table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3).Padding(6).AlignRight().Text($"{roomSubtotal:N2}");
+                foreach (var line in pricingLines.Where(line =>
+                             line.Type != PricingLineType.RoomNight))
+                {
+                    var signedAmount = line.Type == PricingLineType.Discount
+                        ? -line.Amount
+                        : line.Amount;
+                    var description = line.IsInclusive
+                        ? $"{line.Description} (included)"
+                        : line.Description;
+                    AddInvoiceRow(
+                        table,
+                        description,
+                        line.Quantity,
+                        line.UnitAmount,
+                        signedAmount);
+                }
 
                 foreach (var addon in addOnItems)
                 {
@@ -156,17 +198,49 @@ public class PdfInvoiceGenerator : IPdfInvoiceGenerator
                 c.Item().Row(r =>
                 {
                     r.RelativeItem().Text("Room subtotal:").FontSize(9);
-                    r.RelativeItem().AlignRight().Text($"NGN {roomSubtotal:N2}").FontSize(9);
+                    r.RelativeItem().AlignRight().Text($"{booking.Currency} {roomSubtotal:N2}").FontSize(9);
                 });
+                if (booking.DiscountAmount > 0)
+                {
+                    c.Item().Row(r =>
+                    {
+                        r.RelativeItem().Text("Discount:").FontSize(9);
+                        r.RelativeItem().AlignRight().Text($"-{booking.Currency} {booking.DiscountAmount:N2}").FontSize(9);
+                    });
+                }
+                if (booking.IncludedTaxAmount > 0)
+                {
+                    c.Item().Row(r =>
+                    {
+                        r.RelativeItem().Text("Included tax:").FontSize(9);
+                        r.RelativeItem().AlignRight().Text($"{booking.Currency} {booking.IncludedTaxAmount:N2}").FontSize(9);
+                    });
+                }
+                if (booking.TaxAmount > 0)
+                {
+                    c.Item().Row(r =>
+                    {
+                        r.RelativeItem().Text("Taxes:").FontSize(9);
+                        r.RelativeItem().AlignRight().Text($"{booking.Currency} {booking.TaxAmount:N2}").FontSize(9);
+                    });
+                }
+                if (booking.FeeAmount > 0)
+                {
+                    c.Item().Row(r =>
+                    {
+                        r.RelativeItem().Text("Service charges:").FontSize(9);
+                        r.RelativeItem().AlignRight().Text($"{booking.Currency} {booking.FeeAmount:N2}").FontSize(9);
+                    });
+                }
                 c.Item().Row(r =>
                 {
                     r.RelativeItem().Text("Add-ons:").FontSize(9);
-                    r.RelativeItem().AlignRight().Text($"NGN {addOnTotal:N2}").FontSize(9);
+                    r.RelativeItem().AlignRight().Text($"{booking.Currency} {addOnTotal:N2}").FontSize(9);
                 });
                 c.Item().Row(r =>
                 {
                     r.RelativeItem().Text("Total Amount:").Bold().FontSize(11);
-                    r.RelativeItem().AlignRight().Text($"NGN {booking.Amount:N2}").Bold().FontSize(12).FontColor(Colors.Teal.Darken4);
+                    r.RelativeItem().AlignRight().Text($"{booking.Currency} {booking.Amount:N2}").Bold().FontSize(12).FontColor(Colors.Teal.Darken4);
                 });
                 c.Item().PaddingTop(2).Row(r =>
                 {
@@ -183,6 +257,25 @@ public class PdfInvoiceGenerator : IPdfInvoiceGenerator
                 }
             });
         });
+    }
+
+    private static void AddInvoiceRow(
+        TableDescriptor table,
+        string description,
+        int quantity,
+        decimal unitAmount,
+        decimal amount,
+        bool bold = false)
+    {
+        var descriptionText = table.Cell().BorderBottom(1)
+            .BorderColor(Colors.Grey.Lighten3).Padding(6).Text(description);
+        if (bold) descriptionText.Bold();
+        table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3)
+            .Padding(6).AlignCenter().Text($"{quantity}");
+        table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3)
+            .Padding(6).AlignRight().Text($"{unitAmount:N2}");
+        table.Cell().BorderBottom(1).BorderColor(Colors.Grey.Lighten3)
+            .Padding(6).AlignRight().Text($"{amount:N2}");
     }
 
     private void ComposeFooter(IContainer container)

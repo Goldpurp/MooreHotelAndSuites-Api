@@ -43,15 +43,20 @@ values after `#`, not in the query string. On the destination page:
    in `POST /api/bookings`. Prompt for a new link after expiry or use; never
    persist the token in browser storage or analytics. Signed-in Client accounts
    with a linked guest profile do not require this step.
-2. Remove Paystack from every payment selector and do not call an old Paystack
+2. Before `POST /api/bookings`, call `POST /api/pricing/quotes`; display its
+   currency, nightly lines, discount, included tax, exclusive tax/fees, total
+   and expiry exactly as returned. Keep `quoteToken` in memory only and submit
+   it with `quoteId` and unchanged room/date/occupancy values. Requote after any
+   change, expiry or rejection. Never put the token in a URL, log or analytics.
+3. Remove Paystack from every payment selector and do not call an old Paystack
    endpoint. The API keeps the enum value only to read historical records.
-3. Offer direct bank transfer. Offer Monnify only when the deployment owner has
+4. Offer direct bank transfer. Offer Monnify only when the deployment owner has
    completed the provider activation checklist and the frontend build flag is
    enabled.
-4. Render the API-returned booking amount as the authoritative total. Add-ons
+5. Render the API-returned booking amount as the authoritative total. Add-ons
    are already included in that amount and are also itemized on the invoice;
    do not add them a second time in the UI.
-5. Treat a `409 Conflict` while adding an add-on as a stale/closed checkout and
+6. Treat a `409 Conflict` while adding an add-on as a stale/closed checkout and
    refresh the booking instead of retrying automatically.
 
 ## Guest booking links

@@ -1,4 +1,5 @@
 using MooreHotels.Domain.Enums;
+using MooreHotels.Application.DTOs.Pricing;
 
 namespace MooreHotels.Application.DTOs;
 
@@ -38,4 +39,12 @@ public record BookingDto(
     int ChildCount = 0,
     string? PrivacyPolicyVersion = null,
     string? BookingTermsVersion = null,
-    DateTime? PoliciesAcceptedAtUtc = null);
+    DateTime? PoliciesAcceptedAtUtc = null,
+    Guid? QuoteId = null,
+    string Currency = "NGN",
+    decimal RoomSubtotal = 0,
+    decimal DiscountAmount = 0,
+    decimal IncludedTaxAmount = 0,
+    decimal TaxAmount = 0,
+    decimal FeeAmount = 0,
+    IReadOnlyList<PricingQuoteLineDto>? PriceBreakdown = null);

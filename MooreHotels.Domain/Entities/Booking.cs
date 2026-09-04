@@ -13,6 +13,13 @@ public class Booking
     public int AdultCount { get; set; } = 1;
     public int ChildCount { get; set; }
     public BookingStatus Status { get; set; }
+    public Guid? QuoteId { get; set; }
+    public string Currency { get; set; } = "NGN";
+    public decimal RoomSubtotal { get; set; }
+    public decimal DiscountAmount { get; set; }
+    public decimal IncludedTaxAmount { get; set; }
+    public decimal TaxAmount { get; set; }
+    public decimal FeeAmount { get; set; }
     public decimal Amount { get; set; }
     public PaymentStatus PaymentStatus { get; set; }
     public PaymentMethod? PaymentMethod { get; set; }
@@ -47,6 +54,7 @@ public class Booking
 
     public Room? Room { get; set; }
     public Guest? Guest { get; set; }
+    public BookingQuote? Quote { get; set; }
     public ApplicationUser? PaymentConfirmedByUser { get; set; }
     public ApplicationUser? RefundApprovedByUser { get; set; }
     public ApplicationUser? RefundProcessedByUser { get; set; }

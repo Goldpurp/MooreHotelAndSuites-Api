@@ -9,6 +9,7 @@ using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Application.DTOs.Pricing;
 using MooreHotels.Domain.Common;
 using System.Text;
 
@@ -228,7 +229,27 @@ public class ProfileService : IProfileService
                 ChildCount: b.ChildCount,
                 PrivacyPolicyVersion: b.PrivacyPolicyVersion,
                 BookingTermsVersion: b.BookingTermsVersion,
-                PoliciesAcceptedAtUtc: b.PoliciesAcceptedAtUtc));
+                PoliciesAcceptedAtUtc: b.PoliciesAcceptedAtUtc,
+                QuoteId: b.QuoteId,
+                Currency: b.Currency,
+                RoomSubtotal: b.RoomSubtotal,
+                DiscountAmount: b.DiscountAmount,
+                IncludedTaxAmount: b.IncludedTaxAmount,
+                TaxAmount: b.TaxAmount,
+                FeeAmount: b.FeeAmount,
+                PriceBreakdown: b.Quote?.Lines
+                    .OrderBy(line => line.SortOrder)
+                    .ThenBy(line => line.Id)
+                    .Select(line => new PricingQuoteLineDto(
+                        line.Type,
+                        line.Code,
+                        line.Description,
+                        line.StayDate,
+                        line.Quantity,
+                        line.UnitAmount,
+                        line.Amount,
+                        line.IsInclusive))
+                    .ToArray()));
     }
 
     public async Task RotateCredentialsAsync(Guid userId, RotateCredentialsRequest request)

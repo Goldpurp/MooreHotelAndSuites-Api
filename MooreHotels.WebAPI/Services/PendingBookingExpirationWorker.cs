@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Options;
 using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Repositories;
+using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.WebAPI.Configuration;
 
 namespace MooreHotels.WebAPI.Services;
@@ -71,6 +72,17 @@ public sealed class PendingBookingExpirationWorker : BackgroundService
                     500,
                     cancellationToken);
             } while (deletedVerifications == 500 && !cancellationToken.IsCancellationRequested);
+
+            int deletedQuotes;
+            do
+            {
+                await using var scope = _scopeFactory.CreateAsyncScope();
+                var pricing = scope.ServiceProvider.GetRequiredService<IPricingService>();
+                deletedQuotes = await pricing.DeleteExpiredUnconsumedQuotesAsync(
+                    DateTime.UtcNow,
+                    500,
+                    cancellationToken);
+            } while (deletedQuotes == 500 && !cancellationToken.IsCancellationRequested);
 
             if (total > 0)
             {

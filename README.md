@@ -142,6 +142,9 @@ against reuse.
 encrypted transactional email outbox. `HardenRemainingProductionControls`
 adds expiring guest access, durable media deletion, refund evidence/approval
 metadata and the indexes and constraints used by the final production gates.
+`CompleteProductionReadinessSevenToTen` adds rate plans, room/category daily
+rates, taxes/fees, promotions, expiring quotes, immutable nightly price lines,
+booking price snapshots and the latest recovery/provider readiness controls.
 
 ## Public booking references
 
@@ -165,6 +168,22 @@ their email address. The single-use token delivered by email is submitted as
 `emailVerificationToken` on `POST /api/bookings`; it expires after 15 minutes
 and is consumed in the same transaction that reserves the room. Authenticated
 Client accounts with a linked guest profile do not need this extra step.
+
+## Pricing and immutable quotes
+
+The guest flow calls `POST /api/pricing/quotes` before creating a booking. The
+quote selects an active rate plan, applies the most-specific daily rate (room
+before category), calculates promotions, included tax, exclusive tax and fees,
+and returns a 256-bit quote token once. Only its hash is stored. Submit
+`quoteId` and `quoteToken` with exactly the same room, dates and occupancy to
+`POST /api/bookings` before the configured 15-minute expiry.
+
+Production requires a quote. Consumption, promotion redemption and the room
+reservation are revalidated under database locks and committed together. The
+booking stores currency and aggregate amounts; its related immutable quote
+retains each nightly rate and every adjustment for booking views and invoices.
+Unconsumed expired quotes are removed after a one-day diagnostic window. See
+`docs/PRICING_AND_QUOTES.md` for the complete client and staff contract.
 
 ## Manual bank-transfer confirmation
 
@@ -248,6 +267,10 @@ Production startup fails closed when any of these are missing or unsafe:
   role-management, replication, database-creation and `BYPASSRLS` privileges;
 - non-placeholder JWT, email, Cloudinary and bank-transfer settings;
 - Monnify credentials and its strict webhook boundary when Monnify is enabled;
+- a current pricing-quote requirement, managed backup/PITR/off-provider backup
+  declarations, tested alert routing, and restore-drill evidence;
+- Brevo and Cloudinary rotation/acceptance evidence, plus hosted-checkout,
+  Monnify and PCI evidence before Monnify can be enabled;
 - explicit HTTPS origins, hosts, public application URLs, and API URL;
 - persistent Data Protection keys protected by the configured certificate;
 - disabled Swagger, disabled automatic email confirmation, and trusted reverse

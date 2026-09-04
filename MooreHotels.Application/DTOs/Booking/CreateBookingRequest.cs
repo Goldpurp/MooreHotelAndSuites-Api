@@ -19,4 +19,6 @@ public record CreateBookingRequest(
     bool AcceptPrivacyPolicy = false,
     [StringLength(80)] string? PrivacyPolicyVersion = null,
     bool AcceptBookingTerms = false,
-    [StringLength(80)] string? BookingTermsVersion = null);
+    [StringLength(80)] string? BookingTermsVersion = null,
+    Guid? QuoteId = null,
+    [StringLength(128, MinimumLength = 40)] string? QuoteToken = null);

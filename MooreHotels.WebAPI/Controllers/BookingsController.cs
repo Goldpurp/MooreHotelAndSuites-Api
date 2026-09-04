@@ -470,7 +470,15 @@ public class BookingsController : ControllerBase
         booking.GuestAccessToken,
         booking.GuestAccessExpiresAtUtc,
         booking.AdultCount,
-        booking.ChildCount);
+        booking.ChildCount,
+        booking.QuoteId,
+        booking.Currency,
+        booking.RoomSubtotal,
+        booking.DiscountAmount,
+        booking.IncludedTaxAmount,
+        booking.TaxAmount,
+        booking.FeeAmount,
+        booking.PriceBreakdown);
 
 
 

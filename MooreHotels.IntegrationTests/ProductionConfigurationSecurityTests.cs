@@ -152,6 +152,27 @@ public sealed class ProductionConfigurationSecurityTests
     [InlineData(
         "Privacy:EnableRetentionWorker",
         "false")]
+    [InlineData(
+        "Pricing:RequireQuoteForBooking",
+        "false")]
+    [InlineData(
+        "OperationalReadiness:ManagedBackupsEnabled",
+        "false")]
+    [InlineData(
+        "OperationalReadiness:PointInTimeRecoveryEnabled",
+        "false")]
+    [InlineData(
+        "OperationalReadiness:QueueAgeAlertsEnabled",
+        "false")]
+    [InlineData(
+        "ProviderAcceptance:Brevo:EvidenceReference",
+        "")]
+    [InlineData(
+        "ProviderAcceptance:Cloudinary:EvidenceReference",
+        "")]
+    [InlineData(
+        "ProviderAcceptance:HostedPaymentPageOnly",
+        "false")]
     public void Production_rejects_security_boundary_weakening(
         string key,
         string value)
@@ -220,6 +241,43 @@ public sealed class ProductionConfigurationSecurityTests
         ["Privacy:BookingTermsUrl"] = "https://moorehotelandsuites.com/terms",
         ["Privacy:EnableRetentionWorker"] = "true",
         ["Privacy:GuestRetentionDays"] = "2555",
+        ["Pricing:DefaultCurrency"] = "NGN",
+        ["Pricing:QuoteLifetimeMinutes"] = "15",
+        ["Pricing:RequireQuoteForBooking"] = "true",
+        ["OperationalReadiness:ManagedBackupsEnabled"] = "true",
+        ["OperationalReadiness:PointInTimeRecoveryEnabled"] = "true",
+        ["OperationalReadiness:EncryptedOffProviderBackupsEnabled"] = "true",
+        ["OperationalReadiness:RecoveryPointObjectiveMinutes"] = "60",
+        ["OperationalReadiness:RecoveryTimeObjectiveMinutes"] = "240",
+        ["OperationalReadiness:RestoreDrillMaximumAgeDays"] = "100",
+        ["OperationalReadiness:LastRestoreDrillAtUtc"] = DateTimeOffset.UtcNow.AddDays(-1).ToString("O"),
+        ["OperationalReadiness:RestoreDrillEvidenceReference"] = "DRILL-TEST-001",
+        ["OperationalReadiness:UptimeAlertsEnabled"] = "true",
+        ["OperationalReadiness:ApiErrorAndLatencyAlertsEnabled"] = "true",
+        ["OperationalReadiness:QueueAgeAlertsEnabled"] = "true",
+        ["OperationalReadiness:PaymentAndWebhookAlertsEnabled"] = "true",
+        ["OperationalReadiness:AlertRoutingEvidenceReference"] = "ALERT-TEST-001",
+        ["OperationalReadiness:QueueAgeWarningMinutes"] = "15",
+        ["OperationalReadiness:PaymentPendingWarningMinutes"] = "30",
+        ["ProviderAcceptance:Brevo:CredentialRotationReference"] = "ROTATE-BREVO-001",
+        ["ProviderAcceptance:Brevo:AcceptedAtUtc"] = DateTimeOffset.UtcNow.AddDays(-1).ToString("O"),
+        ["ProviderAcceptance:Brevo:EvidenceReference"] = "BREVO-TEST-001",
+        ["ProviderAcceptance:Cloudinary:CredentialRotationReference"] = "ROTATE-CLOUDINARY-001",
+        ["ProviderAcceptance:Cloudinary:AcceptedAtUtc"] = DateTimeOffset.UtcNow.AddDays(-1).ToString("O"),
+        ["ProviderAcceptance:Cloudinary:EvidenceReference"] = "CLOUDINARY-TEST-001",
+        ["ProviderAcceptance:MonnifySandbox:CredentialRotationReference"] = "ROTATE-MONNIFY-001",
+        ["ProviderAcceptance:MonnifySandbox:AcceptedAtUtc"] = DateTimeOffset.UtcNow.AddDays(-1).ToString("O"),
+        ["ProviderAcceptance:MonnifySandbox:EvidenceReference"] = "MONNIFY-SANDBOX-001",
+        ["ProviderAcceptance:MonnifyWebhook:CredentialRotationReference"] = "ROTATE-MONNIFY-001",
+        ["ProviderAcceptance:MonnifyWebhook:AcceptedAtUtc"] = DateTimeOffset.UtcNow.AddDays(-1).ToString("O"),
+        ["ProviderAcceptance:MonnifyWebhook:EvidenceReference"] = "MONNIFY-WEBHOOK-001",
+        ["ProviderAcceptance:MonnifyLivePaymentAndRefund:CredentialRotationReference"] = "ROTATE-MONNIFY-001",
+        ["ProviderAcceptance:MonnifyLivePaymentAndRefund:AcceptedAtUtc"] = DateTimeOffset.UtcNow.AddDays(-1).ToString("O"),
+        ["ProviderAcceptance:MonnifyLivePaymentAndRefund:EvidenceReference"] = "MONNIFY-LIVE-001",
+        ["ProviderAcceptance:PciResponsibilityReview:CredentialRotationReference"] = "PROVIDER-AOC-001",
+        ["ProviderAcceptance:PciResponsibilityReview:AcceptedAtUtc"] = DateTimeOffset.UtcNow.AddDays(-1).ToString("O"),
+        ["ProviderAcceptance:PciResponsibilityReview:EvidenceReference"] = "PCI-SCOPE-001",
+        ["ProviderAcceptance:HostedPaymentPageOnly"] = "true",
         ["DATABASE_RUNTIME_ROLE"] = "moore_runtime",
         ["DataProtection:KeysPath"] = "/var/data/moorehotels-keys",
         ["DataProtection:CertificatePath"] =

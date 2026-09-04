@@ -122,6 +122,49 @@ BEGIN
             RAISE EXCEPTION 'Preflight failed: % client accounts require guest-profile reconciliation.', invalid_count;
         END IF;
     END IF;
+
+    IF EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'bookings'
+          AND column_name = 'Currency'
+    ) THEN
+        SELECT count(*) INTO invalid_count
+        FROM bookings
+        WHERE "Currency" !~ '^[A-Z]{3}$'
+           OR "RoomSubtotal" < 0
+           OR "DiscountAmount" < 0
+           OR "IncludedTaxAmount" < 0
+           OR "TaxAmount" < 0
+           OR "FeeAmount" < 0;
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % bookings have invalid price snapshots.', invalid_count;
+        END IF;
+    END IF;
+
+    IF to_regclass('public.rate_plans') IS NOT NULL THEN
+        SELECT count(*) INTO invalid_count
+        FROM rate_plans
+        WHERE "IsActive" AND "IsDefault";
+        IF invalid_count <> 1 THEN
+            RAISE EXCEPTION 'Preflight failed: expected one active default rate plan, found %.', invalid_count;
+        END IF;
+    END IF;
+
+    IF to_regclass('public.booking_quotes') IS NOT NULL THEN
+        SELECT count(*) INTO invalid_count
+        FROM booking_quotes q
+        LEFT JOIN rate_plans rp ON rp."Id" = q."RatePlanId"
+        LEFT JOIN rooms r ON r."Id" = q."RoomId"
+        WHERE rp."Id" IS NULL
+           OR r."Id" IS NULL
+           OR q."TotalAmount" <> q."RoomSubtotal" - q."DiscountAmount" + q."TaxAmount" + q."FeeAmount"
+           OR q."ExpiresAtUtc" <= q."CreatedAtUtc";
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % pricing quotes are invalid.', invalid_count;
+        END IF;
+    END IF;
 END
 $$;
 

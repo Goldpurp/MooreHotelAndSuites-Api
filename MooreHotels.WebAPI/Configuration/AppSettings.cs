@@ -87,6 +87,43 @@ public sealed class FinancialControlsSettings
     public decimal HighValueRefundThreshold { get; init; } = 500000m;
 }
 
+public sealed class OperationalReadinessSettings
+{
+    public bool ManagedBackupsEnabled { get; init; }
+    public bool PointInTimeRecoveryEnabled { get; init; }
+    public bool EncryptedOffProviderBackupsEnabled { get; init; }
+    public int RecoveryPointObjectiveMinutes { get; init; } = 60;
+    public int RecoveryTimeObjectiveMinutes { get; init; } = 240;
+    public int RestoreDrillMaximumAgeDays { get; init; } = 100;
+    public DateTimeOffset? LastRestoreDrillAtUtc { get; init; }
+    public string RestoreDrillEvidenceReference { get; init; } = string.Empty;
+    public bool UptimeAlertsEnabled { get; init; }
+    public bool ApiErrorAndLatencyAlertsEnabled { get; init; }
+    public bool QueueAgeAlertsEnabled { get; init; }
+    public bool PaymentAndWebhookAlertsEnabled { get; init; }
+    public string AlertRoutingEvidenceReference { get; init; } = string.Empty;
+    public int QueueAgeWarningMinutes { get; init; } = 15;
+    public int PaymentPendingWarningMinutes { get; init; } = 30;
+}
+
+public sealed class AcceptanceEvidence
+{
+    public string CredentialRotationReference { get; init; } = string.Empty;
+    public DateTimeOffset? AcceptedAtUtc { get; init; }
+    public string EvidenceReference { get; init; } = string.Empty;
+}
+
+public sealed class ProviderAcceptanceSettings
+{
+    public AcceptanceEvidence Brevo { get; init; } = new();
+    public AcceptanceEvidence Cloudinary { get; init; } = new();
+    public AcceptanceEvidence MonnifySandbox { get; init; } = new();
+    public AcceptanceEvidence MonnifyWebhook { get; init; } = new();
+    public AcceptanceEvidence MonnifyLivePaymentAndRefund { get; init; } = new();
+    public AcceptanceEvidence PciResponsibilityReview { get; init; } = new();
+    public bool HostedPaymentPageOnly { get; init; }
+}
+
 public static class ConfigurationBootstrap
 {
     public static void LoadEnvironmentFile(string environmentName)
@@ -176,6 +213,12 @@ public static class ConfigurationBootstrap
             .Get<FinancialControlsSettings>() ?? new FinancialControlsSettings();
         var privacy = configuration.GetSection("Privacy")
             .Get<PrivacySettings>() ?? new PrivacySettings();
+        var operations = configuration.GetSection("OperationalReadiness")
+            .Get<OperationalReadinessSettings>() ?? new OperationalReadinessSettings();
+        var providerAcceptance = configuration.GetSection("ProviderAcceptance")
+            .Get<ProviderAcceptanceSettings>() ?? new ProviderAcceptanceSettings();
+        var pricing = configuration.GetSection("Pricing")
+            .Get<PricingSettings>() ?? new PricingSettings();
 
         if (IsMissingOrPlaceholder(connectionString))
         {
@@ -352,6 +395,75 @@ public static class ConfigurationBootstrap
             errors.Add("FinancialControls:HighValueRefundThreshold must be greater than zero in Production.");
         }
 
+        if (pricing.DefaultCurrency.Length != 3 ||
+            !pricing.DefaultCurrency.All(character => character is >= 'A' and <= 'Z'))
+        {
+            errors.Add("Pricing:DefaultCurrency must be an uppercase ISO 4217 currency code.");
+        }
+        if (pricing.QuoteLifetimeMinutes is < 5 or > 60)
+        {
+            errors.Add("Pricing:QuoteLifetimeMinutes must be between 5 and 60.");
+        }
+        if (environment.IsDeployed() && !pricing.RequireQuoteForBooking)
+        {
+            errors.Add("Pricing:RequireQuoteForBooking must be true in Production.");
+        }
+
+        if (environment.IsDeployed())
+        {
+            if (!operations.ManagedBackupsEnabled)
+                errors.Add("OperationalReadiness:ManagedBackupsEnabled must be true in Production.");
+            if (!operations.PointInTimeRecoveryEnabled)
+                errors.Add("OperationalReadiness:PointInTimeRecoveryEnabled must be true in Production.");
+            if (!operations.EncryptedOffProviderBackupsEnabled)
+                errors.Add("OperationalReadiness:EncryptedOffProviderBackupsEnabled must be true in Production.");
+            if (operations.RecoveryPointObjectiveMinutes is < 1 or > 1440)
+                errors.Add("OperationalReadiness:RecoveryPointObjectiveMinutes must be between 1 and 1440.");
+            if (operations.RecoveryTimeObjectiveMinutes is < 15 or > 2880)
+                errors.Add("OperationalReadiness:RecoveryTimeObjectiveMinutes must be between 15 and 2880.");
+            if (operations.RestoreDrillMaximumAgeDays is < 30 or > 366)
+                errors.Add("OperationalReadiness:RestoreDrillMaximumAgeDays must be between 30 and 366.");
+            RequireEvidence(
+                operations.LastRestoreDrillAtUtc,
+                operations.RestoreDrillEvidenceReference,
+                "OperationalReadiness restore drill",
+                errors);
+            if (!operations.UptimeAlertsEnabled ||
+                !operations.ApiErrorAndLatencyAlertsEnabled ||
+                !operations.QueueAgeAlertsEnabled ||
+                !operations.PaymentAndWebhookAlertsEnabled)
+            {
+                errors.Add("All OperationalReadiness alert categories must be enabled in Production.");
+            }
+            if (IsMissingOrPlaceholder(operations.AlertRoutingEvidenceReference))
+                errors.Add("OperationalReadiness:AlertRoutingEvidenceReference is required in Production.");
+            if (operations.QueueAgeWarningMinutes is < 1 or > 1440)
+                errors.Add("OperationalReadiness:QueueAgeWarningMinutes must be between 1 and 1440.");
+            if (operations.PaymentPendingWarningMinutes is < 5 or > 1440)
+                errors.Add("OperationalReadiness:PaymentPendingWarningMinutes must be between 5 and 1440.");
+
+            if (string.Equals(email.DeliveryMode, "Brevo", StringComparison.OrdinalIgnoreCase))
+                RequireProviderAcceptance(providerAcceptance.Brevo, "Brevo", errors);
+            RequireProviderAcceptance(providerAcceptance.Cloudinary, "Cloudinary", errors);
+            if (monnify.Enabled)
+            {
+                RequireProviderAcceptance(providerAcceptance.MonnifySandbox, "Monnify sandbox", errors);
+                RequireProviderAcceptance(providerAcceptance.MonnifyWebhook, "Monnify webhook", errors);
+                RequireProviderAcceptance(
+                    providerAcceptance.MonnifyLivePaymentAndRefund,
+                    "Monnify live payment and refund",
+                    errors);
+                RequireProviderAcceptance(
+                    providerAcceptance.PciResponsibilityReview,
+                    "PCI responsibility review",
+                    errors);
+                if (!providerAcceptance.HostedPaymentPageOnly)
+                {
+                    errors.Add("ProviderAcceptance:HostedPaymentPageOnly must be true before enabling Monnify.");
+                }
+            }
+        }
+
         if (environment.IsDeployed())
         {
             if (!privacy.RequirePolicyAcceptance)
@@ -477,6 +589,28 @@ public static class ConfigurationBootstrap
                 "Application configuration is invalid:" + Environment.NewLine +
                 string.Join(Environment.NewLine, errors.Select(error => $" - {error}")));
         }
+    }
+
+    private static void RequireProviderAcceptance(
+        AcceptanceEvidence evidence,
+        string provider,
+        ICollection<string> errors)
+    {
+        if (IsMissingOrPlaceholder(evidence.CredentialRotationReference))
+            errors.Add($"ProviderAcceptance:{provider}:CredentialRotationReference is required.");
+        RequireEvidence(evidence.AcceptedAtUtc, evidence.EvidenceReference, provider, errors);
+    }
+
+    private static void RequireEvidence(
+        DateTimeOffset? acceptedAtUtc,
+        string evidenceReference,
+        string subject,
+        ICollection<string> errors)
+    {
+        if (!acceptedAtUtc.HasValue || acceptedAtUtc.Value > DateTimeOffset.UtcNow.AddMinutes(5))
+            errors.Add($"{subject} requires a valid acceptance timestamp.");
+        if (IsMissingOrPlaceholder(evidenceReference))
+            errors.Add($"{subject} requires a non-secret evidence reference.");
     }
 
     private static void RequireSecret(IConfiguration configuration, string key, List<string> errors)

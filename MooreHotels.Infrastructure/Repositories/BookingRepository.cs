@@ -11,6 +11,7 @@ using System.Data;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json;
+using MooreHotels.Application.DTOs.Pricing;
 
 namespace MooreHotels.Infrastructure.Repositories;
 
@@ -28,15 +29,20 @@ public class BookingRepository : IBookingRepository
     }
 
     public async Task<Booking?> GetByIdAsync(Guid id) =>
-        await _db.Bookings.Include(b => b.Room).Include(b => b.Guest).FirstOrDefaultAsync(b => b.Id == id);
+        await _db.Bookings.Include(b => b.Room).Include(b => b.Guest)
+            .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
+            .FirstOrDefaultAsync(b => b.Id == id);
 
     public async Task<Booking?> GetByCodeAsync(string code) =>
-        await _db.Bookings.Include(b => b.Room).Include(b => b.Guest).FirstOrDefaultAsync(b => b.BookingCode == code);
+        await _db.Bookings.Include(b => b.Room).Include(b => b.Guest)
+            .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
+            .FirstOrDefaultAsync(b => b.BookingCode == code);
 
     public async Task<Booking?> GetByPaymentReferenceAsync(string paymentReference) =>
         await _db.Bookings
             .Include(booking => booking.Room)
             .Include(booking => booking.Guest)
+            .Include(booking => booking.Quote).ThenInclude(quote => quote!.Lines)
             .FirstOrDefaultAsync(booking => booking.TransactionReference == paymentReference);
 
     public async Task<IEnumerable<Booking>> GetAllAsync() =>
@@ -44,6 +50,7 @@ public class BookingRepository : IBookingRepository
             .AsNoTracking()
             .Include(b => b.Room)
             .Include(b => b.Guest)
+            .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .OrderByDescending(b => b.CreatedAt)
             .Take(2000)
             .ToListAsync();
@@ -53,6 +60,7 @@ public class BookingRepository : IBookingRepository
             .AsNoTracking()
             .Include(booking => booking.Room)
             .Include(booking => booking.Guest)
+            .Include(booking => booking.Quote).ThenInclude(quote => quote!.Lines)
             .Where(booking => booking.GuestId == guestId)
             .OrderByDescending(booking => booking.CheckIn)
             .Take(500)
@@ -175,6 +183,7 @@ public class BookingRepository : IBookingRepository
         Guest? newGuest = null,
         IReadOnlyCollection<EmailOutboxMessage>? emailMessages = null,
         BookingEmailVerificationProof? emailVerification = null,
+        ValidatedBookingQuote? pricingQuote = null,
         CancellationToken cancellationToken = default)
     {
         var strategy = _db.Database.CreateExecutionStrategy();
@@ -203,6 +212,63 @@ public class BookingRepository : IBookingRepository
                 {
                     throw new BadRequestException(
                         "Verify the guest email again before creating this booking.");
+                }
+            }
+
+            BookingQuote? lockedQuote = null;
+            if (pricingQuote is not null)
+            {
+                lockedQuote = await _db.BookingQuotes
+                    .FromSqlInterpolated(
+                        $"""
+                         SELECT * FROM booking_quotes
+                         WHERE "Id" = {pricingQuote.QuoteId}
+                           AND "AccessTokenHash" = {pricingQuote.AccessTokenHash}
+                         FOR UPDATE
+                         """)
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (lockedQuote is null ||
+                    lockedQuote.ConsumedAtUtc.HasValue ||
+                    lockedQuote.ExpiresAtUtc <= DateTime.UtcNow)
+                {
+                    throw new BadRequestException(
+                        "The pricing quote is invalid, expired, or already used. Request a new quote.");
+                }
+                if (lockedQuote.RoomId != booking.RoomId ||
+                    lockedQuote.CheckInDate != DateOnly.FromDateTime(booking.CheckIn) ||
+                    lockedQuote.CheckOutDate != DateOnly.FromDateTime(booking.CheckOut) ||
+                    lockedQuote.AdultCount != booking.AdultCount ||
+                    lockedQuote.ChildCount != booking.ChildCount ||
+                    lockedQuote.Currency != booking.Currency ||
+                    lockedQuote.RoomSubtotal != booking.RoomSubtotal ||
+                    lockedQuote.DiscountAmount != booking.DiscountAmount ||
+                    lockedQuote.IncludedTaxAmount != booking.IncludedTaxAmount ||
+                    lockedQuote.TaxAmount != booking.TaxAmount ||
+                    lockedQuote.FeeAmount != booking.FeeAmount ||
+                    lockedQuote.TotalAmount != booking.Amount)
+                {
+                    throw new BadRequestException(
+                        "The booking does not match its immutable pricing quote.");
+                }
+
+                if (lockedQuote.PromotionId.HasValue)
+                {
+                    var promotion = await _db.Promotions
+                        .FromSqlInterpolated(
+                            $"""
+                             SELECT * FROM promotions
+                             WHERE "Id" = {lockedQuote.PromotionId.Value}
+                             FOR UPDATE
+                             """)
+                        .SingleAsync(cancellationToken);
+                    if (promotion.RedemptionLimit.HasValue &&
+                        promotion.RedemptionCount >= promotion.RedemptionLimit)
+                    {
+                        throw new BadRequestException(
+                            "The promotion has reached its redemption limit. Request a new quote.");
+                    }
+                    promotion.RedemptionCount++;
+                    promotion.UpdatedAtUtc = DateTime.UtcNow;
                 }
             }
 
@@ -240,6 +306,8 @@ public class BookingRepository : IBookingRepository
                 await _db.EmailOutboxMessages.AddRangeAsync(emailMessages);
             if (verification is not null)
                 verification.ConsumedAtUtc = emailVerification!.VerifiedAtUtc;
+            if (lockedQuote is not null)
+                lockedQuote.ConsumedAtUtc = DateTime.UtcNow;
             await _db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
         });
@@ -539,6 +607,7 @@ public class BookingRepository : IBookingRepository
         return await _db.Bookings
             .Include(b => b.Guest)
             .Include(b => b.Room)
+            .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .Where(b => b.Status == BookingStatus.Cancelled &&
                         b.PaymentStatus == PaymentStatus.RefundPending)
             .OrderByDescending(b => b.CreatedAt)
@@ -700,6 +769,7 @@ public class BookingRepository : IBookingRepository
             .AsNoTracking()
             .Include(b => b.Room)
             .Include(b => b.Guest)
+            .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .AsQueryable();
 
         if (status.HasValue)

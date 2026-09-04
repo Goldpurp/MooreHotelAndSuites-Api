@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:8.0.424 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.400 AS build
 WORKDIR /src
 
 COPY *.sln global.json Directory.Build.props ./
@@ -22,7 +22,7 @@ RUN dotnet tool run dotnet-ef migrations bundle \
     --no-build \
     --output /app/migrate
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0.30 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.11 AS runtime
 WORKDIR /app
 
 RUN apt-get update \

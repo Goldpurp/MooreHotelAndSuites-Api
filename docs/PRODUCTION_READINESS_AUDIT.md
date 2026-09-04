@@ -6,7 +6,7 @@ Audit date: 4 September 2026
 
 The API repository was reviewed across its Domain, Application,
 Infrastructure, WebAPI, unit-test, integration-test, database migration,
-deployment, CI and operational documentation layers (238 C# source files plus
+deployment, CI and operational documentation layers (263 C# source files plus
 the release configuration and scripts).
 
 The API source is ready for review and a staging release: deterministic
@@ -55,7 +55,7 @@ acceptance steps, not hidden code failures; see the checklist below.
     add-ons, general media, durable notification/cancellation state and the
     remaining production controls. Foreign keys, uniqueness rules, check
     constraints and query indexes are included.
-12. Pinned .NET 8.0.30 runtime/framework packages, SDK 8.0.424, EF tooling and
+12. Pinned .NET 10.0.11 runtime/framework packages, SDK 10.0.400, EF tooling and
     dependency lock files. CI now enforces locked restore, formatting,
     warning-as-error build, unit/integration tests, strict runtime analyzers,
     vulnerability scanning, EF model checks, migration bundle creation,
@@ -79,6 +79,18 @@ acceptance steps, not hidden code failures; see the checklist below.
 19. Automated production data preflight, migrations and least-privilege grants
     with separate credentials. Production startup rejects a mismatched or
     privileged runtime role.
+20. Added managed-backup/PITR/off-provider-copy declarations, RPO/RTO,
+    quarterly restore evidence, a guarded restore verifier and actionable queue,
+    payment and recovery health signals.
+21. Added evidence-backed Brevo and Cloudinary production acceptance gates;
+    enabling Monnify additionally requires sandbox, webhook, live payment/refund,
+    hosted-payment-page and PCI responsibility evidence.
+22. Upgraded all projects, framework packages, EF tooling, CI and Docker to the
+    supported .NET 10 LTS patch line and resolved its new obsolescence warnings.
+23. Added audited rate-plan administration, room/category daily prices,
+    promotions, taxes/fees, expiring token-protected quotes, immutable nightly
+    breakdowns, atomic quote/promotion consumption and historical booking price
+    snapshots.
 
 ## Verification evidence
 
@@ -87,11 +99,11 @@ acceptance steps, not hidden code failures; see the checklist below.
 - Recommended runtime analyzer rebuild: 0 warnings, 0 errors.
 - Formatting verification: 0 files require changes.
 - Unit tests: 14 passed, 0 failed, 0 skipped.
-- PostgreSQL integration tests: 126 passed, 0 failed, 0 skipped.
+- PostgreSQL integration tests: 148 passed, 0 failed, 0 skipped.
 - Live NuGet advisory scan, including transitive dependencies: passed with no
   reported vulnerable packages.
 - EF model comparison: no model changes pending migration.
-- Linux migration bundle: applied all 17 migrations to an empty PostgreSQL 16
+- Linux migration bundle: applied all 19 migrations to an empty PostgreSQL 16
   database and then completed a second run with no migrations required.
 - Database invariant preflight: passed.
 - Local Release publish: passed.
@@ -126,5 +138,6 @@ acceptance steps, not hidden code failures; see the checklist below.
 7. Run the configured GitHub checks and CodeQL workflow. Only after every check
    and the frontend/provider acceptance steps pass should an authorized person
    merge or deploy.
-8. Upgrade and regression-test the repository on .NET 10 before .NET 8 support
-   ends on 10 November 2026.
+8. Complete the live backup, alert, restore-drill, Brevo and Cloudinary evidence
+   required by the new production startup gates. Keep Monnify disabled until its
+   additional payment and PCI evidence is complete.

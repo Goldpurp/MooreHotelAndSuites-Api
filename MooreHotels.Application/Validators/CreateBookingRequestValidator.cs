@@ -54,6 +54,15 @@ public class CreateBookingRequestValidator : AbstractValidator<CreateBookingRequ
             .MaximumLength(128)
             .MinimumLength(40)
             .When(x => !string.IsNullOrWhiteSpace(x.EmailVerificationToken));
+
+        RuleFor(x => x.QuoteToken)
+            .MaximumLength(128)
+            .MinimumLength(40)
+            .When(x => !string.IsNullOrWhiteSpace(x.QuoteToken));
+
+        RuleFor(x => x)
+            .Must(x => x.QuoteId.HasValue == !string.IsNullOrWhiteSpace(x.QuoteToken))
+            .WithMessage("quoteId and quoteToken must be supplied together.");
     }
 }
 

@@ -22,10 +22,10 @@ The running API uses the separate least-privileged
 from its process before configuration is built, does not apply schema changes,
 and fails closed if the database is unavailable.
 
-The image is pinned to the supported .NET 8.0.30 runtime and 8.0.424 SDK.
-.NET 8 support ends on 10 November 2026, so the repository must be upgraded to
-.NET 10 and fully regression-tested before that date. Do not deploy this .NET 8
-line after its end-of-support date.
+The image is pinned to .NET 10.0.11 and SDK 10.0.400. Framework packages and EF
+tooling use 10.0.11, and Npgsql EF Core uses 10.0.3. Keep the monthly .NET 10
+security patch, SDK feature band, framework packages, EF tool and lock files in
+sync when updating this pin.
 
 Keep this release at one API instance. Live SignalR connection revocation uses
 the same process-local connection registry as the current SignalR broadcast
@@ -79,6 +79,12 @@ Before the first deployment:
 9. Run `MIGRATION_CONNECTION_STRING='...' ./scripts/validate-production-database.sh`
    against the restored copy before applying the migration bundle.
 
+Complete `docs/DISASTER_RECOVERY_AND_ALERTING.md` before entering the
+`OperationalReadiness__*` declarations. Production startup requires managed
+backups, PITR, an encrypted off-provider copy, all four alert categories, alert
+routing evidence and restore-drill evidence. The authenticated health endpoint
+reports queue age, exhausted work, payment warnings and restore-drill age.
+
 Do not paste database credentials into GitHub, chat, tickets, screenshots or
 application logs.
 
@@ -100,6 +106,10 @@ credentials must be rotated. Enter the new values only in Render:
 - `BankTransferSettings__AccountName`
 - `BankTransferSettings__AccountNumber`
 - `FinancialControls__HighValueRefundThreshold`
+- `OperationalReadiness__LastRestoreDrillAtUtc`
+- `OperationalReadiness__RestoreDrillEvidenceReference`
+- `OperationalReadiness__AlertRoutingEvidenceReference`
+- all `ProviderAcceptance__*` evidence values required by enabled providers
 - `Privacy__CurrentPrivacyPolicyVersion`
 - `Privacy__CurrentBookingTermsVersion`
 - `Privacy__PrivacyPolicyUrl`
@@ -165,8 +175,12 @@ When the Monnify account is ready:
 3. Enter the rotated API key, secret key and contract code in Render.
 4. Confirm the documented webhook source IP and signature behavior.
 5. Perform a controlled low-value transaction and refund.
-6. Set `MonnifySettings__Enabled=true`.
-7. Set `VITE_MONNIFY_ENABLED=true` in the guest website and rebuild it.
+6. Complete the PCI responsibility/AOC review and confirm every card-entry
+   element remains on the provider-hosted page.
+7. Enter every Monnify and PCI acceptance timestamp/reference and set
+   `ProviderAcceptance__HostedPaymentPageOnly=true`.
+8. Set `MonnifySettings__Enabled=true`.
+9. Set `VITE_MONNIFY_ENABLED=true` in the guest website and rebuild it.
 
 ## 6. Brevo
 
@@ -176,6 +190,9 @@ When the Monnify account is ready:
 - Send booking, cancellation, payment confirmation, expiry, password-reset and
   checkout messages from the deployed API.
 - Confirm delivery in both Brevo logs and the receiving mailbox.
+- Enter the Brevo credential-rotation, acceptance timestamp and evidence
+  references. Complete equivalent upload/delete/retry evidence for Cloudinary.
+  Follow `docs/PROVIDER_ACCEPTANCE_RUNBOOK.md`.
 
 ## 7. Initial administrator
 
@@ -204,6 +221,10 @@ Do not deploy the dashboard or guest website until all checks pass:
   correctly; a Housekeeping account cannot read guest or reservation lists.
 - Booking requests persist adults and children, accept the exact room capacity,
   and reject one guest above capacity at both the API and database boundaries.
+- The frontend requests a current quote, displays currency, each nightly rate,
+  discounts, included/exclusive tax and fees, then submits the quote ID/token.
+  Changed, expired, invalid and replayed quotes are rejected; the consumed
+  breakdown remains unchanged after pricing configuration changes.
 - Registration and booking require the current policy versions, client data
   export works, privacy requests are audited through closure, and a rehearsed
   retention sweep anonymizes only expired unlinked guest records.
@@ -230,3 +251,6 @@ Do not deploy the dashboard or guest website until all checks pass:
   gate passed.
 - Logs contain no passwords, JWTs, API keys or full connection strings.
 - Rollback and database restore procedures have been rehearsed.
+- Provider-managed PITR, encrypted off-provider export and every alert route
+  have been tested; the latest quarterly restore evidence is visible in
+  authenticated operational health.

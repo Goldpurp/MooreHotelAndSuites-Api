@@ -3,6 +3,7 @@ using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Domain.Common;
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.DTOs.Pricing;
 
 namespace MooreHotels.Application.Interfaces.Repositories;
 
@@ -30,6 +31,7 @@ public interface IBookingRepository
         Guest? newGuest = null,
         IReadOnlyCollection<EmailOutboxMessage>? emailMessages = null,
         BookingEmailVerificationProof? emailVerification = null,
+        ValidatedBookingQuote? pricingQuote = null,
         CancellationToken cancellationToken = default);
     Task UpdateAsync(Booking booking);
     Task<ManualTransferConfirmationDto> ConfirmManualTransferAsync(
