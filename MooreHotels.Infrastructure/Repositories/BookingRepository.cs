@@ -30,18 +30,27 @@ public class BookingRepository : IBookingRepository
 
     public async Task<Booking?> GetByIdAsync(Guid id) =>
         await _db.Bookings.Include(b => b.Room).Include(b => b.Guest)
+            .Include(b => b.RoomType)
+            .Include(b => b.ReservationRooms).ThenInclude(item => item.AssignedRoom)
+            .Include(b => b.Folio).ThenInclude(folio => folio!.Entries)
             .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .FirstOrDefaultAsync(b => b.Id == id);
 
     public async Task<Booking?> GetByCodeAsync(string code) =>
         await _db.Bookings.Include(b => b.Room).Include(b => b.Guest)
+            .Include(b => b.RoomType)
+            .Include(b => b.ReservationRooms).ThenInclude(item => item.AssignedRoom)
+            .Include(b => b.Folio).ThenInclude(folio => folio!.Entries)
             .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .FirstOrDefaultAsync(b => b.BookingCode == code);
 
     public async Task<Booking?> GetByPaymentReferenceAsync(string paymentReference) =>
         await _db.Bookings
             .Include(booking => booking.Room)
+            .Include(booking => booking.RoomType)
             .Include(booking => booking.Guest)
+            .Include(booking => booking.ReservationRooms).ThenInclude(item => item.AssignedRoom)
+            .Include(booking => booking.Folio).ThenInclude(folio => folio!.Entries)
             .Include(booking => booking.Quote).ThenInclude(quote => quote!.Lines)
             .FirstOrDefaultAsync(booking => booking.TransactionReference == paymentReference);
 
@@ -49,7 +58,10 @@ public class BookingRepository : IBookingRepository
         await _db.Bookings
             .AsNoTracking()
             .Include(b => b.Room)
+            .Include(b => b.RoomType)
             .Include(b => b.Guest)
+            .Include(b => b.ReservationRooms).ThenInclude(item => item.AssignedRoom)
+            .Include(b => b.Folio).ThenInclude(folio => folio!.Entries)
             .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .OrderByDescending(b => b.CreatedAt)
             .Take(2000)
@@ -59,7 +71,10 @@ public class BookingRepository : IBookingRepository
         await _db.Bookings
             .AsNoTracking()
             .Include(booking => booking.Room)
+            .Include(booking => booking.RoomType)
             .Include(booking => booking.Guest)
+            .Include(booking => booking.ReservationRooms).ThenInclude(item => item.AssignedRoom)
+            .Include(booking => booking.Folio).ThenInclude(folio => folio!.Entries)
             .Include(booking => booking.Quote).ThenInclude(quote => quote!.Lines)
             .Where(booking => booking.GuestId == guestId)
             .OrderByDescending(booking => booking.CheckIn)
@@ -99,7 +114,8 @@ public class BookingRepository : IBookingRepository
     {
         var expirationCutoffUtc = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
         return await _db.Bookings.AnyAsync(booking =>
-            booking.RoomId == roomId &&
+            (booking.ReservationRooms.Any(item => item.AssignedRoomId == roomId) ||
+             !booking.ReservationRooms.Any() && booking.RoomId == roomId) &&
             booking.Status != BookingStatus.Cancelled &&
             booking.Status != BookingStatus.CheckedOut &&
             booking.Status != BookingStatus.NoShow &&
@@ -235,6 +251,8 @@ public class BookingRepository : IBookingRepository
                         "The pricing quote is invalid, expired, or already used. Request a new quote.");
                 }
                 if (lockedQuote.RoomId != booking.RoomId ||
+                    lockedQuote.RoomTypeId != booking.RoomTypeId ||
+                    lockedQuote.RoomQuantity != booking.RoomQuantity ||
                     lockedQuote.CheckInDate != DateOnly.FromDateTime(booking.CheckIn) ||
                     lockedQuote.CheckOutDate != DateOnly.FromDateTime(booking.CheckOut) ||
                     lockedQuote.AdultCount != booking.AdultCount ||
@@ -272,17 +290,18 @@ public class BookingRepository : IBookingRepository
                 }
             }
 
-            // Serialize booking creation per room across every API instance.
-            // This closes the race between the availability check and INSERT
-            // without locking unrelated rooms or holding a long transaction.
-            var advisoryKey = BitConverter.ToInt64(booking.RoomId.ToByteArray(), 0);
+            // Serialize inventory allocation per room type across API instances.
+            // The transactional check below is authoritative even if an earlier
+            // quote was created from a stale availability snapshot.
+            var advisoryKey = BitConverter.ToInt64(booking.RoomTypeId.ToByteArray(), 0);
             await _db.Database.ExecuteSqlInterpolatedAsync(
                 $"SELECT pg_advisory_xact_lock({advisoryKey})",
                 cancellationToken);
 
             var expirationCutoffUtc = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
-            var conflict = await _db.Bookings.AnyAsync(existing =>
-                    existing.RoomId == booking.RoomId &&
+            var physicalConflict = booking.RoomId.HasValue && await _db.Bookings.AnyAsync(existing =>
+                    (existing.ReservationRooms.Any(item => item.AssignedRoomId == booking.RoomId) ||
+                     !existing.ReservationRooms.Any() && existing.RoomId == booking.RoomId) &&
                     existing.Status != BookingStatus.Cancelled &&
                     existing.Status != BookingStatus.CheckedOut &&
                     existing.Status != BookingStatus.NoShow &&
@@ -294,9 +313,54 @@ public class BookingRepository : IBookingRepository
                     existing.CheckOut > booking.CheckIn,
                 cancellationToken);
 
-            if (conflict)
+            if (physicalConflict)
             {
                 throw new BadRequestException("This room was just reserved for the selected dates. Please choose another room or date.");
+            }
+
+            var physicalRoomIds = await _db.Rooms
+                .Where(room => room.RoomTypeId == booking.RoomTypeId &&
+                               room.IsOnline && room.Status != RoomStatus.Maintenance)
+                .Select(room => room.Id)
+                .ToArrayAsync(cancellationToken);
+            var reservedStays = await _db.ReservationRooms
+                .Where(item => item.RoomTypeId == booking.RoomTypeId && item.Booking != null &&
+                               item.Booking.CheckIn < booking.CheckOut &&
+                               item.Booking.CheckOut > booking.CheckIn &&
+                               item.Booking.Status != BookingStatus.Cancelled &&
+                               item.Booking.Status != BookingStatus.CheckedOut &&
+                               item.Booking.Status != BookingStatus.NoShow &&
+                               !(item.Booking.Status == BookingStatus.Pending &&
+                                 (item.Booking.PaymentStatus == PaymentStatus.Unpaid ||
+                                  item.Booking.PaymentStatus == PaymentStatus.AwaitingVerification) &&
+                                 item.Booking.CreatedAt <= expirationCutoffUtc))
+                .Select(item => new { item.Booking!.CheckIn, item.Booking.CheckOut })
+                .ToListAsync(cancellationToken);
+            var checkInDate = DateOnly.FromDateTime(booking.CheckIn);
+            var checkOutDate = DateOnly.FromDateTime(booking.CheckOut);
+            var closures = await _db.RoomInventoryClosures
+                .Where(closure => closure.RoomTypeId == booking.RoomTypeId &&
+                                  closure.IsActive && closure.StartDate < checkOutDate &&
+                                  closure.EndDate > checkInDate)
+                .Select(closure => new { closure.RoomId, closure.StartDate, closure.EndDate, closure.Units })
+                .ToListAsync(cancellationToken);
+            for (var date = checkInDate; date < checkOutDate; date = date.AddDays(1))
+            {
+                var dayStart = booking.CheckIn.AddDays(date.DayNumber - checkInDate.DayNumber);
+                var dayEnd = dayStart.AddDays(1);
+                var reserved = reservedStays.Count(stay => stay.CheckIn < dayEnd && stay.CheckOut > dayStart);
+                var activeClosures = closures.Where(closure =>
+                    closure.StartDate <= date && closure.EndDate > date).ToArray();
+                var closedRooms = activeClosures
+                    .Where(closure => closure.RoomId.HasValue && physicalRoomIds.Contains(closure.RoomId.Value))
+                    .Select(closure => closure.RoomId!.Value).Distinct().Count();
+                var closedTypeUnits = activeClosures.Where(closure => !closure.RoomId.HasValue)
+                    .Sum(closure => closure.Units);
+                var available = Math.Max(0, physicalRoomIds.Length -
+                    Math.Min(physicalRoomIds.Length, closedRooms + closedTypeUnits) - reserved);
+                if (available < booking.RoomQuantity)
+                    throw new BadRequestException(
+                        "The requested room type was just sold out for part of the stay. Request a new quote.");
             }
 
             if (newGuest is not null)
@@ -382,11 +446,34 @@ public class BookingRepository : IBookingRepository
                     "This booking is not awaiting bank-transfer payment verification.");
             }
 
+            var folio = await _db.Folios.Include(item => item.Entries)
+                .SingleOrDefaultAsync(item => item.BookingId == booking.Id, cancellationToken)
+                ?? throw new InvalidOperationException("The booking folio is missing.");
+            if (folio.Status != FolioStatus.Open)
+                throw new BadRequestException("The booking folio is closed.");
+            var amountDue = FolioAccounting.Calculate(folio.Entries).AmountDue;
+            if (amountDue <= 0)
+                throw new BadRequestException("This booking has no outstanding balance.");
+
             var previousPaymentStatus = booking.PaymentStatus;
             var previousBookingStatus = booking.Status;
             var confirmedAtUtc = DateTime.UtcNow;
             var serverGeneratedId = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
             var internalReference = $"MANUAL-{booking.BookingCode}-{serverGeneratedId}";
+
+            var paymentEntry = FolioAccounting.NewEntry(
+                folio,
+                FolioEntryType.Payment,
+                FolioEntryDirection.Credit,
+                amountDue,
+                "Verified direct bank transfer",
+                "ManualTransfer",
+                booking.Id.ToString(),
+                $"manual:{internalReference}",
+                confirmedAtUtc,
+                actor.UserId,
+                internalReference);
+            _db.FolioEntries.Add(paymentEntry);
 
             booking.PaymentStatus = PaymentStatus.Paid;
             booking.Status = BookingStatus.Confirmed;
@@ -414,7 +501,7 @@ public class BookingRepository : IBookingRepository
                     BookingId = booking.Id,
                     booking.BookingCode,
                     booking.GuestId,
-                    AmountConfirmed = booking.Amount,
+                    AmountConfirmed = amountDue,
                     PreviousPaymentStatus = previousPaymentStatus.ToString(),
                     NewPaymentStatus = booking.PaymentStatus.ToString(),
                     PreviousStatus = previousBookingStatus.ToString(),
@@ -436,6 +523,10 @@ public class BookingRepository : IBookingRepository
             var room = await _db.Rooms.SingleOrDefaultAsync(
                 item => item.Id == booking.RoomId,
                 cancellationToken);
+            var roomTypeName = await _db.RoomTypes
+                .Where(item => item.Id == booking.RoomTypeId)
+                .Select(item => item.Name)
+                .SingleOrDefaultAsync(cancellationToken);
             if (guest is not null)
             {
                 _db.EmailOutboxMessages.Add(_emailOutbox.Create(
@@ -444,8 +535,8 @@ public class BookingRepository : IBookingRepository
                     new PaymentSuccessEmail(
                         guest.FirstName,
                         booking.BookingCode,
-                        room?.Name ?? "Reserved Room",
-                        booking.Amount,
+                        room?.Name ?? roomTypeName ?? "Reserved Room",
+                        amountDue,
                         internalReference)));
             }
 
@@ -496,7 +587,8 @@ public class BookingRepository : IBookingRepository
                 .ToListAsync(cancellationToken);
 
             var guestIds = expired.Select(item => item.GuestId).Distinct();
-            var roomIds = expired.Select(item => item.RoomId).Distinct();
+            var roomIds = expired.Where(item => item.RoomId.HasValue)
+                .Select(item => item.RoomId!.Value).Distinct();
             var guests = await _db.Guests
                 .Where(item => guestIds.Contains(item.Id))
                 .ToDictionaryAsync(item => item.Id, cancellationToken);
@@ -506,7 +598,8 @@ public class BookingRepository : IBookingRepository
             foreach (var booking in expired)
             {
                 if (guests.TryGetValue(booking.GuestId, out var guest) &&
-                    rooms.TryGetValue(booking.RoomId, out var room))
+                    booking.RoomId.HasValue &&
+                    rooms.TryGetValue(booking.RoomId.Value, out var room))
                 {
                     _db.EmailOutboxMessages.Add(_emailOutbox.Create(
                         TransactionalEmailTemplates.Cancellation,
@@ -539,6 +632,22 @@ public class BookingRepository : IBookingRepository
                 booking.GuestAccessTokenRevokedAtUtc = utcNow;
                 booking.PaymentCheckoutUrl = null;
                 booking.StatusHistoryJson = JsonSerializer.Serialize(history);
+
+                var folio = await _db.Folios.Include(item => item.Entries)
+                    .SingleOrDefaultAsync(item => item.BookingId == booking.Id, cancellationToken);
+                if (folio is not null && folio.Status == FolioStatus.Open)
+                {
+                    var balance = FolioAccounting.Calculate(folio.Entries);
+                    if (balance.AmountDue > 0)
+                    {
+                        var credit = FolioAccounting.NewEntry(
+                            folio, FolioEntryType.Credit, FolioEntryDirection.Credit,
+                            balance.AmountDue, "Expired reservation release", "Expiration",
+                            booking.Id.ToString(), $"booking:{booking.Id:N}:expiration-credit",
+                            utcNow);
+                        _db.FolioEntries.Add(credit);
+                    }
+                }
 
                 _db.AuditLogs.Add(new AuditLog
                 {
@@ -607,30 +716,35 @@ public class BookingRepository : IBookingRepository
         return await _db.Bookings
             .Include(b => b.Guest)
             .Include(b => b.Room)
+            .Include(b => b.RoomType)
+            .Include(b => b.ReservationRooms).ThenInclude(item => item.AssignedRoom)
+            .Include(b => b.Folio).ThenInclude(folio => folio!.Entries)
             .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
-            .Where(b => b.Status == BookingStatus.Cancelled &&
-                        b.PaymentStatus == PaymentStatus.RefundPending)
+            .Where(b => b.PaymentStatus == PaymentStatus.RefundPending)
             .OrderByDescending(b => b.CreatedAt)
             .ToListAsync();
     }
 
     public async Task<decimal> GetNetRevenueAsync(DateTime? fromUtc = null, DateTime? toUtc = null, CancellationToken cancellationToken = default)
     {
-        var query = _db.Bookings.AsNoTracking()
-            .Where(b => b.Status != BookingStatus.Cancelled && b.PaymentStatus == PaymentStatus.Paid);
-        if (fromUtc.HasValue)
-        {
-            query = query.Where(b =>
-                b.PaymentConfirmedAtUtc.HasValue &&
-                b.PaymentConfirmedAtUtc.Value >= fromUtc.Value);
-        }
-        if (toUtc.HasValue)
-        {
-            query = query.Where(b =>
-                b.PaymentConfirmedAtUtc.HasValue &&
-                b.PaymentConfirmedAtUtc.Value < toUtc.Value);
-        }
-        return await query.SumAsync(b => b.Amount, cancellationToken);
+        var entries = _db.FolioEntries.AsNoTracking()
+            .Where(entry => entry.Type == FolioEntryType.Payment ||
+                            entry.Type == FolioEntryType.Refund ||
+                            entry.Type == FolioEntryType.Void &&
+                            entry.ReversesEntry != null &&
+                            (entry.ReversesEntry.Type == FolioEntryType.Payment ||
+                             entry.ReversesEntry.Type == FolioEntryType.Refund));
+        if (fromUtc.HasValue) entries = entries.Where(entry => entry.PostedAtUtc >= fromUtc.Value);
+        if (toUtc.HasValue) entries = entries.Where(entry => entry.PostedAtUtc < toUtc.Value);
+        return await entries.SumAsync(entry =>
+                entry.Type == FolioEntryType.Payment
+                    ? entry.Amount
+                    : entry.Type == FolioEntryType.Refund
+                        ? -entry.Amount
+                        : entry.ReversesEntry!.Type == FolioEntryType.Payment
+                            ? -entry.Amount
+                            : entry.Amount,
+            cancellationToken);
     }
 
     public async Task<int> GetActiveGuestsCountAsync(CancellationToken cancellationToken = default)
@@ -652,7 +766,7 @@ public class BookingRepository : IBookingRepository
                 booking.Status == BookingStatus.CheckedIn ||
                 booking.Status == BookingStatus.CheckedOut)
             .Where(booking => booking.CheckIn < toUtc && booking.CheckOut > fromUtc)
-            .Select(booking => new { booking.CheckIn, booking.CheckOut })
+            .Select(booking => new { booking.CheckIn, booking.CheckOut, booking.RoomQuantity })
             .ToListAsync(cancellationToken);
 
         var firstDate = fromUtc.Date;
@@ -663,7 +777,7 @@ public class BookingRepository : IBookingRepository
             var end = stay.CheckOut.Date < exclusiveLastDate
                 ? stay.CheckOut.Date
                 : exclusiveLastDate;
-            return Math.Max(0, (end - start).Days);
+            return Math.Max(0, (end - start).Days) * stay.RoomQuantity;
         });
     }
 
@@ -678,29 +792,43 @@ public class BookingRepository : IBookingRepository
         var stays = await query
             .Select(booking => new
             {
-                booking.Amount,
+                booking.RoomSubtotal,
+                booking.RoomQuantity,
                 booking.CheckIn,
                 booking.CheckOut
             })
             .ToListAsync(cancellationToken);
         var totalNights = stays.Sum(stay =>
-            Math.Max(1, (stay.CheckOut.Date - stay.CheckIn.Date).Days));
+            Math.Max(1, (stay.CheckOut.Date - stay.CheckIn.Date).Days) * stay.RoomQuantity);
         return totalNights == 0
             ? 0m
-            : stays.Sum(stay => stay.Amount) / totalNights;
+            : stays.Sum(stay => stay.RoomSubtotal) / totalNights;
     }
 
     public async Task<IReadOnlyList<RevenuePoint>> GetDailyRevenueDynamicsAsync(int days = 7, CancellationToken cancellationToken = default)
     {
         var now = DateTime.UtcNow;
         var startDate = now.Date.AddDays(-(days - 1));
-        var dailyTotals = await _db.Bookings.AsNoTracking()
-            .Where(b => b.Status != BookingStatus.Cancelled &&
-                        b.PaymentStatus == PaymentStatus.Paid &&
-                        b.PaymentConfirmedAtUtc.HasValue &&
-                        b.PaymentConfirmedAtUtc.Value >= startDate)
-            .GroupBy(b => b.PaymentConfirmedAtUtc!.Value.Date)
-            .Select(g => new { Date = g.Key, Total = g.Sum(b => b.Amount) })
+        var dailyTotals = await _db.FolioEntries.AsNoTracking()
+            .Where(entry => entry.PostedAtUtc >= startDate &&
+                            (entry.Type == FolioEntryType.Payment ||
+                             entry.Type == FolioEntryType.Refund ||
+                             entry.Type == FolioEntryType.Void &&
+                             entry.ReversesEntry != null &&
+                             (entry.ReversesEntry.Type == FolioEntryType.Payment ||
+                              entry.ReversesEntry.Type == FolioEntryType.Refund)))
+            .GroupBy(entry => entry.PostedAtUtc.Date)
+            .Select(group => new
+            {
+                Date = group.Key,
+                Total = group.Sum(entry => entry.Type == FolioEntryType.Payment
+                    ? entry.Amount
+                    : entry.Type == FolioEntryType.Refund
+                        ? -entry.Amount
+                        : entry.ReversesEntry!.Type == FolioEntryType.Payment
+                            ? -entry.Amount
+                            : entry.Amount)
+            })
             .ToListAsync(cancellationToken);
 
         var result = new List<RevenuePoint>(days);
@@ -718,6 +846,7 @@ public class BookingRepository : IBookingRepository
         return await _db.Bookings.AsNoTracking()
             .Include(b => b.Guest)
             .Include(b => b.Room)
+            .Include(b => b.RoomType)
             .Where(b => b.Status == BookingStatus.CheckedIn)
             .OrderByDescending(b => b.CreatedAt)
             .Take(limit)
@@ -725,7 +854,7 @@ public class BookingRepository : IBookingRepository
                 ((b.Guest != null ? b.Guest.FirstName + " " + b.Guest.LastName : "Unknown")).Trim(),
                 b.Guest != null ? (b.Guest.AvatarUrl ?? "") : "",
                 b.BookingCode,
-                b.Room != null ? b.Room.Category.ToString() : "Unknown",
+                b.RoomType != null ? b.RoomType.Category.ToString() : b.Room != null ? b.Room.Category.ToString() : "Unknown",
                 b.Room != null ? b.Room.RoomNumber : "N/A",
                 "CHECKED IN",
                 b.Amount,
@@ -768,7 +897,10 @@ public class BookingRepository : IBookingRepository
         var query = _db.Bookings
             .AsNoTracking()
             .Include(b => b.Room)
+            .Include(b => b.RoomType)
             .Include(b => b.Guest)
+            .Include(b => b.ReservationRooms).ThenInclude(item => item.AssignedRoom)
+            .Include(b => b.Folio).ThenInclude(folio => folio!.Entries)
             .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .AsQueryable();
 

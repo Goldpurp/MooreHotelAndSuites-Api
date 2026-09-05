@@ -4,6 +4,7 @@ using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Domain.Common;
 using MooreHotels.Infrastructure.Persistence;
 
 namespace MooreHotels.Infrastructure.Repositories;
@@ -62,6 +63,7 @@ public class AddOnRepository : IAddOnRepository
         int quantity,
         string? notes,
         DateTime addedAtUtc,
+        Guid actorId,
         CancellationToken cancellationToken = default)
     {
         var strategy = _db.Database.CreateExecutionStrategy();
@@ -85,14 +87,13 @@ public class AddOnRepository : IAddOnRepository
                     "Cannot attach services to a closed booking.");
             }
 
-            if (booking.PaymentStatus is PaymentStatus.Paid or PaymentStatus.RefundPending or PaymentStatus.Refunded)
-            {
-                throw new BadRequestException(
-                    "Cannot change a folio after payment or refund processing has started.");
-            }
+            if (booking.PaymentStatus is PaymentStatus.RefundPending or PaymentStatus.Refunded)
+                throw new BadRequestException("Cannot add charges while a refund is in progress.");
 
-            if (!string.IsNullOrWhiteSpace(booking.PaymentCheckoutUrl) ||
+            if (booking.PaymentStatus is not (PaymentStatus.Paid or PaymentStatus.PartiallyPaid) &&
+                (!string.IsNullOrWhiteSpace(booking.PaymentCheckoutUrl) ||
                 !string.IsNullOrWhiteSpace(booking.PaymentProviderReference))
+               )
             {
                 throw new BadRequestException(
                     "Cannot change a folio after a hosted payment checkout has been created.");
@@ -122,7 +123,32 @@ public class AddOnRepository : IAddOnRepository
                 AddOnService = service
             };
 
-            booking.Amount += totalPrice;
+            var folio = await _db.Folios.Include(item => item.Entries)
+                .SingleOrDefaultAsync(item => item.BookingId == booking.Id, cancellationToken)
+                ?? throw new InvalidOperationException("The booking folio is missing.");
+            if (folio.Status != FolioStatus.Open)
+                throw new BadRequestException("Cannot add a service to a closed folio.");
+            var folioEntry = FolioAccounting.NewEntry(
+                folio,
+                FolioEntryType.AddOnCharge,
+                FolioEntryDirection.Debit,
+                totalPrice,
+                service.Name,
+                "BookingAddOn",
+                bookingAddOn.Id.ToString(),
+                $"addon:{bookingAddOn.Id:N}",
+                addedAtUtc,
+                actorId,
+                notes: notes);
+            _db.FolioEntries.Add(folioEntry);
+            booking.Amount = FolioAccounting.Money(booking.Amount + totalPrice);
+            var balance = FolioAccounting.Calculate(folio.Entries);
+            if (balance.Payments - balance.Refunds > 0)
+                booking.PaymentStatus = balance.GuestCredit > 0
+                    ? PaymentStatus.RefundPending
+                    : balance.AmountDue == 0
+                        ? PaymentStatus.Paid
+                        : PaymentStatus.PartiallyPaid;
             await _db.BookingAddOns.AddAsync(bookingAddOn, cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
@@ -131,9 +157,4 @@ public class AddOnRepository : IAddOnRepository
         });
     }
 
-    public async Task RemoveBookingAddOnAsync(BookingAddOn bookingAddOn, CancellationToken cancellationToken = default)
-    {
-        _db.BookingAddOns.Remove(bookingAddOn);
-        await _db.SaveChangesAsync(cancellationToken);
-    }
 }

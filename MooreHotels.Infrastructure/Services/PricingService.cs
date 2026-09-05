@@ -24,15 +24,18 @@ public sealed class PricingService : IPricingService
 {
     private readonly MooreHotelsDbContext _db;
     private readonly IHotelTimeService _hotelTime;
+    private readonly IInventoryService _inventory;
     private readonly PricingSettings _settings;
 
     public PricingService(
         MooreHotelsDbContext db,
         IHotelTimeService hotelTime,
+        IInventoryService inventory,
         IOptions<PricingSettings> settings)
     {
         _db = db;
         _hotelTime = hotelTime;
+        _inventory = inventory;
         _settings = settings.Value;
     }
 
@@ -44,13 +47,42 @@ public sealed class PricingService : IPricingService
         var checkOutDate = DateOnly.FromDateTime(request.CheckOut);
         ValidateStay(checkInDate, checkOutDate, request.AdultCount, request.ChildCount);
 
-        var room = await _db.Rooms.AsNoTracking()
-            .SingleOrDefaultAsync(item => item.Id == request.RoomId, cancellationToken)
-            ?? throw new NotFoundException("Room not found.");
-        if (!room.IsOnline)
-            throw new BadRequestException("This room is currently unavailable.");
-        if (checked(request.AdultCount + request.ChildCount) > room.Capacity)
-            throw new BadRequestException($"This room permits a maximum of {room.Capacity} guests.");
+        if (request.RoomId.HasValue == request.RoomTypeId.HasValue)
+            throw new BadRequestException("Select exactly one inventory scope: a room type or a legacy physical room.");
+        if (request.RoomQuantity is < 1 or > 10)
+            throw new BadRequestException("Room quantity must be between 1 and 10.");
+
+        Room? room = null;
+        RoomType roomType;
+        if (request.RoomId.HasValue)
+        {
+            if (request.RoomQuantity != 1)
+                throw new BadRequestException("A legacy physical-room quote can contain only one room.");
+            room = await _db.Rooms.AsNoTracking().Include(item => item.RoomType)
+                .SingleOrDefaultAsync(item => item.Id == request.RoomId.Value, cancellationToken)
+                ?? throw new NotFoundException("Room not found.");
+            if (!room.IsOnline || room.Status == RoomStatus.Maintenance)
+                throw new BadRequestException("This room is currently unavailable.");
+            roomType = room.RoomType
+                ?? throw new InvalidOperationException("The room has no configured room type.");
+        }
+        else
+        {
+            roomType = await _db.RoomTypes.AsNoTracking()
+                .SingleOrDefaultAsync(
+                    item => item.Id == request.RoomTypeId!.Value && item.IsActive,
+                    cancellationToken)
+                ?? throw new NotFoundException("Room type not found or inactive.");
+            var availability = await _inventory.GetAvailabilityAsync(
+                roomType.Id, checkInDate, checkOutDate, request.RoomQuantity, cancellationToken);
+            if (!availability.Available)
+                throw new BadRequestException(
+                    $"Only {availability.AvailableUnits} {roomType.Name} room(s) remain for the full stay.");
+        }
+        var maximumOccupancy = checked(roomType.MaxOccupancy * request.RoomQuantity);
+        if (checked(request.AdultCount + request.ChildCount) > maximumOccupancy)
+            throw new BadRequestException(
+                $"The selected inventory permits a maximum of {maximumOccupancy} guests.");
 
         var requestedRatePlan = NormalizeOptionalCode(request.RatePlanCode, "rate plan");
         var ratePlanQuery = _db.RatePlans.AsNoTracking().Where(plan => plan.IsActive);
@@ -79,7 +111,9 @@ public sealed class PricingService : IPricingService
                 rate.RatePlanId == ratePlan.Id &&
                 rate.StayDate >= checkInDate &&
                 rate.StayDate < checkOutDate &&
-                (rate.RoomId == room.Id || rate.RoomCategory == room.Category))
+                (room != null && rate.RoomId == room.Id ||
+                 rate.RoomTypeId == roomType.Id ||
+                 rate.RoomCategory == roomType.Category))
             .ToListAsync(cancellationToken);
 
         var quoteId = Guid.NewGuid();
@@ -88,13 +122,16 @@ public sealed class PricingService : IPricingService
         var sortOrder = 0;
         for (var date = checkInDate; date < checkOutDate; date = date.AddDays(1))
         {
-            var overrideRate = dailyRates.FirstOrDefault(rate =>
-                                   rate.StayDate == date && rate.RoomId == room.Id)
+            var overrideRate = room is null ? null : dailyRates.FirstOrDefault(rate =>
+                                   rate.StayDate == date && rate.RoomId == room.Id);
+            overrideRate ??= dailyRates.FirstOrDefault(rate =>
+                                   rate.StayDate == date && rate.RoomTypeId == roomType.Id)
                                ?? dailyRates.FirstOrDefault(rate =>
-                                   rate.StayDate == date && rate.RoomCategory == room.Category);
-            var amount = overrideRate is null
-                ? ApplyRatePlanAdjustment(room.PricePerNight, ratePlan)
+                                   rate.StayDate == date && rate.RoomCategory == roomType.Category);
+            var unitAmount = overrideRate is null
+                ? ApplyRatePlanAdjustment(room?.PricePerNight ?? roomType.BasePricePerNight, ratePlan)
                 : Money(overrideRate.Amount);
+            var amount = Money(unitAmount * request.RoomQuantity);
             nightlyAmounts[date] = amount;
             quoteLines.Add(new BookingQuoteLine
             {
@@ -102,10 +139,10 @@ public sealed class PricingService : IPricingService
                 BookingQuoteId = quoteId,
                 Type = PricingLineType.RoomNight,
                 Code = overrideRate is null ? ratePlan.Code : $"{ratePlan.Code}-DAILY",
-                Description = $"{room.Name} — {date:yyyy-MM-dd}",
+                Description = $"{roomType.Name} — {date:yyyy-MM-dd}",
                 StayDate = date,
-                Quantity = 1,
-                UnitAmount = amount,
+                Quantity = request.RoomQuantity,
+                UnitAmount = unitAmount,
                 Amount = amount,
                 SortOrder = sortOrder++
             });
@@ -192,7 +229,7 @@ public sealed class PricingService : IPricingService
                     PricingRuleCalculation.Percentage =>
                         Money(applicableRoomAmount * rule.Value / 100m),
                     PricingRuleCalculation.FixedPerNight =>
-                        Money(rule.Value * applicableDates.Length),
+                        Money(rule.Value * applicableDates.Length * request.RoomQuantity),
                     PricingRuleCalculation.FixedPerStay => Money(rule.Value),
                     _ => throw new InvalidOperationException("Unsupported pricing rule calculation.")
                 };
@@ -210,7 +247,7 @@ public sealed class PricingService : IPricingService
                 Code = rule.Code,
                 Description = rule.Name,
                 Quantity = rule.Calculation == PricingRuleCalculation.FixedPerNight
-                    ? applicableDates.Length
+                    ? applicableDates.Length * request.RoomQuantity
                     : 1,
                 UnitAmount = rule.Calculation == PricingRuleCalculation.FixedPerNight
                     ? Money(rule.Value)
@@ -230,7 +267,9 @@ public sealed class PricingService : IPricingService
         {
             Id = quoteId,
             AccessTokenHash = BookingGuestAccess.Hash(quoteToken),
-            RoomId = room.Id,
+            RoomId = room?.Id,
+            RoomTypeId = roomType.Id,
+            RoomQuantity = request.RoomQuantity,
             RatePlanId = ratePlan.Id,
             PromotionId = promotion?.Id,
             CheckInDate = checkInDate,
@@ -254,7 +293,11 @@ public sealed class PricingService : IPricingService
         return new PricingQuoteDto(
             quote.Id,
             quoteToken,
-            room.Id,
+            room?.Id,
+            roomType.Id,
+            roomType.Code,
+            roomType.Name,
+            request.RoomQuantity,
             ratePlan.Code,
             ratePlan.Name,
             promotion?.Code,
@@ -295,6 +338,8 @@ public sealed class PricingService : IPricingService
         if (quote.ExpiresAtUtc <= now)
             throw new BadRequestException("The pricing quote has expired. Request a new quote.");
         if (quote.RoomId != booking.RoomId ||
+            quote.RoomTypeId != (booking.RoomTypeId ?? quote.RoomTypeId) ||
+            quote.RoomQuantity != booking.RoomQuantity ||
             quote.CheckInDate != DateOnly.FromDateTime(booking.CheckIn) ||
             quote.CheckOutDate != DateOnly.FromDateTime(booking.CheckOut) ||
             quote.AdultCount != booking.AdultCount ||
@@ -307,6 +352,9 @@ public sealed class PricingService : IPricingService
         return new ValidatedBookingQuote(
             quote.Id,
             tokenHash,
+            quote.RoomId,
+            quote.RoomTypeId,
+            quote.RoomQuantity,
             quote.Currency,
             quote.RoomSubtotal,
             quote.DiscountAmount,
@@ -332,7 +380,7 @@ public sealed class PricingService : IPricingService
                 .OrderBy(rate => rate.StayDate).ThenBy(rate => rate.RatePlanId)
                 .Take(5000)
                 .Select(rate => new DailyRateDto(
-                    rate.Id, rate.RatePlanId, rate.RoomId, rate.RoomCategory,
+                    rate.Id, rate.RatePlanId, rate.RoomId, rate.RoomTypeId, rate.RoomCategory,
                     rate.StayDate, rate.Amount, rate.UpdatedAtUtc))
                 .ToListAsync(cancellationToken),
             await _db.PricingRules.AsNoTracking().OrderBy(rule => rule.SortOrder)
@@ -423,8 +471,10 @@ public sealed class PricingService : IPricingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
-        if ((request.RoomId.HasValue ? 1 : 0) + (request.RoomCategory.HasValue ? 1 : 0) != 1)
-            throw new BadRequestException("Select exactly one daily-rate scope: room or room category.");
+        if ((request.RoomId.HasValue ? 1 : 0) +
+            (request.RoomTypeId.HasValue ? 1 : 0) +
+            (request.RoomCategory.HasValue ? 1 : 0) != 1)
+            throw new BadRequestException("Select exactly one daily-rate scope: room, room type, or room category.");
         if (request.Amount <= 0)
             throw new BadRequestException("Daily rate amount must be greater than zero.");
         if (!await _db.RatePlans.AnyAsync(plan => plan.Id == request.RatePlanId, cancellationToken))
@@ -432,6 +482,9 @@ public sealed class PricingService : IPricingService
         if (request.RoomId.HasValue &&
             !await _db.Rooms.AnyAsync(room => room.Id == request.RoomId, cancellationToken))
             throw new NotFoundException("Room not found.");
+        if (request.RoomTypeId.HasValue &&
+            !await _db.RoomTypes.AnyAsync(type => type.Id == request.RoomTypeId, cancellationToken))
+            throw new NotFoundException("Room type not found.");
 
         var entity = id.HasValue
             ? await _db.DailyRoomRates.SingleOrDefaultAsync(rate => rate.Id == id, cancellationToken)
@@ -440,6 +493,7 @@ public sealed class PricingService : IPricingService
         var oldData = id.HasValue ? JsonSerializer.Serialize(ToDailyRateDto(entity)) : null;
         entity.RatePlanId = request.RatePlanId;
         entity.RoomId = request.RoomId;
+        entity.RoomTypeId = request.RoomTypeId;
         entity.RoomCategory = request.RoomCategory;
         entity.StayDate = request.StayDate;
         entity.Amount = Money(request.Amount);
@@ -652,7 +706,7 @@ public sealed class PricingService : IPricingService
         plan.IsDefault, plan.IsActive, plan.UpdatedAtUtc);
 
     private static DailyRateDto ToDailyRateDto(DailyRateEntity rate) => new(
-        rate.Id, rate.RatePlanId, rate.RoomId, rate.RoomCategory,
+        rate.Id, rate.RatePlanId, rate.RoomId, rate.RoomTypeId, rate.RoomCategory,
         rate.StayDate, rate.Amount, rate.UpdatedAtUtc);
 
     private static RuleDto ToRuleDto(RuleEntity rule) => new(

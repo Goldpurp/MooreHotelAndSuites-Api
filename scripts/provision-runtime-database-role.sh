@@ -53,6 +53,7 @@ WHERE to_regclass('public.audit_logs') IS NOT NULL
 SELECT format('REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.%I FROM %I', table_name, :'runtime_role')
 FROM (VALUES
     ('booking_code_allocations'),
+    ('folio_entries'),
     ('visit_records'),
     ('notifications')
 ) AS append_only(table_name)
@@ -61,6 +62,7 @@ WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
 SELECT format('GRANT SELECT, INSERT ON TABLE public.%I TO %I', table_name, :'runtime_role')
 FROM (VALUES
     ('booking_code_allocations'),
+    ('folio_entries'),
     ('visit_records'),
     ('notifications')
 ) AS append_only(table_name)
@@ -70,7 +72,12 @@ SELECT format('REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.%I F
 FROM (VALUES
     ('bookings'),
     ('guests'),
-    ('monnify_transactions')
+    ('monnify_transactions'),
+    ('folios'),
+    ('reservation_rooms'),
+    ('room_inventory_closures'),
+    ('room_types'),
+    ('booking_addons')
 ) AS retained_records(table_name)
 WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
 \gexec

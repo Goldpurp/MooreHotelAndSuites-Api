@@ -165,10 +165,11 @@ public sealed class PrivacyController : ControllerBase
                 });
             }
 
+            var normalizedBookingCode = request.BookingCode.Trim().ToUpperInvariant();
             var booking = await _db.Bookings
                 .AsNoTracking()
                 .SingleOrDefaultAsync(
-                    item => item.BookingCode == request.BookingCode.Trim().ToUpperInvariant(),
+                    item => item.BookingCode == normalizedBookingCode,
                     cancellationToken);
             if (booking is null ||
                 !BookingGuestAccessPolicy.IsValid(booking, accessToken, DateTime.UtcNow))

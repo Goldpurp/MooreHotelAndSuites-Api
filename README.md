@@ -173,9 +173,9 @@ Client accounts with a linked guest profile do not need this extra step.
 
 The guest flow calls `POST /api/pricing/quotes` before creating a booking. The
 quote selects an active rate plan, applies the most-specific daily rate (room
-before category), calculates promotions, included tax, exclusive tax and fees,
+then room type, then category), calculates promotions, included tax, exclusive tax and fees,
 and returns a 256-bit quote token once. Only its hash is stored. Submit
-`quoteId` and `quoteToken` with exactly the same room, dates and occupancy to
+`quoteId` and `quoteToken` with exactly the same room type, quantity, dates and occupancy to
 `POST /api/bookings` before the configured 15-minute expiry.
 
 Production requires a quote. Consumption, promotion redemption and the room
@@ -184,6 +184,12 @@ booking stores currency and aggregate amounts; its related immutable quote
 retains each nightly rate and every adjustment for booking views and invoices.
 Unconsumed expired quotes are removed after a one-day diagnostic window. See
 `docs/PRICING_AND_QUOTES.md` for the complete client and staff contract.
+
+New reservations sell room types and can reserve up to ten physical units under
+one booking. Reception assigns or moves the actual rooms before arrival. Every
+booking also has an append-only folio supporting deposits, split payments,
+later charges, credits, immutable voids, and partial refunds; checkout requires
+a zero balance. See `docs/INVENTORY_AND_FOLIOS.md` for API and launch guidance.
 
 ## Manual bank-transfer confirmation
 

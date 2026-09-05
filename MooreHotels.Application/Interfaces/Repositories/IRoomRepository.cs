@@ -8,6 +8,8 @@ public interface IRoomRepository
 {
     Task<Room?> GetByIdAsync(Guid id);
     Task<Room?> GetByRoomNumberAsync(string roomNumber);
+    Task<RoomType?> GetRoomTypeByIdAsync(Guid id);
+    Task<RoomType?> GetDefaultRoomTypeForCategoryAsync(RoomCategory category);
     Task<IEnumerable<Room>> GetAllAsync(bool onlyOnline = true);
     Task<IEnumerable<Room>> SearchAsync(
         DateTime? checkIn,

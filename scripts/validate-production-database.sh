@@ -54,13 +54,104 @@ BEGIN
         RAISE EXCEPTION 'Preflight failed: % duplicate booking codes.', invalid_count;
     END IF;
 
-    SELECT count(*) INTO invalid_count
-    FROM bookings b
-    LEFT JOIN guests g ON g."Id" = b."GuestId"
-    LEFT JOIN rooms r ON r."Id" = b."RoomId"
-    WHERE g."Id" IS NULL OR r."Id" IS NULL;
-    IF invalid_count > 0 THEN
-        RAISE EXCEPTION 'Preflight failed: % orphan booking relationships.', invalid_count;
+    IF to_regclass('public.room_types') IS NULL THEN
+        SELECT count(*) INTO invalid_count
+        FROM bookings b
+        LEFT JOIN guests g ON g."Id" = b."GuestId"
+        LEFT JOIN rooms r ON r."Id" = b."RoomId"
+        WHERE g."Id" IS NULL OR r."Id" IS NULL;
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % orphan booking relationships.', invalid_count;
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM bookings first_booking
+        JOIN bookings second_booking
+          ON second_booking."RoomId" = first_booking."RoomId"
+         AND second_booking."Id" > first_booking."Id"
+         AND second_booking."CheckIn" < first_booking."CheckOut"
+         AND second_booking."CheckOut" > first_booking."CheckIn"
+        WHERE first_booking."Status" NOT IN ('Cancelled', 'CheckedOut', 'NoShow')
+          AND second_booking."Status" NOT IN ('Cancelled', 'CheckedOut', 'NoShow');
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % overlapping physical-room reservations.', invalid_count;
+        END IF;
+    ELSE
+        SELECT count(*) INTO invalid_count
+        FROM bookings b
+        LEFT JOIN guests g ON g."Id" = b."GuestId"
+        LEFT JOIN room_types rt ON rt."Id" = b."RoomTypeId"
+        LEFT JOIN rooms r ON r."Id" = b."RoomId"
+        WHERE g."Id" IS NULL
+           OR rt."Id" IS NULL
+           OR b."RoomQuantity" NOT BETWEEN 1 AND 10
+           OR (b."RoomId" IS NOT NULL AND
+               (r."Id" IS NULL OR r."RoomTypeId" <> b."RoomTypeId"));
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % invalid room-type booking relationships.', invalid_count;
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM bookings b
+        WHERE (SELECT count(*) FROM reservation_rooms rr WHERE rr."BookingId" = b."Id")
+              <> b."RoomQuantity";
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % bookings have an incorrect reservation-unit count.', invalid_count;
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM reservation_rooms rr
+        JOIN bookings b ON b."Id" = rr."BookingId"
+        LEFT JOIN room_types rt ON rt."Id" = rr."RoomTypeId"
+        LEFT JOIN rooms r ON r."Id" = rr."AssignedRoomId"
+        WHERE rt."Id" IS NULL
+           OR rr."RoomTypeId" <> b."RoomTypeId"
+           OR length(trim(rr."RoomTypeCode")) = 0
+           OR length(trim(rr."RoomTypeName")) = 0
+           OR (rr."AssignedRoomId" IS NOT NULL AND
+               (r."Id" IS NULL OR r."RoomTypeId" <> rr."RoomTypeId"));
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % reservation units have invalid room-type or assignment data.', invalid_count;
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM reservation_rooms first_unit
+        JOIN reservation_rooms second_unit
+          ON second_unit."AssignedRoomId" = first_unit."AssignedRoomId"
+         AND second_unit."Id" > first_unit."Id"
+        JOIN bookings first_booking ON first_booking."Id" = first_unit."BookingId"
+        JOIN bookings second_booking ON second_booking."Id" = second_unit."BookingId"
+        WHERE first_unit."AssignedRoomId" IS NOT NULL
+          AND first_booking."Status" NOT IN ('Cancelled', 'CheckedOut', 'NoShow')
+          AND second_booking."Status" NOT IN ('Cancelled', 'CheckedOut', 'NoShow')
+          AND second_booking."CheckIn" < first_booking."CheckOut"
+          AND second_booking."CheckOut" > first_booking."CheckIn";
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % overlapping physical-room assignments.', invalid_count;
+        END IF;
+    END IF;
+
+    IF to_regclass('public.folios') IS NOT NULL THEN
+        SELECT count(*) INTO invalid_count
+        FROM bookings b
+        LEFT JOIN folios f ON f."BookingId" = b."Id"
+        WHERE f."Id" IS NULL OR f."Currency" <> b."Currency";
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % bookings have a missing or mismatched folio.', invalid_count;
+        END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM folio_entries entry
+        JOIN folios folio ON folio."Id" = entry."FolioId"
+        LEFT JOIN folio_entries original ON original."Id" = entry."ReversesEntryId"
+        WHERE entry."Amount" <= 0
+           OR entry."Currency" <> folio."Currency"
+           OR (entry."Type" = 'Void' AND
+               (original."Id" IS NULL OR original."FolioId" <> entry."FolioId"))
+           OR (entry."Type" <> 'Void' AND entry."ReversesEntryId" IS NOT NULL);
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % folio entries violate ledger invariants.', invalid_count;
+        END IF;
     END IF;
 
     IF to_regclass('public.room_images') IS NOT NULL THEN
@@ -153,14 +244,29 @@ BEGIN
     END IF;
 
     IF to_regclass('public.booking_quotes') IS NOT NULL THEN
-        SELECT count(*) INTO invalid_count
-        FROM booking_quotes q
-        LEFT JOIN rate_plans rp ON rp."Id" = q."RatePlanId"
-        LEFT JOIN rooms r ON r."Id" = q."RoomId"
-        WHERE rp."Id" IS NULL
-           OR r."Id" IS NULL
-           OR q."TotalAmount" <> q."RoomSubtotal" - q."DiscountAmount" + q."TaxAmount" + q."FeeAmount"
-           OR q."ExpiresAtUtc" <= q."CreatedAtUtc";
+        IF to_regclass('public.room_types') IS NULL THEN
+            SELECT count(*) INTO invalid_count
+            FROM booking_quotes q
+            LEFT JOIN rate_plans rp ON rp."Id" = q."RatePlanId"
+            LEFT JOIN rooms r ON r."Id" = q."RoomId"
+            WHERE rp."Id" IS NULL
+               OR r."Id" IS NULL
+               OR q."TotalAmount" <> q."RoomSubtotal" - q."DiscountAmount" + q."TaxAmount" + q."FeeAmount"
+               OR q."ExpiresAtUtc" <= q."CreatedAtUtc";
+        ELSE
+            SELECT count(*) INTO invalid_count
+            FROM booking_quotes q
+            LEFT JOIN rate_plans rp ON rp."Id" = q."RatePlanId"
+            LEFT JOIN room_types rt ON rt."Id" = q."RoomTypeId"
+            LEFT JOIN rooms r ON r."Id" = q."RoomId"
+            WHERE rp."Id" IS NULL
+               OR rt."Id" IS NULL
+               OR q."RoomQuantity" NOT BETWEEN 1 AND 10
+               OR (q."RoomId" IS NOT NULL AND
+                   (r."Id" IS NULL OR r."RoomTypeId" <> q."RoomTypeId"))
+               OR q."TotalAmount" <> q."RoomSubtotal" - q."DiscountAmount" + q."TaxAmount" + q."FeeAmount"
+               OR q."ExpiresAtUtc" <= q."CreatedAtUtc";
+        END IF;
         IF invalid_count > 0 THEN
             RAISE EXCEPTION 'Preflight failed: % pricing quotes are invalid.', invalid_count;
         END IF;

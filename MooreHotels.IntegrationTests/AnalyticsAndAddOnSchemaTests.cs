@@ -36,22 +36,15 @@ public sealed class AnalyticsAndAddOnSchemaTests
     [Fact]
     public async Task Analytics_uses_payment_dates_and_room_nights()
     {
-        var booking = await _fixture.CreateBookingAsync(
-            paymentStatus: PaymentStatus.Paid,
-            bookingStatus: BookingStatus.CheckedOut);
         var checkIn = new DateTime(2020, 1, 10, 14, 0, 0, DateTimeKind.Utc);
         var checkOut = new DateTime(2020, 1, 12, 12, 0, 0, DateTimeKind.Utc);
         var paymentConfirmed = new DateTime(2020, 1, 11, 10, 0, 0, DateTimeKind.Utc);
-        await _fixture.WithDbAsync(async db =>
-        {
-            var stored = await db.Bookings.SingleAsync(item => item.Id == booking.Id);
-            stored.CheckIn = checkIn;
-            stored.CheckOut = checkOut;
-            stored.Amount = 100000m;
-            stored.PaymentConfirmedAtUtc = paymentConfirmed;
-            await db.SaveChangesAsync();
-            return true;
-        });
+        await _fixture.CreateBookingAsync(
+            paymentStatus: PaymentStatus.Paid,
+            bookingStatus: BookingStatus.CheckedOut,
+            checkInUtc: checkIn,
+            checkOutUtc: checkOut,
+            paymentConfirmedAtUtc: paymentConfirmed);
 
         await using var scope = _fixture.Services.CreateAsyncScope();
         var repository = scope.ServiceProvider.GetRequiredService<IBookingRepository>();

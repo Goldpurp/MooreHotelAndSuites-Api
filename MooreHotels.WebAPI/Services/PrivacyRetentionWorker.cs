@@ -138,7 +138,7 @@ public sealed class PrivacyRetentionWorker : BackgroundService
                 total += anonymized;
             } while (anonymized == BatchSize && !cancellationToken.IsCancellationRequested);
 
-            if (total > 0)
+            if (total > 0 && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
                     "Anonymized {GuestCount} expired anonymous guest records under the configured retention policy.",

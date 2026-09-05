@@ -16,4 +16,7 @@ public record RoomDto(
     string Description,
     List<string> Amenities,
     List<string> Images,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    Guid? RoomTypeId = null,
+    string? RoomTypeCode = null,
+    string? RoomTypeName = null);

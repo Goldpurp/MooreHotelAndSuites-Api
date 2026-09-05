@@ -416,7 +416,7 @@ public sealed class MonnifyPaymentSecurityTests
                     item.Action ==
                     "MONNIFY_PAYMENT_RECEIVED_AFTER_EXPIRY")
         });
-        Assert.Equal(PaymentStatus.Unpaid, state.Booking.PaymentStatus);
+        Assert.Equal(PaymentStatus.RefundPending, state.Booking.PaymentStatus);
         Assert.NotEqual(BookingStatus.Confirmed, state.Booking.Status);
         Assert.Equal("PAID_AFTER_EXPIRY", state.Transaction.Status);
         Assert.Equal(BookingPaymentPolicy.SystemActorId, state.Audit.ProfileId);
@@ -425,7 +425,7 @@ public sealed class MonnifyPaymentSecurityTests
         var repository = scope.ServiceProvider
             .GetRequiredService<MooreHotels.Application.Interfaces.Repositories.IBookingRepository>();
         Assert.False(await repository.IsRoomBookedAsync(
-            booking.RoomId,
+            booking.RoomId!.Value,
             booking.CheckIn,
             booking.CheckOut));
         await repository.CancelExpiredUnconfirmedAsync(DateTime.UtcNow);

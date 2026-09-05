@@ -39,6 +39,12 @@ public class VisitRecordService : IVisitRecordService
     {
         var booking = await _bookingRepo.GetByCodeAsync(bookingCode);
         if (booking == null) throw new NotFoundException("Invalid booking code.");
+        var assignedUnit = booking.ReservationRooms
+            .OrderBy(item => item.Sequence)
+            .FirstOrDefault(item => item.AssignedRoomId.HasValue);
+        var roomId = assignedUnit?.AssignedRoomId ?? booking.RoomId;
+        if (!roomId.HasValue)
+            throw new BadRequestException("Assign a physical room before recording a stay event.");
 
         var record = new VisitRecord
         {
@@ -46,8 +52,8 @@ public class VisitRecordService : IVisitRecordService
             BookingCode = bookingCode,
             GuestId = booking.GuestId,
             GuestName = $"{booking.Guest?.FirstName} {booking.Guest?.LastName}",
-            RoomId = booking.RoomId,
-            RoomNumber = booking.Room?.RoomNumber ?? "N/A",
+            RoomId = roomId.Value,
+            RoomNumber = assignedUnit?.AssignedRoom?.RoomNumber ?? booking.Room?.RoomNumber ?? "N/A",
             Action = action,
             Timestamp = DateTime.UtcNow,
             AuthorizedBy = authorizedBy

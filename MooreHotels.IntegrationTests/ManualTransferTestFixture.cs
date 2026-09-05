@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Hosting;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Domain.Common;
 using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Infrastructure.Identity;
@@ -155,20 +156,37 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         PaymentMethod paymentMethod = PaymentMethod.DirectTransfer,
         PaymentStatus paymentStatus = PaymentStatus.AwaitingVerification,
         BookingStatus bookingStatus = BookingStatus.Pending,
-        DateTime? createdAtUtc = null)
+        DateTime? createdAtUtc = null,
+        decimal amount = 100000m,
+        DateTime? checkInUtc = null,
+        DateTime? checkOutUtc = null,
+        DateTime? paymentConfirmedAtUtc = null)
     {
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
         var unique = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var roomType = new RoomType
+        {
+            Id = Guid.NewGuid(),
+            Code = $"TEST-{unique[..8]}",
+            Name = "Integration Test Room Type",
+            Category = RoomCategory.Standard,
+            BaseOccupancy = 1,
+            MaxOccupancy = 2,
+            BasePricePerNight = amount / 2m,
+            Description = "Integration test inventory.",
+            Amenities = ["Wi-Fi"]
+        };
         var room = new Room
         {
             Id = Guid.NewGuid(),
+            RoomTypeId = roomType.Id,
             RoomNumber = $"T-{unique[..8]}",
             Name = "Integration Test Room",
             Category = RoomCategory.Standard,
             Floor = PropertyFloor.GroundFloor,
             Status = RoomStatus.Available,
-            PricePerNight = 50000m,
+            PricePerNight = amount / 2m,
             Capacity = 2,
             Size = "25 sqm",
             IsOnline = true,
@@ -188,11 +206,15 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
             Id = Guid.NewGuid(),
             BookingCode = $"MHS-{unique[..12]}",
             RoomId = room.Id,
+            RoomTypeId = roomType.Id,
+            RoomQuantity = 1,
             GuestId = guest.Id,
-            CheckIn = DateTime.UtcNow.AddDays(5),
-            CheckOut = DateTime.UtcNow.AddDays(7),
+            CheckIn = checkInUtc ?? DateTime.UtcNow.AddDays(5),
+            CheckOut = checkOutUtc ?? DateTime.UtcNow.AddDays(7),
             Status = bookingStatus,
-            Amount = 100000m,
+            Currency = "NGN",
+            RoomSubtotal = amount,
+            Amount = amount,
             PaymentStatus = paymentStatus,
             PaymentMethod = paymentMethod,
             TransactionReference = paymentMethod == PaymentMethod.Monnify
@@ -203,10 +225,49 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
             PaymentProviderReference = paymentMethod == PaymentMethod.Monnify
                 ? $"MNFY|TEST|{unique}"
                 : null,
+            PaymentConfirmedAtUtc = paymentStatus is PaymentStatus.Paid or PaymentStatus.RefundPending or PaymentStatus.Refunded
+                ? paymentConfirmedAtUtc ?? createdAtUtc ?? DateTime.UtcNow
+                : null,
             StatusHistoryJson = "[]",
             CreatedAt = createdAtUtc ?? DateTime.UtcNow
         };
+        booking.ReservationRooms.Add(new ReservationRoom
+        {
+            Id = Guid.NewGuid(),
+            BookingId = booking.Id,
+            RoomTypeId = roomType.Id,
+            RoomTypeCode = roomType.Code,
+            RoomTypeName = roomType.Name,
+            AssignedRoomId = room.Id,
+            Sequence = 1,
+            CreatedAtUtc = booking.CreatedAt
+        });
+        booking.Folio = FolioAccounting.CreateInitial(booking, booking.CreatedAt);
+        if (paymentStatus is PaymentStatus.Paid or PaymentStatus.RefundPending or PaymentStatus.Refunded)
+        {
+            booking.Folio.Entries.Add(FolioAccounting.NewEntry(
+                booking.Folio, FolioEntryType.Payment, FolioEntryDirection.Credit,
+                booking.Amount, "Test payment", "Test", booking.Id.ToString(),
+                $"test-payment:{booking.Id:N}", booking.PaymentConfirmedAtUtc ?? booking.CreatedAt,
+                externalReference: $"TESTPAY-{unique}"));
+        }
+        if (bookingStatus == BookingStatus.Cancelled)
+        {
+            booking.Folio.Entries.Add(FolioAccounting.NewEntry(
+                booking.Folio, FolioEntryType.Credit, FolioEntryDirection.Credit,
+                booking.Amount, "Test cancellation credit", "Test", booking.Id.ToString(),
+                $"test-cancel:{booking.Id:N}", booking.CreatedAt));
+        }
+        if (paymentStatus == PaymentStatus.Refunded)
+        {
+            booking.Folio.Entries.Add(FolioAccounting.NewEntry(
+                booking.Folio, FolioEntryType.Refund, FolioEntryDirection.Debit,
+                booking.Amount, "Test refund", "Test", booking.Id.ToString(),
+                $"test-refund:{booking.Id:N}", booking.CreatedAt,
+                externalReference: $"TESTREF-{unique}"));
+        }
 
+        db.RoomTypes.Add(roomType);
         db.Rooms.Add(room);
         db.Guests.Add(guest);
         db.Bookings.Add(booking);
@@ -254,9 +315,22 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
         var unique = Guid.NewGuid().ToString("N").ToUpperInvariant();
+        var roomType = new RoomType
+        {
+            Id = Guid.NewGuid(),
+            Code = $"UPD-{unique[..8]}",
+            Name = "Update Integration Room Type",
+            Category = RoomCategory.Standard,
+            BaseOccupancy = 1,
+            MaxOccupancy = 2,
+            BasePricePerNight = 75000m,
+            Description = "Room update integration inventory.",
+            Amenities = ["Wi-Fi", "Breakfast"]
+        };
         var room = new Room
         {
             Id = Guid.NewGuid(),
+            RoomTypeId = roomType.Id,
             RoomNumber = $"U-{unique[..8]}",
             Name = "Update Integration Room",
             Category = RoomCategory.Standard,
@@ -270,6 +344,7 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
             Amenities = ["Wi-Fi", "Breakfast"]
         };
 
+        db.RoomTypes.Add(roomType);
         db.Rooms.Add(room);
         await db.SaveChangesAsync();
         return room;

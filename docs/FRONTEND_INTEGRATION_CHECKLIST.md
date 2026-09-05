@@ -46,17 +46,21 @@ values after `#`, not in the query string. On the destination page:
 2. Before `POST /api/bookings`, call `POST /api/pricing/quotes`; display its
    currency, nightly lines, discount, included tax, exclusive tax/fees, total
    and expiry exactly as returned. Keep `quoteToken` in memory only and submit
-   it with `quoteId` and unchanged room/date/occupancy values. Requote after any
+   it with `quoteId` and unchanged room-type/quantity/date/occupancy values. Requote after any
    change, expiry or rejection. Never put the token in a URL, log or analytics.
 3. Remove Paystack from every payment selector and do not call an old Paystack
    endpoint. The API keeps the enum value only to read historical records.
 4. Offer direct bank transfer. Offer Monnify only when the deployment owner has
    completed the provider activation checklist and the frontend build flag is
    enabled.
-5. Render the API-returned booking amount as the authoritative total. Add-ons
-   are already included in that amount and are also itemized on the invoice;
-   do not add them a second time in the UI.
-6. Treat a `409 Conflict` while adding an add-on as a stale/closed checkout and
+5. Use `GET /api/inventory/room-types` and the room-type availability endpoint
+   for new booking screens. Treat `roomId` as a legacy single-room selector.
+   Render `rooms` as assignment state; a null `roomId` before arrival is valid.
+6. Render `folio.amountDue` and `folio.guestCredit` as the settlement truth.
+   `amount` is the accumulated charge total, and add-ons are already included;
+   do not add them a second time in the UI. Handle the new `partiallyPaid`
+   payment status.
+7. Treat a `409 Conflict` while adding an add-on as a stale/closed checkout and
    refresh the booking instead of retrying automatically.
 
 ## Guest booking links

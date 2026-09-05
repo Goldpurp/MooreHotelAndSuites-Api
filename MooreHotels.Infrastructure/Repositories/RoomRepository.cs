@@ -13,14 +13,25 @@ public class RoomRepository : IRoomRepository
     private readonly MooreHotelsDbContext _db;
     public RoomRepository(MooreHotelsDbContext db) => _db = db;
 
-    public async Task<Room?> GetByIdAsync(Guid id) => await _db.Rooms.FindAsync(id);
+    public async Task<Room?> GetByIdAsync(Guid id) => await _db.Rooms
+        .Include(room => room.RoomType)
+        .FirstOrDefaultAsync(room => room.Id == id);
 
     public async Task<Room?> GetByRoomNumberAsync(string roomNumber) =>
         await _db.Rooms.FirstOrDefaultAsync(r => r.RoomNumber == roomNumber);
 
+    public async Task<RoomType?> GetRoomTypeByIdAsync(Guid id) =>
+        await _db.RoomTypes.FirstOrDefaultAsync(type => type.Id == id);
+
+    public async Task<RoomType?> GetDefaultRoomTypeForCategoryAsync(RoomCategory category) =>
+        await _db.RoomTypes
+            .Where(type => type.Category == category && type.IsActive)
+            .OrderBy(type => type.Code)
+            .FirstOrDefaultAsync();
+
     public async Task<IEnumerable<Room>> GetAllAsync(bool onlyOnline = true)
     {
-        var query = _db.Rooms.Include(r => r.Images).AsNoTracking().AsQueryable();
+        var query = _db.Rooms.Include(r => r.Images).Include(r => r.RoomType).AsNoTracking().AsQueryable();
         if (onlyOnline) query = query.Where(r => r.IsOnline);
         return await query.ToListAsync();
     }
@@ -33,27 +44,37 @@ public class RoomRepository : IRoomRepository
         string? roomNumber,
         string? amenity)
     {
-        var query = _db.Rooms.Include(r => r.Images).AsNoTracking().AsQueryable();
+        var query = _db.Rooms.Include(r => r.Images).Include(r => r.RoomType).AsNoTracking().AsQueryable();
 
         if (checkIn.HasValue && checkOut.HasValue)
         {
             var start = checkIn.Value;
             var end = checkOut.Value;
             var expirationCutoffUtc = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
-            var bookedRoomIds = await _db.Bookings
-                .Where(b => b.Status != BookingStatus.Cancelled &&
-                            b.Status != BookingStatus.CheckedOut &&
-                            b.Status != BookingStatus.NoShow &&
-                            !(b.Status == BookingStatus.Pending &&
-                              (b.PaymentStatus == PaymentStatus.Unpaid ||
-                               b.PaymentStatus == PaymentStatus.AwaitingVerification) &&
-                              b.CreatedAt <= expirationCutoffUtc))
-                .Where(b => b.CheckIn < end && b.CheckOut > start)
-                .Select(b => b.RoomId)
+            var bookedRoomIds = await _db.ReservationRooms
+                .Where(item => item.AssignedRoomId.HasValue && item.Booking != null &&
+                               item.Booking.Status != BookingStatus.Cancelled &&
+                               item.Booking.Status != BookingStatus.CheckedOut &&
+                               item.Booking.Status != BookingStatus.NoShow &&
+                               !(item.Booking.Status == BookingStatus.Pending &&
+                                 (item.Booking.PaymentStatus == PaymentStatus.Unpaid ||
+                                  item.Booking.PaymentStatus == PaymentStatus.AwaitingVerification) &&
+                                 item.Booking.CreatedAt <= expirationCutoffUtc) &&
+                               item.Booking.CheckIn < end && item.Booking.CheckOut > start)
+                .Select(item => item.AssignedRoomId!.Value)
                 .Distinct()
                 .ToListAsync();
 
-            query = query.Where(r => !bookedRoomIds.Contains(r.Id));
+            var startDate = DateOnly.FromDateTime(start);
+            var endDate = DateOnly.FromDateTime(end);
+            var closedRoomIds = await _db.RoomInventoryClosures
+                .Where(closure => closure.IsActive && closure.RoomId.HasValue &&
+                                  closure.StartDate < endDate && closure.EndDate > startDate)
+                .Select(closure => closure.RoomId!.Value)
+                .Distinct()
+                .ToListAsync();
+
+            query = query.Where(r => !bookedRoomIds.Contains(r.Id) && !closedRoomIds.Contains(r.Id));
         }
 
         if (!string.IsNullOrWhiteSpace(roomNumber))
@@ -65,7 +86,7 @@ public class RoomRepository : IRoomRepository
         if (capacity.HasValue && capacity.Value > 0)
             query = query.Where(r => r.Capacity >= capacity.Value);
 
-        query = query.Where(r => r.IsOnline);
+        query = query.Where(r => r.IsOnline && r.Status != RoomStatus.Maintenance);
 
         var rooms = await query.ToListAsync();
 
@@ -98,6 +119,7 @@ public class RoomRepository : IRoomRepository
     {
         return await _db.Rooms
             .Include(r => r.Images)
+            .Include(r => r.RoomType)
             .FirstOrDefaultAsync(r => r.Id == id);
     }
 

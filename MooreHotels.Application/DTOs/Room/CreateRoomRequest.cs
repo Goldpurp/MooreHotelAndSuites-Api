@@ -14,4 +14,5 @@ public record CreateRoomRequest(
     [Required, StringLength(50)] string Size,
     [Required, StringLength(4000)] string Description,
     [MaxLength(50)] List<string> Amenities,
-    bool? IsOnline = null);
+    bool? IsOnline = null,
+    Guid? RoomTypeId = null);

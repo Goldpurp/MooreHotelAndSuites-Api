@@ -4,7 +4,9 @@ public sealed class BookingQuote
 {
     public Guid Id { get; set; }
     public string AccessTokenHash { get; set; } = string.Empty;
-    public Guid RoomId { get; set; }
+    public Guid? RoomId { get; set; }
+    public Guid RoomTypeId { get; set; }
+    public int RoomQuantity { get; set; } = 1;
     public Guid RatePlanId { get; set; }
     public Guid? PromotionId { get; set; }
     public DateOnly CheckInDate { get; set; }
@@ -22,6 +24,7 @@ public sealed class BookingQuote
     public DateTime ExpiresAtUtc { get; set; }
     public DateTime? ConsumedAtUtc { get; set; }
     public Room? Room { get; set; }
+    public RoomType? RoomType { get; set; }
     public RatePlan? RatePlan { get; set; }
     public Promotion? Promotion { get; set; }
     public Booking? Booking { get; set; }

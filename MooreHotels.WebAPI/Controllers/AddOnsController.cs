@@ -5,6 +5,7 @@ using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Application.Common;
 using Microsoft.AspNetCore.RateLimiting;
+using System.Security.Claims;
 using MooreHotels.WebAPI.Extensions;
 
 namespace MooreHotels.WebAPI.Controllers;
@@ -67,5 +68,11 @@ public class AddOnsController : ControllerBase
         string bookingCode,
         [FromBody] AddServiceToBookingRequest request,
         CancellationToken cancellationToken = default) =>
-        Ok(await _addOnService.AddServiceToBookingAsync(bookingCode, request, cancellationToken));
+        Ok(await _addOnService.AddServiceToBookingAsync(
+            bookingCode, request, GetActorId(), cancellationToken));
+
+    private Guid GetActorId() =>
+        Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId)
+            ? actorId
+            : throw new UnauthorizedAccessException("The authenticated actor is invalid.");
 }

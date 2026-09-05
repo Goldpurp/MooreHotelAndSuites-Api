@@ -94,6 +94,7 @@ public class AddOnService : IAddOnService
     public async Task<BookingAddOnDto> AddServiceToBookingAsync(
         string bookingCode,
         AddServiceToBookingRequest request,
+        Guid actorId,
         CancellationToken cancellationToken = default)
     {
         var entity = await _addOnRepo.AddBookingAddOnAndUpdateTotalAsync(
@@ -102,6 +103,7 @@ public class AddOnService : IAddOnService
             request.Quantity,
             request.Notes?.Trim(),
             DateTime.UtcNow,
+            actorId,
             cancellationToken);
 
         return MapToBookingDto(entity);

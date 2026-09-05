@@ -110,6 +110,8 @@ public class PdfInvoiceGenerator : IPdfInvoiceGenerator
                     c.Item().Text($"Check-in: {localCheckIn:dd MMM yyyy} ({_hotelTime.CheckInTime:h\\:mm tt})").FontSize(9);
                     c.Item().Text($"Check-out: {localCheckOut:dd MMM yyyy} ({_hotelTime.CheckOutTime:h\\:mm tt})").FontSize(9);
                     c.Item().Text($"Duration: {nights} Night(s)").FontSize(9);
+                    c.Item().Text($"Room type: {booking.RoomTypeName ?? "Reserved Room"}").FontSize(9);
+                    c.Item().Text($"Rooms reserved: {booking.RoomQuantity}").FontSize(9);
                 });
             });
 
@@ -239,9 +241,34 @@ public class PdfInvoiceGenerator : IPdfInvoiceGenerator
                 });
                 c.Item().Row(r =>
                 {
-                    r.RelativeItem().Text("Total Amount:").Bold().FontSize(11);
+                    r.RelativeItem().Text("Total Charges:").Bold().FontSize(11);
                     r.RelativeItem().AlignRight().Text($"{booking.Currency} {booking.Amount:N2}").Bold().FontSize(12).FontColor(Colors.Teal.Darken4);
                 });
+                if (booking.Folio is not null)
+                {
+                    c.Item().Row(r =>
+                    {
+                        r.RelativeItem().Text("Payments received:").FontSize(9);
+                        r.RelativeItem().AlignRight().Text($"-{booking.Currency} {booking.Folio.Payments:N2}").FontSize(9);
+                    });
+                    if (booking.Folio.Refunds > 0)
+                    {
+                        c.Item().Row(r =>
+                        {
+                            r.RelativeItem().Text("Refunds issued:").FontSize(9);
+                            r.RelativeItem().AlignRight().Text($"{booking.Currency} {booking.Folio.Refunds:N2}").FontSize(9);
+                        });
+                    }
+                    c.Item().Row(r =>
+                    {
+                        var label = booking.Folio.GuestCredit > 0 ? "Guest credit:" : "Balance due:";
+                        var amount = booking.Folio.GuestCredit > 0
+                            ? booking.Folio.GuestCredit
+                            : booking.Folio.AmountDue;
+                        r.RelativeItem().Text(label).Bold().FontSize(10);
+                        r.RelativeItem().AlignRight().Text($"{booking.Currency} {amount:N2}").Bold().FontSize(10);
+                    });
+                }
                 c.Item().PaddingTop(2).Row(r =>
                 {
                     r.RelativeItem().Text("Payment Method:").FontSize(8).FontColor(Colors.Grey.Medium);

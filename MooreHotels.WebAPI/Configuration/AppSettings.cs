@@ -594,7 +594,7 @@ public static class ConfigurationBootstrap
     private static void RequireProviderAcceptance(
         AcceptanceEvidence evidence,
         string provider,
-        ICollection<string> errors)
+        List<string> errors)
     {
         if (IsMissingOrPlaceholder(evidence.CredentialRotationReference))
             errors.Add($"ProviderAcceptance:{provider}:CredentialRotationReference is required.");
@@ -605,7 +605,7 @@ public static class ConfigurationBootstrap
         DateTimeOffset? acceptedAtUtc,
         string evidenceReference,
         string subject,
-        ICollection<string> errors)
+        List<string> errors)
     {
         if (!acceptedAtUtc.HasValue || acceptedAtUtc.Value > DateTimeOffset.UtcNow.AddMinutes(5))
             errors.Add($"{subject} requires a valid acceptance timestamp.");

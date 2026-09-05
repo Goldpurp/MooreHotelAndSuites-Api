@@ -11,4 +11,7 @@ public sealed record PublicRoomDto(
     string Size,
     string Description,
     List<string> Amenities,
-    List<string> Images);
+    List<string> Images,
+    Guid? RoomTypeId = null,
+    string? RoomTypeCode = null,
+    string? RoomTypeName = null);

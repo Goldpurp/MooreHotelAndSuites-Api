@@ -84,7 +84,7 @@ public sealed class PendingBookingExpirationWorker : BackgroundService
                     cancellationToken);
             } while (deletedQuotes == 500 && !cancellationToken.IsCancellationRequested);
 
-            if (total > 0)
+            if (total > 0 && _logger.IsEnabled(LogLevel.Information))
             {
                 _logger.LogInformation(
                     "Expired {BookingCount} unpaid bookings after the one-hour confirmation window.",

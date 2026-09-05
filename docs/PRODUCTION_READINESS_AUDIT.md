@@ -1,12 +1,12 @@
 # Production readiness audit
 
-Audit date: 4 September 2026
+Audit date: 5 September 2026
 
 ## Scope and conclusion
 
 The API repository was reviewed across its Domain, Application,
 Infrastructure, WebAPI, unit-test, integration-test, database migration,
-deployment, CI and operational documentation layers (263 C# source files plus
+deployment, CI and operational documentation layers (280 C# source files plus
 the release configuration and scripts).
 
 The API source is ready for review and a staging release: deterministic
@@ -91,6 +91,13 @@ acceptance steps, not hidden code failures; see the checklist below.
     promotions, taxes/fees, expiring token-protected quotes, immutable nightly
     breakdowns, atomic quote/promotion consumption and historical booking price
     snapshots.
+24. Separated sellable room types from physical rooms, added per-night
+    inventory and closure calculations, multi-room reservation units, deferred
+    room assignment and concurrency-safe overbooking prevention.
+25. Added an append-only folio with room/add-on charges, taxes, discounts,
+    credits, deposits and split payments, reversal entries, partial refunds,
+    post-payment incidentals, checkout settlement and reconciliation-safe
+    revenue calculations.
 
 ## Verification evidence
 
@@ -99,11 +106,11 @@ acceptance steps, not hidden code failures; see the checklist below.
 - Recommended runtime analyzer rebuild: 0 warnings, 0 errors.
 - Formatting verification: 0 files require changes.
 - Unit tests: 14 passed, 0 failed, 0 skipped.
-- PostgreSQL integration tests: 148 passed, 0 failed, 0 skipped.
+- PostgreSQL integration tests: 151 passed, 0 failed, 0 skipped.
 - Live NuGet advisory scan, including transitive dependencies: passed with no
   reported vulnerable packages.
 - EF model comparison: no model changes pending migration.
-- Linux migration bundle: applied all 19 migrations to an empty PostgreSQL 16
+- Linux migration bundle: applied all 20 migrations to an empty PostgreSQL 16
   database and then completed a second run with no migrations required.
 - Database invariant preflight: passed.
 - Local Release publish: passed.
@@ -115,8 +122,8 @@ acceptance steps, not hidden code failures; see the checklist below.
   permissions policy, no-referrer and no-index were present.
 - An untrusted browser origin received no CORS allow-origin header.
 - Secret-pattern and diff whitespace checks: passed.
-- No files were pushed or deployed; all disposable verification containers,
-  databases, roles, images, bundles and certificate files were removed.
+- No files were pushed or deployed. Disposable test databases were removed;
+  the verification bundle, publish output and container image remain local only.
 
 ## Required release-owner steps
 

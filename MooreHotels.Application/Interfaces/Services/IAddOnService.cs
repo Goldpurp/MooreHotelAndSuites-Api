@@ -12,5 +12,5 @@ public interface IAddOnService
     Task DeleteServiceAsync(Guid id, CancellationToken cancellationToken = default);
 
     Task<IEnumerable<BookingAddOnDto>> GetBookingAddOnsAsync(string bookingCode, CancellationToken cancellationToken = default);
-    Task<BookingAddOnDto> AddServiceToBookingAsync(string bookingCode, AddServiceToBookingRequest request, CancellationToken cancellationToken = default);
+    Task<BookingAddOnDto> AddServiceToBookingAsync(string bookingCode, AddServiceToBookingRequest request, Guid actorId, CancellationToken cancellationToken = default);
 }

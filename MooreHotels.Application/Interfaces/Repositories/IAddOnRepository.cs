@@ -18,6 +18,6 @@ public interface IAddOnRepository
         int quantity,
         string? notes,
         DateTime addedAtUtc,
+        Guid actorId,
         CancellationToken cancellationToken = default);
-    Task RemoveBookingAddOnAsync(BookingAddOn bookingAddOn, CancellationToken cancellationToken = default);
 }

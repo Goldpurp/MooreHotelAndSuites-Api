@@ -6,7 +6,11 @@ public class Booking
 {
     public Guid Id { get; set; }
     public string BookingCode { get; set; } = string.Empty; // MHS plus six random digits
-    public Guid RoomId { get; set; }
+    // Compatibility pointer to the first assigned physical room. Inventory is
+    // sold through ReservationRooms and may remain unassigned until arrival.
+    public Guid? RoomId { get; set; }
+    public Guid RoomTypeId { get; set; }
+    public int RoomQuantity { get; set; } = 1;
     public string GuestId { get; set; } = string.Empty;
     public DateTime CheckIn { get; set; }
     public DateTime CheckOut { get; set; }
@@ -37,6 +41,7 @@ public class Booking
     public string? RefundNotes { get; set; }
     public Guid? RefundApprovedByUserId { get; set; }
     public DateTime? RefundApprovedAtUtc { get; set; }
+    public decimal? RefundApprovedAmount { get; set; }
     public Guid? RefundProcessedByUserId { get; set; }
     public DateTime? RefundProcessedAtUtc { get; set; }
     public string? Notes { get; set; }
@@ -53,10 +58,13 @@ public class Booking
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public Room? Room { get; set; }
+    public RoomType? RoomType { get; set; }
     public Guest? Guest { get; set; }
     public BookingQuote? Quote { get; set; }
     public ApplicationUser? PaymentConfirmedByUser { get; set; }
     public ApplicationUser? RefundApprovedByUser { get; set; }
     public ApplicationUser? RefundProcessedByUser { get; set; }
     public ICollection<BookingAddOn> AddOns { get; set; } = new List<BookingAddOn>();
+    public ICollection<ReservationRoom> ReservationRooms { get; set; } = new List<ReservationRoom>();
+    public Folio? Folio { get; set; }
 }

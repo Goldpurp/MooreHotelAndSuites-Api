@@ -13,6 +13,9 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public MooreHotelsDbContext(DbContextOptions<MooreHotelsDbContext> options) : base(options) { }
 
     public DbSet<Room> Rooms => Set<Room>();
+    public DbSet<RoomType> RoomTypes => Set<RoomType>();
+    public DbSet<ReservationRoom> ReservationRooms => Set<ReservationRoom>();
+    public DbSet<RoomInventoryClosure> RoomInventoryClosures => Set<RoomInventoryClosure>();
     public DbSet<RoomImage> RoomImages => Set<RoomImage>();
     public DbSet<Guest> Guests => Set<Guest>();
     public DbSet<Booking> Bookings => Set<Booking>();
@@ -35,6 +38,32 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<Promotion> Promotions => Set<Promotion>();
     public DbSet<BookingQuote> BookingQuotes => Set<BookingQuote>();
     public DbSet<BookingQuoteLine> BookingQuoteLines => Set<BookingQuoteLine>();
+    public DbSet<Folio> Folios => Set<Folio>();
+    public DbSet<FolioEntry> FolioEntries => Set<FolioEntry>();
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        EnforceImmutableFolioEntries();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(
+        bool acceptAllChangesOnSuccess,
+        CancellationToken cancellationToken = default)
+    {
+        EnforceImmutableFolioEntries();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void EnforceImmutableFolioEntries()
+    {
+        if (ChangeTracker.Entries<FolioEntry>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException(
+                "Folio entries are immutable. Post a void or reversing entry instead.");
+        }
+    }
 
     protected override void OnModelCreating(ModelBuilder builder)
     {
@@ -73,6 +102,30 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
         builder.Entity<IdentityRole<Guid>>(entity => entity.ToTable("roles"));
         builder.Entity<IdentityUserRole<Guid>>(entity => entity.ToTable("user_roles"));
 
+        builder.Entity<RoomType>(entity =>
+        {
+            entity.ToTable("room_types", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_room_types_occupancy",
+                    "\"BaseOccupancy\" >= 1 AND \"MaxOccupancy\" >= \"BaseOccupancy\" AND \"MaxOccupancy\" <= 50");
+                table.HasCheckConstraint(
+                    "CK_room_types_base_price_positive",
+                    "\"BasePricePerNight\" > 0");
+            });
+            entity.HasKey(type => type.Id);
+            entity.Property(type => type.Code).HasMaxLength(30).IsRequired();
+            entity.Property(type => type.Name).HasMaxLength(120).IsRequired();
+            entity.Property(type => type.Category).HasConversion<string>().HasMaxLength(40);
+            entity.Property(type => type.BasePricePerNight).HasPrecision(18, 2);
+            entity.Property(type => type.Description).HasMaxLength(2000).IsRequired();
+            entity.Property(type => type.Amenities)
+                .HasColumnType("jsonb")
+                .HasConversion(listConverter, listComparer);
+            entity.HasIndex(type => type.Code).IsUnique();
+            entity.HasIndex(type => new { type.IsActive, type.Category, type.MaxOccupancy });
+        });
+
         builder.Entity<Room>(entity =>
         {
             entity.ToTable("rooms", table =>
@@ -97,6 +150,11 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .WithOne(image => image.Room)
                 .HasForeignKey(image => image.RoomId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(room => room.RoomType)
+                .WithMany(type => type.Rooms)
+                .HasForeignKey(room => room.RoomTypeId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(room => room.RoomTypeId);
         });
 
         builder.Entity<RoomImage>(entity =>
@@ -170,6 +228,9 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                     "CK_bookings_occupancy_counts",
                     "\"AdultCount\" >= 1 AND \"ChildCount\" >= 0");
                 table.HasCheckConstraint(
+                    "CK_bookings_room_quantity",
+                    "\"RoomQuantity\" BETWEEN 1 AND 10");
+                table.HasCheckConstraint(
                     "CK_bookings_policy_acceptance_consistent",
                     "(\"PrivacyPolicyVersion\" IS NULL AND \"BookingTermsVersion\" IS NULL AND \"PoliciesAcceptedAtUtc\" IS NULL) OR (\"PrivacyPolicyVersion\" IS NOT NULL AND \"BookingTermsVersion\" IS NOT NULL AND \"PoliciesAcceptedAtUtc\" IS NOT NULL)");
                 table.HasCheckConstraint(
@@ -202,6 +263,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             }).HasFilter("\"GuestAccessTokenRevokedAtUtc\" IS NULL AND \"GuestAccessTokenExpiresAtUtc\" IS NOT NULL");
             entity.Property(booking => booking.BookingCode).HasMaxLength(30).IsRequired();
             entity.Property(booking => booking.AdultCount).HasDefaultValue(1);
+            entity.Property(booking => booking.RoomQuantity).HasDefaultValue(1);
             entity.Property(booking => booking.Status).HasConversion<string>().HasMaxLength(40);
             entity.Property(booking => booking.PaymentStatus).HasConversion<string>().HasMaxLength(40);
             entity.Property(booking => booking.PaymentMethod).HasConversion<string>().HasMaxLength(40);
@@ -211,6 +273,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(booking => booking.PaymentConfirmationMethod).HasMaxLength(50);
             entity.Property(booking => booking.RefundReference).HasMaxLength(160);
             entity.Property(booking => booking.RefundAmount).HasPrecision(18, 2);
+            entity.Property(booking => booking.RefundApprovedAmount).HasPrecision(18, 2);
             entity.Property(booking => booking.RefundChannel).HasMaxLength(40);
             entity.Property(booking => booking.RefundEvidenceType).HasMaxLength(40);
             entity.Property(booking => booking.RefundNotes).HasMaxLength(500);
@@ -231,6 +294,11 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .WithMany()
                 .HasForeignKey(booking => booking.RoomId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(booking => booking.RoomType)
+                .WithMany()
+                .HasForeignKey(booking => booking.RoomTypeId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasIndex(booking => new { booking.RoomTypeId, booking.CheckIn, booking.CheckOut, booking.Status });
             entity.HasOne(booking => booking.Guest)
                 .WithMany(guest => guest.Bookings)
                 .HasForeignKey(booking => booking.GuestId)
@@ -256,6 +324,72 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .OnDelete(DeleteBehavior.SetNull);
             entity.HasIndex(booking => booking.RefundApprovedByUserId);
             entity.HasIndex(booking => booking.RefundProcessedByUserId);
+        });
+
+        builder.Entity<ReservationRoom>(entity =>
+        {
+            entity.ToTable("reservation_rooms", table => table.HasCheckConstraint(
+                "CK_reservation_rooms_sequence",
+                "\"Sequence\" BETWEEN 1 AND 10"));
+            entity.HasKey(item => item.Id);
+            entity.Property(item => item.RoomTypeCode).HasMaxLength(30).IsRequired();
+            entity.Property(item => item.RoomTypeName).HasMaxLength(120).IsRequired();
+            entity.HasIndex(item => new { item.BookingId, item.Sequence }).IsUnique();
+            entity.HasIndex(item => new { item.RoomTypeId, item.BookingId });
+            entity.HasIndex(item => new { item.AssignedRoomId, item.BookingId })
+                .HasFilter("\"AssignedRoomId\" IS NOT NULL");
+            entity.HasOne(item => item.Booking)
+                .WithMany(booking => booking.ReservationRooms)
+                .HasForeignKey(item => item.BookingId)
+                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(item => item.RoomType)
+                .WithMany(type => type.ReservationRooms)
+                .HasForeignKey(item => item.RoomTypeId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(item => item.AssignedRoom)
+                .WithMany(room => room.Assignments)
+                .HasForeignKey(item => item.AssignedRoomId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(item => item.AssignedByUser)
+                .WithMany()
+                .HasForeignKey(item => item.AssignedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        builder.Entity<RoomInventoryClosure>(entity =>
+        {
+            entity.ToTable("room_inventory_closures", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_room_inventory_closures_dates",
+                    "\"EndDate\" > \"StartDate\"");
+                table.HasCheckConstraint(
+                    "CK_room_inventory_closures_units",
+                    "\"Units\" > 0 AND (\"RoomId\" IS NULL OR \"Units\" = 1)");
+            });
+            entity.HasKey(closure => closure.Id);
+            entity.Property(closure => closure.Reason).HasMaxLength(500).IsRequired();
+            entity.HasIndex(closure => new
+            {
+                closure.RoomTypeId,
+                closure.StartDate,
+                closure.EndDate,
+                closure.IsActive
+            });
+            entity.HasIndex(closure => new { closure.RoomId, closure.StartDate, closure.EndDate })
+                .HasFilter("\"RoomId\" IS NOT NULL");
+            entity.HasOne(closure => closure.RoomType)
+                .WithMany()
+                .HasForeignKey(closure => closure.RoomTypeId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(closure => closure.Room)
+                .WithMany()
+                .HasForeignKey(closure => closure.RoomId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(closure => closure.CreatedByUser)
+                .WithMany()
+                .HasForeignKey(closure => closure.CreatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         builder.Entity<RatePlan>(entity =>
@@ -293,7 +427,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 table.HasCheckConstraint("CK_daily_room_rates_amount", "\"Amount\" > 0");
                 table.HasCheckConstraint(
                     "CK_daily_room_rates_scope",
-                    "(\"RoomId\" IS NOT NULL AND \"RoomCategory\" IS NULL) OR (\"RoomId\" IS NULL AND \"RoomCategory\" IS NOT NULL)");
+                    "(CASE WHEN \"RoomId\" IS NULL THEN 0 ELSE 1 END + CASE WHEN \"RoomTypeId\" IS NULL THEN 0 ELSE 1 END + CASE WHEN \"RoomCategory\" IS NULL THEN 0 ELSE 1 END) = 1");
             });
             entity.HasKey(rate => rate.Id);
             entity.Property(rate => rate.RoomCategory).HasConversion<string>().HasMaxLength(40);
@@ -306,12 +440,19 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .WithMany()
                 .HasForeignKey(rate => rate.RoomId)
                 .OnDelete(DeleteBehavior.Cascade);
+            entity.HasOne(rate => rate.RoomType)
+                .WithMany()
+                .HasForeignKey(rate => rate.RoomTypeId)
+                .OnDelete(DeleteBehavior.Cascade);
             entity.HasIndex(rate => new { rate.RatePlanId, rate.RoomId, rate.StayDate })
                 .IsUnique()
                 .HasFilter("\"RoomId\" IS NOT NULL");
             entity.HasIndex(rate => new { rate.RatePlanId, rate.RoomCategory, rate.StayDate })
                 .IsUnique()
                 .HasFilter("\"RoomCategory\" IS NOT NULL");
+            entity.HasIndex(rate => new { rate.RatePlanId, rate.RoomTypeId, rate.StayDate })
+                .IsUnique()
+                .HasFilter("\"RoomTypeId\" IS NOT NULL");
         });
 
         builder.Entity<PricingRule>(entity =>
@@ -373,6 +514,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 table.HasCheckConstraint("CK_booking_quotes_window", "\"ExpiresAtUtc\" > \"CreatedAtUtc\"");
                 table.HasCheckConstraint("CK_booking_quotes_dates", "\"CheckOutDate\" > \"CheckInDate\"");
                 table.HasCheckConstraint("CK_booking_quotes_occupancy", "\"AdultCount\" >= 1 AND \"ChildCount\" >= 0");
+                table.HasCheckConstraint("CK_booking_quotes_room_quantity", "\"RoomQuantity\" BETWEEN 1 AND 10");
                 table.HasCheckConstraint(
                     "CK_booking_quotes_totals",
                     "\"RoomSubtotal\" >= 0 AND \"DiscountAmount\" BETWEEN 0 AND \"RoomSubtotal\" AND \"IncludedTaxAmount\" >= 0 AND \"TaxAmount\" >= 0 AND \"FeeAmount\" >= 0 AND \"TotalAmount\" = \"RoomSubtotal\" - \"DiscountAmount\" + \"TaxAmount\" + \"FeeAmount\"");
@@ -390,6 +532,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.HasIndex(quote => quote.AccessTokenHash).IsUnique();
             entity.HasIndex(quote => new { quote.ExpiresAtUtc, quote.ConsumedAtUtc });
             entity.HasOne(quote => quote.Room).WithMany().HasForeignKey(quote => quote.RoomId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(quote => quote.RoomType).WithMany().HasForeignKey(quote => quote.RoomTypeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(quote => quote.RatePlan).WithMany().HasForeignKey(quote => quote.RatePlanId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(quote => quote.Promotion).WithMany().HasForeignKey(quote => quote.PromotionId).OnDelete(DeleteBehavior.Restrict);
             entity.HasMany(quote => quote.Lines)
@@ -415,6 +558,73 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(line => line.UnitAmount).HasPrecision(18, 2);
             entity.Property(line => line.Amount).HasPrecision(18, 2);
             entity.HasIndex(line => new { line.BookingQuoteId, line.SortOrder, line.Id });
+        });
+
+        builder.Entity<Folio>(entity =>
+        {
+            entity.ToTable("folios", table =>
+            {
+                table.HasCheckConstraint("CK_folios_currency", "\"Currency\" ~ '^[A-Z]{3}$'");
+                table.HasCheckConstraint(
+                    "CK_folios_closed_state",
+                    "(\"Status\" = 'Open' AND \"ClosedAtUtc\" IS NULL AND \"ClosedByUserId\" IS NULL) OR (\"Status\" = 'Closed' AND \"ClosedAtUtc\" IS NOT NULL AND \"ClosedByUserId\" IS NOT NULL)");
+            });
+            entity.HasKey(folio => folio.Id);
+            entity.Property(folio => folio.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(folio => folio.Status).HasConversion<string>().HasMaxLength(20);
+            entity.HasIndex(folio => folio.BookingId).IsUnique();
+            entity.HasOne(folio => folio.Booking)
+                .WithOne(booking => booking.Folio)
+                .HasForeignKey<Folio>(folio => folio.BookingId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(folio => folio.ClosedByUser)
+                .WithMany()
+                .HasForeignKey(folio => folio.ClosedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<FolioEntry>(entity =>
+        {
+            entity.ToTable("folio_entries", table =>
+            {
+                table.HasCheckConstraint("CK_folio_entries_amount", "\"Amount\" > 0");
+                table.HasCheckConstraint("CK_folio_entries_currency", "\"Currency\" ~ '^[A-Z]{3}$'");
+                table.HasCheckConstraint(
+                    "CK_folio_entries_direction",
+                    "(\"Type\" IN ('RoomCharge','AddOnCharge','Tax','Fee','Refund') AND \"Direction\" = 'Debit') OR (\"Type\" IN ('Discount','Payment','Credit') AND \"Direction\" = 'Credit') OR \"Type\" IN ('Adjustment','Void')");
+                table.HasCheckConstraint(
+                    "CK_folio_entries_void_reference",
+                    "(\"Type\" = 'Void' AND \"ReversesEntryId\" IS NOT NULL) OR (\"Type\" <> 'Void' AND \"ReversesEntryId\" IS NULL)");
+            });
+            entity.HasKey(entry => entry.Id);
+            entity.Property(entry => entry.Type).HasConversion<string>().HasMaxLength(30);
+            entity.Property(entry => entry.Direction).HasConversion<string>().HasMaxLength(10);
+            entity.Property(entry => entry.Amount).HasPrecision(18, 2);
+            entity.Property(entry => entry.Currency).HasMaxLength(3).IsRequired();
+            entity.Property(entry => entry.Description).HasMaxLength(200).IsRequired();
+            entity.Property(entry => entry.SourceType).HasMaxLength(80).IsRequired();
+            entity.Property(entry => entry.SourceId).HasMaxLength(160);
+            entity.Property(entry => entry.ExternalReference).HasMaxLength(160);
+            entity.Property(entry => entry.IdempotencyKey).HasMaxLength(160).IsRequired();
+            entity.Property(entry => entry.Notes).HasMaxLength(500);
+            entity.HasIndex(entry => entry.IdempotencyKey).IsUnique();
+            entity.HasIndex(entry => entry.ExternalReference).IsUnique()
+                .HasFilter("\"ExternalReference\" IS NOT NULL");
+            entity.HasIndex(entry => entry.ReversesEntryId).IsUnique()
+                .HasFilter("\"ReversesEntryId\" IS NOT NULL");
+            entity.HasIndex(entry => new { entry.FolioId, entry.PostedAtUtc, entry.Id });
+            entity.HasOne(entry => entry.Folio)
+                .WithMany(folio => folio.Entries)
+                .HasForeignKey(entry => entry.FolioId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(entry => entry.ReversesEntry)
+                .WithOne()
+                .HasForeignKey<FolioEntry>(entry => entry.ReversesEntryId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(entry => entry.PostedByUser)
+                .WithMany()
+                .HasForeignKey(entry => entry.PostedByUserId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
 
         builder.Entity<PrivacyRequest>(entity =>

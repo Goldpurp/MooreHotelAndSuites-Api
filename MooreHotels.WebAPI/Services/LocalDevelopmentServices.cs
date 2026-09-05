@@ -26,10 +26,13 @@ public sealed class LocalEmailService : IEmailService
 
     private Task Accepted(string template, string recipient)
     {
-        _logger.LogInformation(
-            "Local email accepted. Template={Template}; RecipientDomain={RecipientDomain}",
-            template,
-            recipient.Split('@').LastOrDefault() ?? "invalid");
+        if (_logger.IsEnabled(LogLevel.Information))
+        {
+            _logger.LogInformation(
+                "Local email accepted. Template={Template}; RecipientDomain={RecipientDomain}",
+                template,
+                recipient.Split('@').LastOrDefault() ?? "invalid");
+        }
         return Task.CompletedTask;
     }
 

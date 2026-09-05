@@ -127,9 +127,21 @@ public class RoomService : IRoomService
         var existingRoom = await _roomRepo.GetByRoomNumberAsync(request.RoomNumber);
         if (existingRoom != null) throw new BadRequestException("That room number is already registered.");
 
+        var roomType = request.RoomTypeId.HasValue
+            ? await _roomRepo.GetRoomTypeByIdAsync(request.RoomTypeId.Value)
+            : await _roomRepo.GetDefaultRoomTypeForCategoryAsync(request.Category);
+        if (roomType is null || !roomType.IsActive)
+            throw new BadRequestException("Select an active room type.");
+        if (roomType.Category != request.Category)
+            throw new BadRequestException("The physical room category must match its room type.");
+        if (request.Capacity > roomType.MaxOccupancy)
+            throw new BadRequestException("Physical-room capacity cannot exceed the room-type maximum occupancy.");
+
         var room = new Room
         {
             Id = Guid.NewGuid(),
+            RoomTypeId = roomType.Id,
+            RoomType = roomType,
             RoomNumber = request.RoomNumber,
             Name = request.Name,
             Category = request.Category,
@@ -155,7 +167,22 @@ public class RoomService : IRoomService
         if (room == null) throw new NotFoundException("Room not found.");
 
         if (request.Name != null) room.Name = request.Name.Trim();
-        if (request.Category != null) room.Category = request.Category.Value;
+        var targetCategory = request.Category ?? room.Category;
+        RoomType? targetType = room.RoomType;
+        if (request.RoomTypeId.HasValue)
+            targetType = await _roomRepo.GetRoomTypeByIdAsync(request.RoomTypeId.Value);
+        else if (request.Category.HasValue && request.Category != room.Category)
+            targetType = await _roomRepo.GetDefaultRoomTypeForCategoryAsync(request.Category.Value);
+        if (targetType is null || !targetType.IsActive)
+            throw new BadRequestException("Select an active room type.");
+        if (targetType.Category != targetCategory)
+            throw new BadRequestException("The physical room category must match its room type.");
+        var targetCapacity = request.Capacity ?? room.Capacity;
+        if (targetCapacity > targetType.MaxOccupancy)
+            throw new BadRequestException("Physical-room capacity cannot exceed the room-type maximum occupancy.");
+        room.RoomTypeId = targetType.Id;
+        room.RoomType = targetType;
+        room.Category = targetCategory;
         if (request.Floor != null) room.Floor = request.Floor.Value;
         if (request.Status != null)
         {
@@ -214,7 +241,8 @@ public class RoomService : IRoomService
     private static RoomDto MapToDto(Room r) => new(
         r.Id, r.RoomNumber, r.Name, r.Category, r.Floor, r.Status,
         r.PricePerNight, r.Capacity, r.Size, r.IsOnline, r.Description,
-        r.Amenities, r.Images.Select(i => i.Url).ToList(), r.CreatedAt);
+        r.Amenities, r.Images.Select(i => i.Url).ToList(), r.CreatedAt,
+        r.RoomTypeId, r.RoomType?.Code, r.RoomType?.Name);
 
     private static List<string> NormalizeAmenities(IEnumerable<string>? amenities) =>
         amenities?

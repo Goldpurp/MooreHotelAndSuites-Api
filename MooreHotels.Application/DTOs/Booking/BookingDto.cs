@@ -6,7 +6,7 @@ namespace MooreHotels.Application.DTOs;
 public record BookingDto(
     Guid Id,
     string BookingCode,
-    Guid RoomId,
+    Guid? RoomId,
     string GuestId,
     string GuestFirstName,
     string GuestLastName,
@@ -47,4 +47,11 @@ public record BookingDto(
     decimal IncludedTaxAmount = 0,
     decimal TaxAmount = 0,
     decimal FeeAmount = 0,
-    IReadOnlyList<PricingQuoteLineDto>? PriceBreakdown = null);
+    IReadOnlyList<PricingQuoteLineDto>? PriceBreakdown = null,
+    Guid? RoomTypeId = null,
+    string? RoomTypeCode = null,
+    string? RoomTypeName = null,
+    int RoomQuantity = 1,
+    IReadOnlyList<ReservationRoomDto>? Rooms = null,
+    FolioSummaryDto? Folio = null,
+    decimal? RefundApprovedAmount = null);

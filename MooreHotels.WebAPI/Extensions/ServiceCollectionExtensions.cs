@@ -453,6 +453,8 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IRoomService, RoomService>();
         services.AddScoped<IBookingService, BookingService>();
         services.AddScoped<IPricingService, PricingService>();
+        services.AddScoped<IInventoryService, InventoryService>();
+        services.AddScoped<IFolioService, FolioService>();
         services.AddScoped<IMonnifyPaymentProcessor, MonnifyPaymentProcessor>();
         services.AddScoped<IGuestService, GuestService>();
         services.AddScoped<IAuditService, AuditService>();

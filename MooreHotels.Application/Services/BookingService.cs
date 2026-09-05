@@ -32,6 +32,7 @@ public class BookingService : IBookingService
     private readonly IConfiguration _config;
     private readonly ILogger<BookingService> _logger;
     private readonly IPricingService _pricingService;
+    private readonly IFolioService _folioService;
 
 
     public BookingService(
@@ -47,7 +48,8 @@ public class BookingService : IBookingService
         UserManager<ApplicationUser> userManager,
         IConfiguration config,
         ILogger<BookingService> logger,
-        IPricingService pricingService)
+        IPricingService pricingService,
+        IFolioService folioService)
 
     {
         _bookingRepo = bookingRepo;
@@ -63,6 +65,7 @@ public class BookingService : IBookingService
         _config = config;
         _logger = logger;
         _pricingService = pricingService;
+        _folioService = folioService;
     }
 
     public async Task RequestBookingEmailVerificationAsync(
@@ -196,8 +199,28 @@ public class BookingService : IBookingService
                 now);
         }
 
-        var room = await _roomRepo.GetByIdAsync(request.RoomId);
-        if (room == null) throw new NotFoundException("Room not found.");
+        if (request.RoomId.HasValue == request.RoomTypeId.HasValue)
+            throw new BadRequestException(
+                "Select exactly one inventory scope: a room type or a legacy physical room.");
+        if (request.RoomQuantity is < 1 or > 10)
+            throw new BadRequestException("Room quantity must be between 1 and 10.");
+
+        Room? room = null;
+        RoomType? roomType;
+        if (request.RoomId.HasValue)
+        {
+            if (request.RoomQuantity != 1)
+                throw new BadRequestException("A legacy physical-room booking can contain only one room.");
+            room = await _roomRepo.GetByIdAsync(request.RoomId.Value)
+                   ?? throw new NotFoundException("Room not found.");
+            roomType = room.RoomType ?? await _roomRepo.GetRoomTypeByIdAsync(room.RoomTypeId);
+        }
+        else
+        {
+            roomType = await _roomRepo.GetRoomTypeByIdAsync(request.RoomTypeId!.Value);
+        }
+        if (roomType is null || !roomType.IsActive)
+            throw new NotFoundException("Room type not found or inactive.");
 
         var checkIn = _hotelTime.GetCheckInUtc(request.CheckIn);
         var checkOut = _hotelTime.GetCheckOutUtc(request.CheckOut);
@@ -211,16 +234,18 @@ public class BookingService : IBookingService
             throw new BadRequestException("A single reservation cannot exceed 90 nights.");
         if (checkInDate > _hotelTime.Today.AddYears(2))
             throw new BadRequestException("Reservations cannot be created more than two years in advance.");
-        if (!room.IsOnline) throw new BadRequestException("This room is currently unavailable.");
+        if (room is not null && (!room.IsOnline || room.Status == RoomStatus.Maintenance))
+            throw new BadRequestException("This room is currently unavailable.");
         var requestedOccupancy = checked(request.AdultCount + request.ChildCount);
-        if (requestedOccupancy > room.Capacity)
+        var maximumOccupancy = checked(roomType.MaxOccupancy * request.RoomQuantity);
+        if (requestedOccupancy > maximumOccupancy)
         {
             throw new BadRequestException(
-                $"This room permits a maximum of {room.Capacity} guests. Select another room or reduce the occupancy.");
+                $"The selected inventory permits a maximum of {maximumOccupancy} guests. Select more rooms or reduce the occupancy.");
         }
 
         // 2. Conflict Check
-        if (await _bookingRepo.IsRoomBookedAsync(room.Id, checkIn, checkOut))
+        if (room is not null && await _bookingRepo.IsRoomBookedAsync(room.Id, checkIn, checkOut))
             throw new BadRequestException("This room is already reserved for the selected dates.");
 
         ValidatedBookingQuote? quote = null;
@@ -269,7 +294,8 @@ public class BookingService : IBookingService
         }
 
         var nights = Math.Max(1, checkOutDate.DayNumber - checkInDate.DayNumber);
-        var legacyRoomSubtotal = room.PricePerNight * nights;
+        var legacyRoomSubtotal = (room?.PricePerNight ?? roomType.BasePricePerNight) *
+                                 nights * request.RoomQuantity;
         var totalAmount = quote?.TotalAmount ?? legacyRoomSubtotal;
         var bookingCode = await _bookingRepo.GenerateBookingCodeAsync();
 
@@ -284,7 +310,9 @@ public class BookingService : IBookingService
         {
             Id = Guid.NewGuid(),
             BookingCode = bookingCode,
-            RoomId = room.Id,
+            RoomId = room?.Id,
+            RoomTypeId = roomType.Id,
+            RoomQuantity = request.RoomQuantity,
             GuestId = guest.Id,
             CheckIn = checkIn,
             CheckOut = checkOut,
@@ -318,6 +346,22 @@ public class BookingService : IBookingService
             PoliciesAcceptedAtUtc = policiesAcceptedAtUtc,
             CreatedAt = guestAccessIssuedAtUtc
         };
+        for (var sequence = 1; sequence <= booking.RoomQuantity; sequence++)
+        {
+            booking.ReservationRooms.Add(new ReservationRoom
+            {
+                Id = Guid.NewGuid(),
+                BookingId = booking.Id,
+                RoomTypeId = roomType.Id,
+                RoomTypeCode = roomType.Code,
+                RoomTypeName = roomType.Name,
+                AssignedRoomId = sequence == 1 ? room?.Id : null,
+                Sequence = sequence,
+                AssignedAtUtc = sequence == 1 && room is not null ? guestAccessIssuedAtUtc : null,
+                CreatedAtUtc = guestAccessIssuedAtUtc
+            });
+        }
+        booking.Folio = FolioAccounting.CreateInitial(booking, guestAccessIssuedAtUtc);
 
         string? paymentUrl = null;
         if (booking.PaymentMethod == PaymentMethod.Monnify)
@@ -356,9 +400,9 @@ public class BookingService : IBookingService
                 new BookingConfirmationEmail(
                     $"{guest.FirstName} {guest.LastName}",
                     booking.BookingCode,
-                    room.Name,
-                    room.Category.ToString(),
-                    room.Capacity,
+                    roomType.Name,
+                    roomType.Category.ToString(),
+                    maximumOccupancy,
                     booking.AdultCount,
                     booking.ChildCount,
                     booking.CheckIn,
@@ -377,9 +421,9 @@ public class BookingService : IBookingService
                 new AdminNewBookingEmail(
                     $"{guest.FirstName} {guest.LastName}",
                     booking.BookingCode,
-                    room.Name,
-                    room.Category.ToString(),
-                    room.Capacity,
+                    roomType.Name,
+                    roomType.Category.ToString(),
+                    maximumOccupancy,
                     booking.AdultCount,
                     booking.ChildCount,
                     booking.CheckIn,
@@ -406,7 +450,7 @@ public class BookingService : IBookingService
             await _notificationService.NotifyNewBookingAsync(
                 booking,
                 $"{guest.FirstName} {guest.LastName}",
-                room.Name);
+                roomType.Name);
         }
         catch (Exception ex)
         {
@@ -540,7 +584,12 @@ public class BookingService : IBookingService
         if (booking.Guest == null) throw new InvalidOperationException("Booking guest data could not be loaded.");
 
         var actingUser = await _userManager.FindByIdAsync(userId.ToString());
-        var room = await _roomRepo.GetByIdAsync(booking.RoomId);
+        var assignedRooms = booking.ReservationRooms
+            .Where(item => item.AssignedRoom is not null)
+            .OrderBy(item => item.Sequence)
+            .Select(item => item.AssignedRoom!)
+            .ToArray();
+        var room = assignedRooms.FirstOrDefault() ?? booking.Room;
         var oldStatus = booking.Status;
 
         if (status is not (BookingStatus.CheckedIn or BookingStatus.CheckedOut or BookingStatus.NoShow))
@@ -556,14 +605,37 @@ public class BookingService : IBookingService
 
             if (now < booking.CheckIn) throw new BadRequestException("Arrival is too early. Official check-in starts at 2:00 PM.");
             if (booking.PaymentStatus != PaymentStatus.Paid) throw new BadRequestException("Full payment verification is required.");
-            if (room != null) { room.Status = RoomStatus.Occupied; await _roomRepo.UpdateAsync(room); }
+            if (assignedRooms.Length != booking.RoomQuantity)
+                throw new BadRequestException("Assign every reserved room before check-in.");
+            if (assignedRooms.Any(assignedRoom =>
+                    !assignedRoom.IsOnline || assignedRoom.Status != RoomStatus.Available))
+                throw new BadRequestException(
+                    "Every assigned room must be online, clean, and available before check-in.");
+            foreach (var assignedRoom in assignedRooms)
+            {
+                assignedRoom.Status = RoomStatus.Occupied;
+                await _roomRepo.UpdateAsync(assignedRoom);
+            }
             await _visitService.CreateRecordAsync(booking.BookingCode, "CHECK_IN", actingUser?.Name ?? "Admin");
         }
         else if (status == BookingStatus.CheckedOut)
         {
             if (booking.Status != BookingStatus.CheckedIn)
                 throw new BadRequestException("Only a checked-in booking can be checked out.");
-            if (room != null) { room.Status = RoomStatus.Cleaning; await _roomRepo.UpdateAsync(room); }
+            if (booking.Folio is null)
+                throw new InvalidOperationException("The booking folio is missing.");
+            var balance = FolioAccounting.Calculate(booking.Folio.Entries);
+            if (balance.Balance != 0)
+                throw new BadRequestException(
+                    "Settle the outstanding folio balance or guest credit before checkout.");
+            foreach (var assignedRoom in assignedRooms)
+            {
+                assignedRoom.Status = RoomStatus.Cleaning;
+                await _roomRepo.UpdateAsync(assignedRoom);
+            }
+            booking.Folio.Status = FolioStatus.Closed;
+            booking.Folio.ClosedAtUtc = DateTime.UtcNow;
+            booking.Folio.ClosedByUserId = userId;
             await _visitService.CreateRecordAsync(booking.BookingCode, "CHECK_OUT", actingUser?.Name ?? "Admin");
         }
         else if (status == BookingStatus.NoShow)
@@ -573,10 +645,10 @@ public class BookingService : IBookingService
             if (DateTime.UtcNow < booking.CheckIn)
                 throw new BadRequestException("A booking cannot be marked as a no-show before check-in time.");
 
-            if (room != null)
+            foreach (var assignedRoom in assignedRooms)
             {
-                room.Status = RoomStatus.Available;
-                await _roomRepo.UpdateAsync(room);
+                assignedRoom.Status = RoomStatus.Available;
+                await _roomRepo.UpdateAsync(assignedRoom);
             }
         }
 
@@ -674,18 +746,15 @@ public class BookingService : IBookingService
 
         var actingUser = await _userManager.FindByIdAsync(userId.ToString());
         var oldStatus = booking.Status;
-        var room = await _roomRepo.GetByIdAsync(booking.RoomId);
+        var room = booking.Room;
 
         booking.Status = BookingStatus.Cancelled;
         booking.CancelledAtUtc = DateTime.UtcNow;
         booking.GuestAccessTokenRevokedAtUtc = booking.CancelledAtUtc;
         booking.PaymentCheckoutUrl = null;
 
-        // --- TRIGGER REFUND LOGIC ---
-        if (booking.PaymentStatus == PaymentStatus.Paid)
-        {
-            booking.PaymentStatus = PaymentStatus.RefundPending;
-        }
+        await _folioService.ApplyCancellationCreditAsync(
+            booking, reason ?? "Cancelled by Admin", userId);
 
         var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? new();
         history.Add(new
@@ -698,6 +767,9 @@ public class BookingService : IBookingService
         });
         booking.StatusHistoryJson = JsonSerializer.Serialize(history);
 
+        var refundableAmount = booking.Folio is null
+            ? 0m
+            : FolioAccounting.Calculate(booking.Folio.Entries).GuestCredit;
         await _bookingRepo.UpdateAsync(booking);
 
         await _auditRepo.AddAsync(new AuditLog
@@ -741,7 +813,7 @@ public class BookingService : IBookingService
                         $"{booking.Guest?.FirstName} {booking.Guest?.LastName}",
                         booking.BookingCode,
                         room?.Name ?? "Reserved Room",
-                        booking.Amount));
+                        refundableAmount));
             }
         }
         return MapToDto(booking);
@@ -774,16 +846,16 @@ public class BookingService : IBookingService
             throw new BadRequestException("A stay in progress or a completed stay cannot be cancelled online.");
         }
 
-        var room = await _roomRepo.GetByIdAsync(booking.RoomId);
+        var room = booking.Room;
         var previousStatus = booking.Status;
         var previousPaymentStatus = booking.PaymentStatus;
         booking.Status = BookingStatus.Cancelled;
         booking.CancelledAtUtc = DateTime.UtcNow;
         booking.GuestAccessTokenRevokedAtUtc = booking.CancelledAtUtc;
         booking.PaymentCheckoutUrl = null;
-        if (booking.PaymentStatus == PaymentStatus.Paid)
-            booking.PaymentStatus = PaymentStatus.RefundPending;
-
+        var cancellationActor = accountUserId ?? BookingPaymentPolicy.SystemActorId;
+        await _folioService.ApplyCancellationCreditAsync(
+            booking, reason ?? "Self-service cancellation", cancellationActor);
         var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? new();
         history.Add(new
         {
@@ -795,6 +867,9 @@ public class BookingService : IBookingService
         });
         booking.StatusHistoryJson = JsonSerializer.Serialize(history);
 
+        var refundableAmount = booking.Folio is null
+            ? 0m
+            : FolioAccounting.Calculate(booking.Folio.Entries).GuestCredit;
         await _bookingRepo.UpdateAsync(booking);
         await _auditRepo.AddAsync(new AuditLog
         {
@@ -844,7 +919,7 @@ public class BookingService : IBookingService
                         $"{booking.Guest.FirstName} {booking.Guest.LastName}",
                         booking.BookingCode,
                         room?.Name ?? "Reserved Room",
-                        booking.Amount));
+                        refundableAmount));
             }
         }
 
@@ -861,22 +936,37 @@ public class BookingService : IBookingService
         if (booking.PaymentStatus != PaymentStatus.RefundPending)
             throw new BadRequestException("This booking is not flagged for a manual refund.");
 
+        var guestCredit = booking.Folio is null
+            ? 0m
+            : FolioAccounting.Calculate(booking.Folio.Entries).GuestCredit;
+        var approvedAmount = request.Amount ?? guestCredit;
+        if (approvedAmount <= 0 || approvedAmount > guestCredit)
+            throw new BadRequestException("The approved amount exceeds the unsettled guest credit.");
+
         var threshold = _config.GetValue(
             "FinancialControls:HighValueRefundThreshold",
             500000m);
-        if (booking.Amount < threshold)
+        if (approvedAmount < threshold)
             throw new BadRequestException("This refund is below the dual-approval threshold.");
 
         var approvingUser = await GetActiveRefundOperatorAsync(approvingUserId);
         if (booking.RefundApprovedByUserId.HasValue)
         {
-            if (booking.RefundApprovedByUserId == approvingUserId) return MapToDto(booking);
-            throw new BadRequestException("This refund already has its first approval.");
+            var priorApprovalWasConsumed = booking.RefundProcessedAtUtc.HasValue &&
+                                           booking.RefundApprovedAtUtc.HasValue &&
+                                           booking.RefundProcessedAtUtc >= booking.RefundApprovedAtUtc;
+            if (!priorApprovalWasConsumed)
+            {
+                if (booking.RefundApprovedByUserId == approvingUserId &&
+                    booking.RefundApprovedAmount == approvedAmount) return MapToDto(booking);
+                throw new BadRequestException("This refund already has its first approval.");
+            }
         }
 
         var approvedAtUtc = DateTime.UtcNow;
         booking.RefundApprovedByUserId = approvingUserId;
         booking.RefundApprovedAtUtc = approvedAtUtc;
+        booking.RefundApprovedAmount = approvedAmount;
         var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? [];
         history.Add(new
         {
@@ -898,7 +988,7 @@ public class BookingService : IBookingService
             NewDataJson = JsonSerializer.Serialize(new
             {
                 booking.BookingCode,
-                booking.Amount,
+                ApprovedAmount = approvedAmount,
                 Threshold = threshold,
                 Reason = request.Reason.Trim(),
                 ApprovedAtUtc = approvedAtUtc
@@ -918,18 +1008,20 @@ public class BookingService : IBookingService
             throw new BadRequestException("A valid external refund reference is required.");
         var booking = await _bookingRepo.GetByIdAsync(bookingId);
         if (booking == null) throw new NotFoundException("Booking not found.");
-        if (booking.PaymentStatus == PaymentStatus.Refunded &&
-            string.Equals(booking.RefundReference, transactionRef, StringComparison.Ordinal) &&
-            booking.RefundAmount == request.Amount &&
-            string.Equals(booking.RefundChannel, request.Channel, StringComparison.Ordinal) &&
-            string.Equals(booking.RefundEvidenceType, request.EvidenceType, StringComparison.Ordinal))
+        if (booking.Folio?.Entries.Any(entry =>
+                entry.Type == FolioEntryType.Refund &&
+                entry.ExternalReference == transactionRef &&
+                entry.Amount == FolioAccounting.Money(request.Amount)) == true)
         {
             return MapToDto(booking);
         }
         if (booking.PaymentStatus != PaymentStatus.RefundPending)
             throw new BadRequestException("This booking is not flagged for a manual refund.");
-        if (request.Amount != booking.Amount)
-            throw new BadRequestException("The recorded refund amount must equal the paid booking amount.");
+        var guestCredit = booking.Folio is null
+            ? 0m
+            : FolioAccounting.Calculate(booking.Folio.Entries).GuestCredit;
+        if (request.Amount <= 0 || request.Amount > guestCredit)
+            throw new BadRequestException("The refund amount exceeds the unsettled guest credit.");
         var validEvidenceForChannel = request.Channel switch
         {
             "BankTransfer" => request.EvidenceType == "BankStatement",
@@ -944,7 +1036,7 @@ public class BookingService : IBookingService
         var threshold = _config.GetValue(
             "FinancialControls:HighValueRefundThreshold",
             500000m);
-        if (booking.Amount >= threshold)
+        if (request.Amount >= threshold)
         {
             if (!booking.RefundApprovedByUserId.HasValue ||
                 !booking.RefundApprovedAtUtc.HasValue)
@@ -957,12 +1049,22 @@ public class BookingService : IBookingService
                 throw new BadRequestException(
                     "The person who approved a high-value refund cannot also complete it.");
             }
+            if (booking.RefundApprovedAmount != request.Amount)
+                throw new BadRequestException(
+                    "The completed amount must exactly match the independently approved amount.");
         }
 
         var processedAtUtc = DateTime.UtcNow;
-        booking.PaymentStatus = PaymentStatus.Refunded;
+        var approvingUserId = booking.RefundApprovedByUserId;
+        await _folioService.ApplyRefundAsync(
+            booking,
+            request.Amount,
+            transactionRef,
+            request.Channel.Trim(),
+            request.Notes,
+            processingUserId);
         booking.RefundReference = transactionRef;
-        booking.RefundAmount = request.Amount;
+        booking.RefundAmount = FolioAccounting.Money((booking.RefundAmount ?? 0m) + request.Amount);
         booking.RefundChannel = request.Channel.Trim();
         booking.RefundEvidenceType = request.EvidenceType.Trim();
         booking.RefundNotes = request.Notes?.Trim();
@@ -999,13 +1101,13 @@ public class BookingService : IBookingService
                 RefundAmount = booking.RefundAmount,
                 RefundChannel = booking.RefundChannel,
                 RefundEvidenceType = booking.RefundEvidenceType,
-                RefundApprovedByUserId = booking.RefundApprovedByUserId,
+                RefundApprovedByUserId = approvingUserId,
                 RefundProcessedByUserId = processingUserId,
                 RefundProcessedAtUtc = processedAtUtc
             }),
             CreatedAt = processedAtUtc
         });
-        var room = await _roomRepo.GetByIdAsync(booking.RoomId);
+        var room = booking.Room;
         await _emailOutbox.EnqueueAsync(
             TransactionalEmailTemplates.RefundCompleted,
             booking.Guest!.Email,
@@ -1013,7 +1115,7 @@ public class BookingService : IBookingService
                 booking.Guest.FirstName,
                 booking.BookingCode,
                 room?.Name ?? "Reserved Room",
-                booking.Amount,
+                request.Amount,
                 transactionRef));
 
         return MapToDto(booking);
@@ -1102,7 +1204,43 @@ public class BookingService : IBookingService
                     line.UnitAmount,
                     line.Amount,
                     line.IsInclusive))
-                .ToArray());
+                .ToArray(),
+            RoomTypeId: b.RoomTypeId,
+            RoomTypeCode: b.RoomType?.Code,
+            RoomTypeName: b.RoomType?.Name,
+            RoomQuantity: b.RoomQuantity,
+            Rooms: b.ReservationRooms.OrderBy(item => item.Sequence)
+                .Select(item => new ReservationRoomDto(
+                    item.Id,
+                    item.Sequence,
+                    item.RoomTypeId,
+                    item.RoomTypeCode,
+                    item.RoomTypeName,
+                    item.AssignedRoomId,
+                    item.AssignedRoom?.RoomNumber,
+                    item.AssignedAtUtc,
+                    item.AssignedByUserId))
+                .ToArray(),
+            Folio: b.Folio is null ? null : MapFolioSummary(b.Folio),
+            RefundApprovedAmount: b.RefundApprovedAmount);
+    }
+
+    private static FolioSummaryDto MapFolioSummary(Folio folio)
+    {
+        var balance = FolioAccounting.Calculate(folio.Entries);
+        return new FolioSummaryDto(
+            folio.Id,
+            folio.Currency,
+            folio.Status,
+            balance.TotalDebits,
+            balance.TotalCredits,
+            balance.Balance,
+            balance.AmountDue,
+            balance.GuestCredit,
+            balance.Payments,
+            balance.Refunds,
+            folio.OpenedAtUtc,
+            folio.ClosedAtUtc);
     }
 
     private string GetTransferInstructions()

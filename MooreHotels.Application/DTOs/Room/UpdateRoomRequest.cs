@@ -16,4 +16,5 @@ public record UpdateRoomRequest(
     [MaxLength(50)] List<string>? Amenities,
     [MaxLength(30)] List<string>? Images,
     bool? ReplaceAmenities = null,
-    bool? ReplaceImages = null);
+    bool? ReplaceImages = null,
+    Guid? RoomTypeId = null);

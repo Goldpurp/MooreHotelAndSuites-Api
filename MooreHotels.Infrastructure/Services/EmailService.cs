@@ -103,20 +103,26 @@ public sealed class EmailService : IEmailService
                 if (response.StatusCode == HttpStatusCode.Created)
                 {
                     await ValidateAcceptedResponseAsync(response);
-                    _logger.LogInformation(
-                        "Brevo accepted transactional email. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
-                        recipient.Host,
-                        attempt);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "Brevo accepted transactional email. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
+                            recipient.Host,
+                            attempt);
+                    }
                     return;
                 }
 
                 if (response.StatusCode == HttpStatusCode.BadRequest &&
                     await IsDuplicateAcceptedAsync(response))
                 {
-                    _logger.LogInformation(
-                        "Brevo reported an already accepted idempotency key. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
-                        recipient.Host,
-                        attempt);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "Brevo reported an already accepted idempotency key. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
+                            recipient.Host,
+                            attempt);
+                    }
                     return;
                 }
 

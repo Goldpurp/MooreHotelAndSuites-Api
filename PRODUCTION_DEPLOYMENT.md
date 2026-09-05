@@ -225,6 +225,13 @@ Do not deploy the dashboard or guest website until all checks pass:
   discounts, included/exclusive tax and fees, then submits the quote ID/token.
   Changed, expired, invalid and replayed quotes are rejected; the consumed
   breakdown remains unchanged after pricing configuration changes.
+- Room types have reviewed codes, occupancy limits, base rates and physical-room
+  mappings. Multi-room availability is correct across closures and overlapping
+  reservations; reception can assign and move physical rooms before arrival.
+- A newly created booking has one reservation-unit row per room and an opening
+  folio. Split payments, later add-on charges, credits, immutable voids, partial
+  refunds and zero-balance checkout have been acceptance-tested. Reconciliation
+  uses folio entries, not a mutable booking total.
 - Registration and booking require the current policy versions, client data
   export works, privacy requests are audited through closure, and a rehearsed
   retention sweep anonymizes only expired unlinked guest records.
@@ -232,7 +239,9 @@ Do not deploy the dashboard or guest website until all checks pass:
 - Direct-transfer booking, exact `ACCEPT` confirmation and audit logging work.
 - Anonymous booking requires a valid, single-use email-verification token;
   missing, expired, mismatched and replayed tokens are rejected.
-- An unpaid booking expires after one hour and releases its room.
+- An unpaid booking expires after one hour and releases its room-type inventory.
+  A provider payment received after expiry does not restore the reservation and
+  creates refundable guest credit for staff review.
 - All required emails are delivered.
 - Secure booking links expire; an accepted rotation invalidates the old link
   and sends a two-hour replacement. Duplicate requests within one minute are

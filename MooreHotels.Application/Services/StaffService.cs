@@ -198,7 +198,7 @@ public class StaffService : IStaffService
         if (user.Role == UserRole.Admin)
             throw new BadRequestException("Administrator accounts cannot be modified here.");
 
-        if (!Enum.IsDefined(typeof(ProfileStatus), newStatus))
+        if (!Enum.IsDefined(newStatus))
             throw new BadRequestException("Invalid status value.");
 
         var oldStatus = user.Status;

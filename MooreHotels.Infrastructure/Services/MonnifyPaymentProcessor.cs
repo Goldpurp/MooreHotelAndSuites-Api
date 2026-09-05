@@ -65,6 +65,11 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
 
             var now = DateTime.UtcNow;
             ValidateBinding(booking, verification, now);
+            var folio = await _db.Folios.Include(item => item.Entries)
+                .SingleOrDefaultAsync(item => item.BookingId == booking.Id, cancellationToken)
+                ?? throw new InvalidOperationException("The booking folio is missing.");
+            if (folio.Status != FolioStatus.Open)
+                throw new BadRequestException("The booking folio is closed.");
             var providerReference = verification.TransactionReference!;
             var existingByPaymentReference = await _db.MonnifyTransactions
                 .SingleOrDefaultAsync(
@@ -132,21 +137,77 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                 _db.MonnifyTransactions.Add(providerTransaction);
             }
 
-            var isExpired = booking.Status == BookingStatus.Cancelled &&
-                            booking.PaymentStatus is
-                                PaymentStatus.Unpaid or
-                                PaymentStatus.AwaitingVerification ||
+            var paymentEntry = folio.Entries.SingleOrDefault(entry =>
+                entry.Type == FolioEntryType.Payment &&
+                entry.ExternalReference == verification.PaymentReference);
+            if (paymentEntry is null)
+            {
+                paymentEntry = FolioAccounting.NewEntry(
+                    folio,
+                    FolioEntryType.Payment,
+                    FolioEntryDirection.Credit,
+                    verification.AmountPaid,
+                    "Monnify payment",
+                    "Monnify",
+                    booking.Id.ToString(),
+                    $"monnify:{BookingGuestAccess.Hash(verification.PaymentReference)}",
+                    verification.PaidAtUtc?.ToUniversalTime() ?? now,
+                    actingUserId,
+                    verification.PaymentReference);
+                _db.FolioEntries.Add(paymentEntry);
+            }
+            else if (paymentEntry.Amount != FolioAccounting.Money(verification.AmountPaid))
+            {
+                throw new ConflictException(
+                    "The payment reference was already recorded with a different amount.");
+            }
+
+            var isExpired = booking.Status == BookingStatus.Cancelled ||
                             BookingPaymentPolicy.IsExpiredUnconfirmed(
                                 booking.Status,
                                 booking.PaymentStatus,
                                 booking.CreatedAt,
                                 now);
 
+            var previousPaymentStatus = booking.PaymentStatus;
+            var previousBookingStatus = booking.Status;
             MonnifyPaymentOutcomeKind outcomeKind;
             if (isExpired)
             {
                 outcomeKind = MonnifyPaymentOutcomeKind.PaidAfterExpiry;
                 booking.PaymentCheckoutUrl = null;
+                booking.Status = BookingStatus.Cancelled;
+                booking.CancelledAtUtc ??= now;
+                booking.GuestAccessTokenRevokedAtUtc ??= now;
+                var cancellationKey = $"booking:{booking.Id:N}:late-payment-cancellation-credit";
+                if (!folio.Entries.Any(entry => entry.IdempotencyKey == cancellationKey))
+                {
+                    var billedAmount = FolioAccounting.Money(folio.Entries
+                        .Where(entry => entry.Type is not (FolioEntryType.Payment or FolioEntryType.Refund))
+                        .Sum(entry => entry.Direction == FolioEntryDirection.Debit
+                            ? entry.Amount
+                            : -entry.Amount));
+                    if (billedAmount > 0)
+                    {
+                        _db.FolioEntries.Add(FolioAccounting.NewEntry(
+                            folio,
+                            FolioEntryType.Credit,
+                            FolioEntryDirection.Credit,
+                            billedAmount,
+                            "Expired reservation release",
+                            "Expiration",
+                            booking.Id.ToString(),
+                            cancellationKey,
+                            now));
+                    }
+                }
+                booking.PaymentStatus = PaymentStatus.RefundPending;
+                booking.StatusHistoryJson = AppendHistory(
+                    booking.StatusHistoryJson,
+                    booking.Status,
+                    now,
+                    source,
+                    "Payment arrived after the reservation hold expired; the room remains released and the payment requires refund review.");
                 providerTransaction.Status = PaidAfterExpiryStatus;
                 providerTransaction.UpdatedAt = now;
 
@@ -160,8 +221,8 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                         source,
                         requestId,
                         now,
-                        previousPaymentStatus: booking.PaymentStatus,
-                        previousBookingStatus: booking.Status);
+                        previousPaymentStatus,
+                        previousBookingStatus);
                 }
             }
             else if (booking.PaymentStatus == PaymentStatus.Paid)
@@ -179,9 +240,12 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                         "This booking cannot accept a payment in its current state.");
                 }
 
-                var previousPaymentStatus = booking.PaymentStatus;
-                var previousBookingStatus = booking.Status;
-                booking.PaymentStatus = PaymentStatus.Paid;
+                var folioBalance = FolioAccounting.Calculate(folio.Entries);
+                booking.PaymentStatus = folioBalance.GuestCredit > 0
+                    ? PaymentStatus.RefundPending
+                    : folioBalance.AmountDue == 0
+                        ? PaymentStatus.Paid
+                        : PaymentStatus.PartiallyPaid;
                 booking.Status = BookingStatus.Confirmed;
                 booking.PaymentConfirmationMethod = ConfirmationMethod;
                 booking.PaymentConfirmedAtUtc = verification.PaidAtUtc?.ToUniversalTime() ?? now;
@@ -211,9 +275,9 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                     previousBookingStatus);
                 if (booking.Guest is not null)
                 {
-                    var roomName = await _db.Rooms
-                        .Where(room => room.Id == booking.RoomId)
-                        .Select(room => room.Name)
+                    var roomName = await _db.RoomTypes
+                        .Where(type => type.Id == booking.RoomTypeId)
+                        .Select(type => type.Name)
                         .SingleOrDefaultAsync(cancellationToken)
                         ?? "Reserved Room";
                     _db.EmailOutboxMessages.Add(_emailOutbox.Create(
@@ -223,7 +287,7 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                             booking.Guest.FirstName,
                             booking.BookingCode,
                             roomName,
-                            booking.Amount,
+                            verification.AmountPaid,
                             verification.PaymentReference)));
                 }
                 outcomeKind = MonnifyPaymentOutcomeKind.Confirmed;

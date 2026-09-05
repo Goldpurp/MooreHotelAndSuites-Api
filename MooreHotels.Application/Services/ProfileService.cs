@@ -249,7 +249,29 @@ public class ProfileService : IProfileService
                         line.UnitAmount,
                         line.Amount,
                         line.IsInclusive))
-                    .ToArray()));
+                    .ToArray(),
+                RoomTypeId: b.RoomTypeId,
+                RoomTypeCode: b.RoomType?.Code,
+                RoomTypeName: b.RoomType?.Name,
+                RoomQuantity: b.RoomQuantity,
+                Rooms: b.ReservationRooms.OrderBy(item => item.Sequence)
+                    .Select(item => new ReservationRoomDto(
+                        item.Id, item.Sequence, item.RoomTypeId,
+                        item.RoomTypeCode, item.RoomTypeName,
+                        item.AssignedRoomId, item.AssignedRoom?.RoomNumber,
+                        item.AssignedAtUtc, item.AssignedByUserId))
+                    .ToArray(),
+                Folio: b.Folio is null ? null : ToFolioSummary(b.Folio)));
+    }
+
+    private static FolioSummaryDto ToFolioSummary(Folio folio)
+    {
+        var balance = FolioAccounting.Calculate(folio.Entries);
+        return new FolioSummaryDto(
+            folio.Id, folio.Currency, folio.Status,
+            balance.TotalDebits, balance.TotalCredits, balance.Balance,
+            balance.AmountDue, balance.GuestCredit, balance.Payments,
+            balance.Refunds, folio.OpenedAtUtc, folio.ClosedAtUtc);
     }
 
     public async Task RotateCredentialsAsync(Guid userId, RotateCredentialsRequest request)

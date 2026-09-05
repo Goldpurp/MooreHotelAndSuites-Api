@@ -193,12 +193,14 @@ public sealed class FirstFiveProductionFixTests
             await db.Database.ExecuteSqlInterpolatedAsync(
                 $"""
                  INSERT INTO bookings
-                     ("Id", "BookingCode", "RoomId", "GuestId", "CheckIn", "CheckOut",
+                     ("Id", "BookingCode", "RoomId", "RoomTypeId", "RoomQuantity", "GuestId", "CheckIn", "CheckOut",
                       "Status", "Amount", "PaymentStatus", "PaymentMethod", "StatusHistoryJson", "CreatedAt")
                  SELECT
                      md5({seed} || series::text)::uuid,
                      {codePrefix} || lpad(series::text, 6, '0'),
                      {room.Id},
+                     {room.RoomTypeId},
+                     1,
                      {guest.Id},
                      {createdBase.AddDays(1)},
                      {createdBase.AddDays(2)},

@@ -244,14 +244,8 @@ public sealed class RemainingProductionControlsTests
 
         var highValue = await _fixture.CreateBookingAsync(
             paymentStatus: PaymentStatus.RefundPending,
-            bookingStatus: BookingStatus.Cancelled);
-        await _fixture.WithDbAsync(async db =>
-        {
-            var booking = await db.Bookings.SingleAsync(item => item.Id == highValue.Id);
-            booking.Amount = 600000m;
-            await db.SaveChangesAsync();
-            return true;
-        });
+            bookingStatus: BookingStatus.Cancelled,
+            amount: 600000m);
 
         using (var noApproval = RefundRequest(
                    highValue.Id,

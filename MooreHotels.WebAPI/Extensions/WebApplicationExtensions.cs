@@ -38,9 +38,12 @@ public static class WebApplicationExtensions
             }
             else
             {
-                logger.LogInformation(
-                    "Automatic migrations are disabled for {Environment}; checking identity bootstrap only.",
-                    app.Environment.EnvironmentName);
+                if (logger.IsEnabled(LogLevel.Information))
+                {
+                    logger.LogInformation(
+                        "Automatic migrations are disabled for {Environment}; checking identity bootstrap only.",
+                        app.Environment.EnvironmentName);
+                }
                 if (!await context.Database.CanConnectAsync())
                 {
                     throw new InvalidOperationException("The configured database is not reachable.");
@@ -172,7 +175,8 @@ public static class WebApplicationExtensions
         existsCommand.Parameters.AddWithValue("databaseName", databaseName);
         if (await existsCommand.ExecuteScalarAsync() is not null)
         {
-            logger.LogInformation("Local database {DatabaseName} already exists.", databaseName);
+            if (logger.IsEnabled(LogLevel.Information))
+                logger.LogInformation("Local database {DatabaseName} already exists.", databaseName);
             return;
         }
 
@@ -185,14 +189,16 @@ public static class WebApplicationExtensions
                 $"CREATE DATABASE {quotedDatabaseName}",
                 connection);
             await createCommand.ExecuteNonQueryAsync();
-            logger.LogInformation("Local database {DatabaseName} created.", databaseName);
+            if (logger.IsEnabled(LogLevel.Information))
+                logger.LogInformation("Local database {DatabaseName} created.", databaseName);
         }
         catch (PostgresException exception)
             when (exception.SqlState == PostgresErrorCodes.DuplicateDatabase)
         {
             // A second Local API instance may create it between the existence
             // check and CREATE DATABASE. The outcome is already the desired one.
-            logger.LogInformation("Local database {DatabaseName} was created concurrently.", databaseName);
+            if (logger.IsEnabled(LogLevel.Information))
+                logger.LogInformation("Local database {DatabaseName} was created concurrently.", databaseName);
         }
     }
 

@@ -390,7 +390,8 @@ public class RoomsController : ControllerBase
         {
             return NotFound(new { message = "Room not found." });
         }
-        if (await _context.Bookings.AsNoTracking().AnyAsync(booking => booking.RoomId == id))
+        if (await _context.ReservationRooms.AsNoTracking().AnyAsync(item => item.AssignedRoomId == id) ||
+            await _context.Bookings.AsNoTracking().AnyAsync(booking => booking.RoomId == id))
         {
             return Conflict(new
             {
@@ -434,7 +435,10 @@ public class RoomsController : ControllerBase
         room.Size,
         room.Description,
         room.Amenities,
-        room.Images);
+        room.Images,
+        room.RoomTypeId,
+        room.RoomTypeCode,
+        room.RoomTypeName);
 
 
 

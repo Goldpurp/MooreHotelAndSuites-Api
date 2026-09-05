@@ -478,7 +478,13 @@ public class BookingsController : ControllerBase
         booking.IncludedTaxAmount,
         booking.TaxAmount,
         booking.FeeAmount,
-        booking.PriceBreakdown);
+        booking.PriceBreakdown,
+        booking.RoomTypeId,
+        booking.RoomTypeCode,
+        booking.RoomTypeName,
+        booking.RoomQuantity,
+        booking.Rooms,
+        booking.Folio);
 
 
 

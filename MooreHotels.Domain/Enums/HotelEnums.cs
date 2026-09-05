@@ -40,6 +40,7 @@ public enum BookingStatus
 public enum PaymentStatus
 {
     Paid,
+    PartiallyPaid,
     Unpaid,
     AwaitingVerification,
     RefundPending,
@@ -77,4 +78,30 @@ public enum AddOnCategory
     Laundry,
     ExecutiveServices,
     Other
+}
+
+public enum FolioStatus
+{
+    Open,
+    Closed
+}
+
+public enum FolioEntryType
+{
+    RoomCharge,
+    AddOnCharge,
+    Tax,
+    Fee,
+    Discount,
+    Payment,
+    Credit,
+    Refund,
+    Adjustment,
+    Void
+}
+
+public enum FolioEntryDirection
+{
+    Debit,
+    Credit
 }

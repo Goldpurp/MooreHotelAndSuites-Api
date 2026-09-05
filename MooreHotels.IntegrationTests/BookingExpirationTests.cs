@@ -87,7 +87,7 @@ public sealed class BookingExpirationTests
         await using var scope = _fixture.Services.CreateAsyncScope();
         var repository = scope.ServiceProvider.GetRequiredService<IBookingRepository>();
         Assert.False(await repository.IsRoomBookedAsync(
-            expiredBooking.RoomId,
+            expiredBooking.RoomId!.Value,
             expiredBooking.CheckIn,
             expiredBooking.CheckOut));
 
@@ -96,16 +96,32 @@ public sealed class BookingExpirationTests
             Id = Guid.NewGuid(),
             BookingCode = $"MHS-{Guid.NewGuid():N}"[..20].ToUpperInvariant(),
             RoomId = expiredBooking.RoomId,
+            RoomTypeId = expiredBooking.RoomTypeId,
+            RoomQuantity = 1,
             GuestId = expiredBooking.GuestId,
             CheckIn = expiredBooking.CheckIn,
             CheckOut = expiredBooking.CheckOut,
             Status = BookingStatus.Pending,
+            Currency = "NGN",
+            RoomSubtotal = expiredBooking.Amount,
             Amount = expiredBooking.Amount,
             PaymentStatus = PaymentStatus.AwaitingVerification,
             PaymentMethod = PaymentMethod.DirectTransfer,
             StatusHistoryJson = "[]",
             CreatedAt = now
         };
+        replacement.ReservationRooms.Add(new ReservationRoom
+        {
+            Id = Guid.NewGuid(),
+            BookingId = replacement.Id,
+            RoomTypeId = replacement.RoomTypeId,
+            RoomTypeCode = "TEST",
+            RoomTypeName = "Integration Test Room Type",
+            AssignedRoomId = replacement.RoomId,
+            Sequence = 1,
+            CreatedAtUtc = now
+        });
+        replacement.Folio = FolioAccounting.CreateInitial(replacement, now);
 
         await repository.AddAsync(replacement);
 
@@ -290,8 +306,8 @@ public sealed class BookingExpirationTests
         var state = await _fixture.WithDbAsync(db => db.Bookings
             .AsNoTracking()
             .SingleAsync(item => item.Id == booking.Id));
-        Assert.Equal(BookingStatus.Pending, state.Status);
-        Assert.Equal(PaymentStatus.Unpaid, state.PaymentStatus);
+        Assert.Equal(BookingStatus.Cancelled, state.Status);
+        Assert.Equal(PaymentStatus.RefundPending, state.PaymentStatus);
         await ExpireAsync(now);
     }
 

@@ -8,8 +8,18 @@ public class CreateBookingRequestValidator : AbstractValidator<CreateBookingRequ
 {
     public CreateBookingRequestValidator()
     {
-        RuleFor(x => x.RoomId)
-            .NotEmpty().WithMessage("Room selection is required.");
+        RuleFor(x => x)
+            .Must(x => x.RoomId.HasValue ^ x.RoomTypeId.HasValue)
+            .WithMessage("Select exactly one room type or legacy physical room.");
+
+        RuleFor(x => x.RoomQuantity)
+            .InclusiveBetween(1, 10)
+            .WithMessage("A reservation can contain between 1 and 10 rooms.");
+
+        RuleFor(x => x.RoomQuantity)
+            .Equal(1)
+            .When(x => x.RoomId.HasValue)
+            .WithMessage("Legacy physical-room bookings can contain only one room.");
 
         RuleFor(x => x.CheckIn)
             .NotEmpty().WithMessage("Check-in date is required.");

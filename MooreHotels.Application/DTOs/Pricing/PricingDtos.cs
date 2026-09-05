@@ -4,13 +4,15 @@ using MooreHotels.Domain.Enums;
 namespace MooreHotels.Application.DTOs.Pricing;
 
 public sealed record CreatePricingQuoteRequest(
-    [Required] Guid RoomId,
+    Guid? RoomId,
     [Required] DateTime CheckIn,
     [Required] DateTime CheckOut,
     [Range(1, 20)] int AdultCount,
     [Range(0, 20)] int ChildCount,
     [StringLength(30)] string? RatePlanCode = null,
-    [StringLength(40)] string? PromotionCode = null);
+    [StringLength(40)] string? PromotionCode = null,
+    Guid? RoomTypeId = null,
+    [Range(1, 10)] int RoomQuantity = 1);
 
 public sealed record PricingQuoteLineDto(
     PricingLineType Type,
@@ -25,7 +27,11 @@ public sealed record PricingQuoteLineDto(
 public sealed record PricingQuoteDto(
     Guid QuoteId,
     string QuoteToken,
-    Guid RoomId,
+    Guid? RoomId,
+    Guid RoomTypeId,
+    string RoomTypeCode,
+    string RoomTypeName,
+    int RoomQuantity,
     string RatePlanCode,
     string RatePlanName,
     string? PromotionCode,
@@ -63,7 +69,8 @@ public sealed record DailyRoomRateRequest(
     Guid? RoomId,
     RoomCategory? RoomCategory,
     [Required] DateOnly StayDate,
-    [Range(typeof(decimal), "0.01", "9999999999999999")] decimal Amount);
+    [Range(typeof(decimal), "0.01", "9999999999999999")] decimal Amount,
+    Guid? RoomTypeId = null);
 
 public sealed record PricingRuleRequest(
     [Required, StringLength(30)] string Code,
@@ -118,6 +125,7 @@ public sealed record DailyRoomRate(
     Guid Id,
     Guid RatePlanId,
     Guid? RoomId,
+    Guid? RoomTypeId,
     RoomCategory? RoomCategory,
     DateOnly StayDate,
     decimal Amount,
@@ -158,6 +166,9 @@ public sealed record Promotion(
 public sealed record ValidatedBookingQuote(
     Guid QuoteId,
     string AccessTokenHash,
+    Guid? RoomId,
+    Guid RoomTypeId,
+    int RoomQuantity,
     string Currency,
     decimal RoomSubtotal,
     decimal DiscountAmount,
