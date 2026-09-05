@@ -177,7 +177,10 @@ public class AuthController : ControllerBase
                 FirstName = request.FirstName.Trim(),
                 LastName = request.LastName.Trim(),
                 Email = email,
+                NormalizedEmail = email,
                 Phone = request.Phone.Trim(),
+                NormalizedPhone = NormalizePhone(request.Phone),
+                EmailVerifiedAtUtc = autoConfirm ? DateTime.UtcNow : null,
                 CreatedAt = DateTime.UtcNow
             };
             var user = new ApplicationUser
@@ -238,6 +241,12 @@ public class AuthController : ControllerBase
         return RegistrationAccepted();
     }
 
+    private static string NormalizePhone(string value)
+    {
+        var digits = new string(value.Where(char.IsDigit).ToArray());
+        return value.TrimStart().StartsWith('+') && digits.Length > 0 ? $"+{digits}" : digits;
+    }
+
     [HttpGet("verify-email")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.LookupRateLimitPolicy)]
@@ -256,6 +265,7 @@ public class AuthController : ControllerBase
 
         if (user.EmailConfirmed)
         {
+            await MarkGuestEmailVerifiedAsync(user);
             return Ok(new { Message = "Email is already verified." });
         }
 
@@ -275,7 +285,20 @@ public class AuthController : ControllerBase
             return BadRequest(new { Message = "The verification link is invalid or expired." });
         }
 
+        await MarkGuestEmailVerifiedAsync(user);
         return Ok(new { Message = "Email verified. You can now sign in." });
+    }
+
+    private async Task MarkGuestEmailVerifiedAsync(ApplicationUser user)
+    {
+        if (string.IsNullOrWhiteSpace(user.GuestId)) return;
+        await _dbContext.Guests
+            .Where(guest => guest.Id == user.GuestId &&
+                            guest.NormalizedEmail == user.Email &&
+                            guest.EmailVerifiedAtUtc == null)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                guest => guest.EmailVerifiedAtUtc,
+                DateTime.UtcNow));
     }
 
     [HttpPost("resend-verification")]

@@ -86,7 +86,8 @@ public class RoomRepository : IRoomRepository
         if (capacity.HasValue && capacity.Value > 0)
             query = query.Where(r => r.Capacity >= capacity.Value);
 
-        query = query.Where(r => r.IsOnline && r.Status != RoomStatus.Maintenance);
+        query = query.Where(r => r.IsOnline && r.Status != RoomStatus.Maintenance &&
+                                 r.Status != RoomStatus.OutOfOrder);
 
         var rooms = await query.ToListAsync();
 
@@ -134,8 +135,13 @@ public class RoomRepository : IRoomRepository
         var available = statuses.FirstOrDefault(s => s.Status == RoomStatus.Available)?.Count ?? 0;
         var cleaning = statuses.FirstOrDefault(s => s.Status == RoomStatus.Cleaning)?.Count ?? 0;
         var maintenance = statuses.FirstOrDefault(s => s.Status == RoomStatus.Maintenance)?.Count ?? 0;
+        var dirty = statuses.FirstOrDefault(s => s.Status == RoomStatus.Dirty)?.Count ?? 0;
+        var clean = statuses.FirstOrDefault(s => s.Status == RoomStatus.Clean)?.Count ?? 0;
+        var inspected = statuses.FirstOrDefault(s => s.Status == RoomStatus.Inspected)?.Count ?? 0;
+        var outOfOrder = statuses.FirstOrDefault(s => s.Status == RoomStatus.OutOfOrder)?.Count ?? 0;
 
-        return new AssetStatusDistribution(occupied, available, cleaning, maintenance);
+        return new AssetStatusDistribution(
+            occupied, available, cleaning, maintenance, dirty, clean, inspected, outOfOrder);
     }
 
     public async Task<(int TotalRooms, int OccupiedRooms)> GetRoomCountsAsync(CancellationToken cancellationToken = default)

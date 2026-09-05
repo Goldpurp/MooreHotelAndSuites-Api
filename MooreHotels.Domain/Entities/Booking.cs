@@ -55,6 +55,13 @@ public class Booking
     public string? PrivacyPolicyVersion { get; set; }
     public string? BookingTermsVersion { get; set; }
     public DateTime? PoliciesAcceptedAtUtc { get; set; }
+    public string ReservationPolicyVersion { get; set; } = "2026-09";
+    public int FreeCancellationHours { get; set; } = 24;
+    public decimal CancellationPenaltyPercent { get; set; } = 50m;
+    public decimal DepositPercent { get; set; } = 30m;
+    public decimal NoShowPenaltyPercent { get; set; } = 100m;
+    public decimal CancellationPenaltyAmount { get; set; }
+    public decimal NoShowPenaltyAmount { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
     public Room? Room { get; set; }
@@ -66,5 +73,6 @@ public class Booking
     public ApplicationUser? RefundProcessedByUser { get; set; }
     public ICollection<BookingAddOn> AddOns { get; set; } = new List<BookingAddOn>();
     public ICollection<ReservationRoom> ReservationRooms { get; set; } = new List<ReservationRoom>();
+    public ICollection<BookingAmendment> Amendments { get; set; } = new List<BookingAmendment>();
     public Folio? Folio { get; set; }
 }

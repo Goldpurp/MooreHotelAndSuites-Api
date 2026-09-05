@@ -33,6 +33,7 @@ public class BookingService : IBookingService
     private readonly ILogger<BookingService> _logger;
     private readonly IPricingService _pricingService;
     private readonly IFolioService _folioService;
+    private readonly IHousekeepingService? _housekeepingService;
 
 
     public BookingService(
@@ -49,7 +50,8 @@ public class BookingService : IBookingService
         IConfiguration config,
         ILogger<BookingService> logger,
         IPricingService pricingService,
-        IFolioService folioService)
+        IFolioService folioService,
+        IHousekeepingService? housekeepingService = null)
 
     {
         _bookingRepo = bookingRepo;
@@ -66,6 +68,7 @@ public class BookingService : IBookingService
         _logger = logger;
         _pricingService = pricingService;
         _folioService = folioService;
+        _housekeepingService = housekeepingService;
     }
 
     public async Task RequestBookingEmailVerificationAsync(
@@ -234,7 +237,7 @@ public class BookingService : IBookingService
             throw new BadRequestException("A single reservation cannot exceed 90 nights.");
         if (checkInDate > _hotelTime.Today.AddYears(2))
             throw new BadRequestException("Reservations cannot be created more than two years in advance.");
-        if (room is not null && (!room.IsOnline || room.Status == RoomStatus.Maintenance))
+        if (room is not null && (!room.IsOnline || room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder))
             throw new BadRequestException("This room is currently unavailable.");
         var requestedOccupancy = checked(request.AdultCount + request.ChildCount);
         var maximumOccupancy = checked(roomType.MaxOccupancy * request.RoomQuantity);
@@ -287,10 +290,18 @@ public class BookingService : IBookingService
             {
                 Id = $"GS-{Guid.NewGuid():N}"[..19].ToUpperInvariant(),
                 Email = request.GuestEmail.Trim().ToLowerInvariant(),
+                NormalizedEmail = normalizedEmail,
                 FirstName = request.GuestFirstName.Trim(),
                 LastName = request.GuestLastName.Trim(),
-                Phone = request.GuestPhone.Trim()
+                Phone = request.GuestPhone.Trim(),
+                NormalizedPhone = NormalizePhone(request.GuestPhone),
+                EmailVerifiedAtUtc = emailVerification?.VerifiedAtUtc
             };
+        }
+        else if (emailVerification is not null && !guest.EmailVerifiedAtUtc.HasValue)
+        {
+            guest.EmailVerifiedAtUtc = emailVerification.VerifiedAtUtc;
+            await _guestRepo.UpdateAsync(guest);
         }
 
         var nights = Math.Max(1, checkOutDate.DayNumber - checkInDate.DayNumber);
@@ -344,6 +355,15 @@ public class BookingService : IBookingService
                 ? request.BookingTermsVersion
                 : null,
             PoliciesAcceptedAtUtc = policiesAcceptedAtUtc,
+            ReservationPolicyVersion = _config["ReservationPolicies:Version"] ?? "2026-09",
+            FreeCancellationHours = Math.Clamp(
+                _config.GetValue("ReservationPolicies:FreeCancellationHours", 24), 0, 720),
+            CancellationPenaltyPercent = Math.Clamp(
+                _config.GetValue("ReservationPolicies:CancellationPenaltyPercent", 50m), 0m, 100m),
+            DepositPercent = Math.Clamp(
+                _config.GetValue("ReservationPolicies:DepositPercent", 30m), 0m, 100m),
+            NoShowPenaltyPercent = Math.Clamp(
+                _config.GetValue("ReservationPolicies:NoShowPenaltyPercent", 100m), 0m, 100m),
             CreatedAt = guestAccessIssuedAtUtc
         };
         for (var sequence = 1; sequence <= booking.RoomQuantity; sequence++)
@@ -630,9 +650,11 @@ public class BookingService : IBookingService
                     "Settle the outstanding folio balance or guest credit before checkout.");
             foreach (var assignedRoom in assignedRooms)
             {
-                assignedRoom.Status = RoomStatus.Cleaning;
+                assignedRoom.Status = RoomStatus.Dirty;
                 await _roomRepo.UpdateAsync(assignedRoom);
             }
+            if (_housekeepingService is not null)
+                await _housekeepingService.CreateCheckoutTasksAsync(booking, userId);
             booking.Folio.Status = FolioStatus.Closed;
             booking.Folio.ClosedAtUtc = DateTime.UtcNow;
             booking.Folio.ClosedByUserId = userId;
@@ -650,6 +672,8 @@ public class BookingService : IBookingService
                 assignedRoom.Status = RoomStatus.Available;
                 await _roomRepo.UpdateAsync(assignedRoom);
             }
+            await _folioService.ApplyNoShowPolicyAsync(
+                booking, "Reservation marked as a no-show.", userId);
         }
 
 
@@ -1222,8 +1246,27 @@ public class BookingService : IBookingService
                     item.AssignedByUserId))
                 .ToArray(),
             Folio: b.Folio is null ? null : MapFolioSummary(b.Folio),
-            RefundApprovedAmount: b.RefundApprovedAmount);
+            RefundApprovedAmount: b.RefundApprovedAmount,
+            ReservationPolicy: MapReservationPolicy(b));
     }
+
+    private static string NormalizePhone(string value)
+    {
+        var digits = new string(value.Where(char.IsDigit).ToArray());
+        return value.TrimStart().StartsWith('+') && digits.Length > 0 ? $"+{digits}" : digits;
+    }
+
+    private static ReservationPolicySnapshotDto MapReservationPolicy(Booking booking) => new(
+        booking.ReservationPolicyVersion,
+        booking.FreeCancellationHours,
+        booking.CancellationPenaltyPercent,
+        booking.DepositPercent,
+        booking.NoShowPenaltyPercent,
+        FolioAccounting.Money(
+            (booking.RoomSubtotal - booking.DiscountAmount + booking.TaxAmount + booking.FeeAmount) *
+            booking.DepositPercent / 100m),
+        booking.CancellationPenaltyAmount,
+        booking.NoShowPenaltyAmount);
 
     private static FolioSummaryDto MapFolioSummary(Folio folio)
     {

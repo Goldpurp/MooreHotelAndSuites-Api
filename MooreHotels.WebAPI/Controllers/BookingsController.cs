@@ -484,7 +484,8 @@ public class BookingsController : ControllerBase
         booking.RoomTypeName,
         booking.RoomQuantity,
         booking.Rooms,
-        booking.Folio);
+        booking.Folio,
+        booking.ReservationPolicy);
 
 
 

@@ -54,4 +54,5 @@ public record BookingDto(
     int RoomQuantity = 1,
     IReadOnlyList<ReservationRoomDto>? Rooms = null,
     FolioSummaryDto? Folio = null,
-    decimal? RefundApprovedAmount = null);
+    decimal? RefundApprovedAmount = null,
+    ReservationPolicySnapshotDto? ReservationPolicy = null);

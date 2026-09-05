@@ -153,7 +153,8 @@ public class RoomService : IRoomService
             Amenities = NormalizeAmenities(request.Amenities),
             Images = new List<RoomImage>(),
             Status = request.Status,
-            IsOnline = request.Status != RoomStatus.Maintenance && (request.IsOnline ?? true),
+            IsOnline = request.Status is not (RoomStatus.Maintenance or RoomStatus.OutOfOrder) &&
+                       (request.IsOnline ?? true),
             CreatedAt = DateTime.UtcNow
         };
 
@@ -186,9 +187,9 @@ public class RoomService : IRoomService
         if (request.Floor != null) room.Floor = request.Floor.Value;
         if (request.Status != null)
         {
-            var wasInMaintenance = room.Status == RoomStatus.Maintenance;
+            var wasInMaintenance = room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder;
             room.Status = request.Status.Value;
-            if (room.Status == RoomStatus.Maintenance)
+            if (room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder)
             {
                 room.IsOnline = false;
             }
@@ -205,7 +206,8 @@ public class RoomService : IRoomService
         else if (request.IsOnline.HasValue)
         {
             // A room under maintenance must never be published accidentally.
-            room.IsOnline = room.Status != RoomStatus.Maintenance && request.IsOnline.Value;
+            room.IsOnline = room.Status is not (RoomStatus.Maintenance or RoomStatus.OutOfOrder) &&
+                            request.IsOnline.Value;
         }
         if (request.PricePerNight != null) room.PricePerNight = request.PricePerNight.Value;
         if (request.Capacity != null) room.Capacity = request.Capacity.Value;

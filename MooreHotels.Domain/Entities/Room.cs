@@ -21,4 +21,6 @@ public class Room
     public ICollection<RoomImage> Images { get; set; } = new List<RoomImage>();
     public RoomType? RoomType { get; set; }
     public ICollection<ReservationRoom> Assignments { get; set; } = new List<ReservationRoom>();
+    public ICollection<HousekeepingTask> HousekeepingTasks { get; set; } = new List<HousekeepingTask>();
+    public ICollection<MaintenanceWorkOrder> MaintenanceWorkOrders { get; set; } = new List<MaintenanceWorkOrder>();
 }

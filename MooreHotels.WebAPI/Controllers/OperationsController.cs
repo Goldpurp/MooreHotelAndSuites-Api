@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -16,15 +17,18 @@ public class OperationsController : ControllerBase
     private readonly IOperationService _operationService;
     private readonly IBookingRepository _bookingRepo;
     private readonly MooreHotelsDbContext _dbContext;
+    private readonly IOperationalReportingService _reporting;
 
     public OperationsController(
         IOperationService operationService,
         IBookingRepository bookingRepo,
-        MooreHotelsDbContext dbContext)
+        MooreHotelsDbContext dbContext,
+        IOperationalReportingService reporting)
     {
         _operationService = operationService;
         _bookingRepo = bookingRepo;
         _dbContext = dbContext;
+        _reporting = reporting;
     }
 
     [HttpGet("ledger")]
@@ -71,5 +75,32 @@ public class OperationsController : ControllerBase
             EmailDeliveryHealth = unhandledFailures == 0 ? "Operational" : "AttentionRequired",
             ExhaustedEmailCount = unhandledFailures
         });
+    }
+
+    [HttpGet("board")]
+    public async Task<IActionResult> GetBoard([FromQuery] DateOnly date, CancellationToken ct) =>
+        Ok(await _reporting.GetBoardAsync(date, ct));
+
+    [HttpGet("calendar")]
+    public async Task<IActionResult> GetCalendar(
+        [FromQuery] DateOnly fromDate, [FromQuery] DateOnly toDate, CancellationToken ct) =>
+        Ok(await _reporting.GetCalendarAsync(fromDate, toDate, ct));
+
+    [HttpGet("reports/operational")]
+    public async Task<IActionResult> GetOperationalReport(
+        [FromQuery] DateOnly fromDate, [FromQuery] DateOnly toDate, CancellationToken ct) =>
+        Ok(await _reporting.GetReportAsync(fromDate, toDate, ct));
+
+    [HttpGet("night-audits")]
+    public async Task<IActionResult> GetNightAudits(CancellationToken ct) =>
+        Ok(await _reporting.GetNightAuditsAsync(ct));
+
+    [HttpPost("night-audits/{businessDate}")]
+    [Authorize(Policy = HotelAuthorization.NightAuditClose)]
+    public async Task<IActionResult> CloseNightAudit(DateOnly businessDate, CancellationToken ct)
+    {
+        if (!Guid.TryParse(User.FindFirstValue(System.Security.Claims.ClaimTypes.NameIdentifier), out var actorId))
+            throw new UnauthorizedAccessException("The authenticated actor is invalid.");
+        return Ok(await _reporting.CloseNightAuditAsync(businessDate, actorId, ct));
     }
 }

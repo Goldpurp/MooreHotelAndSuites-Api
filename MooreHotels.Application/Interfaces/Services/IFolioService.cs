@@ -12,5 +12,6 @@ public interface IFolioService
     Task<FolioDto> VoidEntryAsync(string bookingCode, Guid entryId, VoidFolioEntryRequest request, Guid actorId, CancellationToken cancellationToken = default);
     Task<FolioDto> CloseAsync(string bookingCode, Guid actorId, CancellationToken cancellationToken = default);
     Task ApplyCancellationCreditAsync(Booking booking, string reason, Guid actorId, CancellationToken cancellationToken = default);
+    Task ApplyNoShowPolicyAsync(Booking booking, string reason, Guid actorId, CancellationToken cancellationToken = default);
     Task ApplyRefundAsync(Booking booking, decimal amount, string reference, string channel, string? notes, Guid actorId, CancellationToken cancellationToken = default);
 }

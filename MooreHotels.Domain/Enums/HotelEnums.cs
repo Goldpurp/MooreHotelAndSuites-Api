@@ -23,7 +23,11 @@ public enum RoomStatus
     Occupied,
     Cleaning,
     Maintenance,
-    Reserved
+    Reserved,
+    Dirty,
+    Clean,
+    Inspected,
+    OutOfOrder
 }
 
 public enum BookingStatus
@@ -104,4 +108,53 @@ public enum FolioEntryDirection
 {
     Debit,
     Credit
+}
+
+public enum HousekeepingTaskType
+{
+    CheckoutCleaning,
+    StayoverService,
+    Inspection,
+    MaintenanceRecovery,
+    RoomMoveCleaning
+}
+
+public enum OperationalTaskStatus
+{
+    Pending,
+    Assigned,
+    InProgress,
+    Completed,
+    Cancelled
+}
+
+public enum WorkPriority
+{
+    Low,
+    Normal,
+    High,
+    Urgent
+}
+
+public enum MaintenanceWorkOrderStatus
+{
+    Open,
+    Assigned,
+    InProgress,
+    Resolved,
+    Cancelled
+}
+
+public enum ChannelEventDirection
+{
+    Inbound,
+    Outbound
+}
+
+public enum ChannelEventStatus
+{
+    Pending,
+    Processed,
+    Failed,
+    DeadLetter
 }

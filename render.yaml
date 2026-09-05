@@ -107,6 +107,16 @@ services:
         value: 15
       - key: Pricing__RequireQuoteForBooking
         value: true
+      - key: ReservationPolicies__Version
+        value: 2026-09
+      - key: ReservationPolicies__FreeCancellationHours
+        value: 24
+      - key: ReservationPolicies__CancellationPenaltyPercent
+        value: 50
+      - key: ReservationPolicies__DepositPercent
+        value: 30
+      - key: ReservationPolicies__NoShowPenaltyPercent
+        value: 100
       # These values are declarations backed by provider/dashboard evidence.
       # Do not set them until the linked acceptance action has really passed.
       - key: OperationalReadiness__ManagedBackupsEnabled

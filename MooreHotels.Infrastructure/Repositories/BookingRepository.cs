@@ -320,7 +320,8 @@ public class BookingRepository : IBookingRepository
 
             var physicalRoomIds = await _db.Rooms
                 .Where(room => room.RoomTypeId == booking.RoomTypeId &&
-                               room.IsOnline && room.Status != RoomStatus.Maintenance)
+                               room.IsOnline && room.Status != RoomStatus.Maintenance &&
+                               room.Status != RoomStatus.OutOfOrder)
                 .Select(room => room.Id)
                 .ToArrayAsync(cancellationToken);
             var reservedStays = await _db.ReservationRooms

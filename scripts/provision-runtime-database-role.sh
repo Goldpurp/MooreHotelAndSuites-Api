@@ -53,7 +53,10 @@ WHERE to_regclass('public.audit_logs') IS NOT NULL
 SELECT format('REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.%I FROM %I', table_name, :'runtime_role')
 FROM (VALUES
     ('booking_code_allocations'),
+    ('booking_amendments'),
     ('folio_entries'),
+    ('guest_merges'),
+    ('night_audits'),
     ('visit_records'),
     ('notifications')
 ) AS append_only(table_name)
@@ -62,7 +65,10 @@ WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
 SELECT format('GRANT SELECT, INSERT ON TABLE public.%I TO %I', table_name, :'runtime_role')
 FROM (VALUES
     ('booking_code_allocations'),
+    ('booking_amendments'),
     ('folio_entries'),
+    ('guest_merges'),
+    ('night_audits'),
     ('visit_records'),
     ('notifications')
 ) AS append_only(table_name)
@@ -74,12 +80,24 @@ FROM (VALUES
     ('guests'),
     ('monnify_transactions'),
     ('folios'),
-    ('reservation_rooms'),
     ('room_inventory_closures'),
     ('room_types'),
-    ('booking_addons')
+    ('booking_addons'),
+    ('guest_notes'),
+    ('housekeeping_tasks'),
+    ('maintenance_work_orders'),
+    ('distribution_channels'),
+    ('channel_events'),
+    ('channel_reservation_mappings')
 ) AS retained_records(table_name)
 WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
+\gexec
+
+-- Reservation amendments must be able to atomically reduce or replace the
+-- per-booking unit rows. Deletes remain constrained by foreign keys, booking
+-- locks, service authorization and the append-only amendment/audit records.
+SELECT format('GRANT DELETE ON TABLE public.reservation_rooms TO %I', :'runtime_role')
+WHERE to_regclass('public.reservation_rooms') IS NOT NULL
 \gexec
 
 SELECT has_schema_privilege(:'runtime_role', 'public', 'CREATE') AS runtime_has_schema_create

@@ -232,6 +232,31 @@ Do not deploy the dashboard or guest website until all checks pass:
   folio. Split payments, later add-on charges, credits, immutable voids, partial
   refunds and zero-balance checkout have been acceptance-tested. Reconciliation
   uses folio entries, not a mutable booking total.
+- The configured reservation-policy version and percentages match the approved
+  guest terms. Test a free cancellation, a late cancellation, a no-show and a
+  deposit confirmation; each booking must retain its original policy snapshot.
+- Amend a future reservation with the booking-specific amendment-quote route
+  and verify the original reservation is excluded from quote availability,
+  inventory is locked, old pricing is voided, replacement pricing is posted,
+  payment/credit state is recalculated and the amendment history cannot be
+  updated or deleted.
+- Checkout creates one dirty-room cleaning task per assigned room. Complete
+  cleaning and inspection, verify only a passed inspection returns the room to
+  sale, and verify a maintenance work order blocks its exact stay dates. Before
+  launch, convert every legacy room still marked `Maintenance` into a dated work
+  order/closure so historical availability has an attributable source record.
+- Reconcile the hotel-local operational report to folio payments/refunds and
+  occupied/available room nights. Close a test business date twice and verify
+  that the same immutable night-audit snapshot is returned.
+- Verify Reception can use the board/calendar without gaining housekeeping,
+  maintenance, sensitive-note, merge, night-close or channel-admin privileges.
+- Test duplicate detection and a controlled guest merge using documented
+  evidence; confirm stays move to the primary profile and retention redacts
+  preferences and staff-note content when the guest becomes eligible.
+- Keep all distribution channels disabled until a named provider adapter has
+  passed signature, replay/idempotency, inbound reservation, outbound inventory,
+  retry/dead-letter and reconciliation acceptance. The generic authenticated
+  event ledger is not itself a public OTA webhook.
 - Registration and booking require the current policy versions, client data
   export works, privacy requests are audited through closure, and a rehearsed
   retention sweep anonymizes only expired unlinked guest records.

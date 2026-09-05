@@ -154,8 +154,21 @@ public class ProfileService : IProfileService
                         guest.LastName = names.Length > 1 ? names[1] : "";
                     }
 
-                    if (emailChanged) guest.Email = user.Email!;
-                    if (request.Phone != null) guest.Phone = request.Phone.Trim();
+                    if (emailChanged)
+                    {
+                        guest.Email = user.Email!;
+                        guest.NormalizedEmail = user.Email!.Trim().ToLowerInvariant();
+                        guest.EmailVerifiedAtUtc = user.EmailConfirmed ? DateTime.UtcNow : null;
+                    }
+                    if (request.Phone != null)
+                    {
+                        guest.Phone = request.Phone.Trim();
+                        var digits = new string(guest.Phone.Where(char.IsDigit).ToArray());
+                        guest.NormalizedPhone = guest.Phone.TrimStart().StartsWith('+') && digits.Length > 0
+                            ? $"+{digits}"
+                            : digits;
+                        guest.PhoneVerifiedAtUtc = null;
+                    }
                     if (request.AvatarUrl != null) guest.AvatarUrl = request.AvatarUrl;
 
                     await _guestRepo.UpdateAsync(guest);
@@ -261,7 +274,18 @@ public class ProfileService : IProfileService
                         item.AssignedRoomId, item.AssignedRoom?.RoomNumber,
                         item.AssignedAtUtc, item.AssignedByUserId))
                     .ToArray(),
-                Folio: b.Folio is null ? null : ToFolioSummary(b.Folio)));
+                Folio: b.Folio is null ? null : ToFolioSummary(b.Folio),
+                ReservationPolicy: new ReservationPolicySnapshotDto(
+                    b.ReservationPolicyVersion,
+                    b.FreeCancellationHours,
+                    b.CancellationPenaltyPercent,
+                    b.DepositPercent,
+                    b.NoShowPenaltyPercent,
+                    FolioAccounting.Money(
+                        (b.RoomSubtotal - b.DiscountAmount + b.TaxAmount + b.FeeAmount) *
+                        b.DepositPercent / 100m),
+                    b.CancellationPenaltyAmount,
+                    b.NoShowPenaltyAmount)));
     }
 
     private static FolioSummaryDto ToFolioSummary(Folio folio)

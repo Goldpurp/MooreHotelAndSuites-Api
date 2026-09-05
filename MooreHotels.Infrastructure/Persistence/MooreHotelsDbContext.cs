@@ -40,6 +40,15 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<BookingQuoteLine> BookingQuoteLines => Set<BookingQuoteLine>();
     public DbSet<Folio> Folios => Set<Folio>();
     public DbSet<FolioEntry> FolioEntries => Set<FolioEntry>();
+    public DbSet<BookingAmendment> BookingAmendments => Set<BookingAmendment>();
+    public DbSet<HousekeepingTask> HousekeepingTasks => Set<HousekeepingTask>();
+    public DbSet<MaintenanceWorkOrder> MaintenanceWorkOrders => Set<MaintenanceWorkOrder>();
+    public DbSet<NightAudit> NightAudits => Set<NightAudit>();
+    public DbSet<GuestNote> GuestNotes => Set<GuestNote>();
+    public DbSet<GuestMerge> GuestMerges => Set<GuestMerge>();
+    public DbSet<DistributionChannel> DistributionChannels => Set<DistributionChannel>();
+    public DbSet<ChannelEvent> ChannelEvents => Set<ChannelEvent>();
+    public DbSet<ChannelReservationMapping> ChannelReservationMappings => Set<ChannelReservationMapping>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -62,6 +71,16 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
         {
             throw new InvalidOperationException(
                 "Folio entries are immutable. Post a void or reversing entry instead.");
+        }
+        if (ChangeTracker.Entries<BookingAmendment>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted) ||
+            ChangeTracker.Entries<GuestMerge>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted) ||
+            ChangeTracker.Entries<NightAudit>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException(
+                "Operational history is append-only and cannot be edited or deleted.");
         }
     }
 
@@ -204,17 +223,32 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
 
         builder.Entity<Guest>(entity =>
         {
-            entity.ToTable("guests");
+            entity.ToTable("guests", table => table.HasCheckConstraint(
+                "CK_guests_merge_state",
+                "(\"MergedIntoGuestId\" IS NULL AND \"MergedAtUtc\" IS NULL AND \"MergedByUserId\" IS NULL) OR (\"MergedIntoGuestId\" IS NOT NULL AND \"MergedAtUtc\" IS NOT NULL AND \"MergedByUserId\" IS NOT NULL AND \"MergedIntoGuestId\" <> \"Id\")"));
             entity.HasKey(guest => guest.Id);
             entity.Property(guest => guest.Id).HasMaxLength(20);
             entity.Property(guest => guest.FirstName).HasMaxLength(80).IsRequired();
             entity.Property(guest => guest.LastName).HasMaxLength(80).IsRequired();
             entity.Property(guest => guest.Email).HasMaxLength(254).IsRequired();
             entity.Property(guest => guest.Phone).HasMaxLength(30).IsRequired();
+            entity.Property(guest => guest.NormalizedEmail).HasMaxLength(254).IsRequired();
+            entity.Property(guest => guest.NormalizedPhone).HasMaxLength(30).IsRequired();
+            entity.Property(guest => guest.PreferencesJson).HasColumnType("jsonb");
             entity.Property(guest => guest.AvatarUrl).HasMaxLength(2048);
             entity.HasIndex(guest => guest.Email);
             entity.HasIndex(guest => new { guest.Email, guest.FirstName, guest.LastName });
+            entity.HasIndex(guest => new { guest.NormalizedEmail, guest.MergedIntoGuestId });
+            entity.HasIndex(guest => new { guest.NormalizedPhone, guest.MergedIntoGuestId });
             entity.HasIndex(guest => guest.AnonymizedAtUtc);
+            entity.HasOne(guest => guest.MergedIntoGuest)
+                .WithMany()
+                .HasForeignKey(guest => guest.MergedIntoGuestId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(guest => guest.MergedByUser)
+                .WithMany()
+                .HasForeignKey(guest => guest.MergedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         builder.Entity<Booking>(entity =>
@@ -242,6 +276,9 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 table.HasCheckConstraint(
                     "CK_bookings_currency",
                     "\"Currency\" ~ '^[A-Z]{3}$'");
+                table.HasCheckConstraint(
+                    "CK_bookings_reservation_policy",
+                    "\"FreeCancellationHours\" BETWEEN 0 AND 720 AND \"CancellationPenaltyPercent\" BETWEEN 0 AND 100 AND \"DepositPercent\" BETWEEN 0 AND 100 AND \"NoShowPenaltyPercent\" BETWEEN 0 AND 100 AND \"CancellationPenaltyAmount\" >= 0 AND \"NoShowPenaltyAmount\" >= 0");
             });
             entity.HasIndex(booking => booking.BookingCode).IsUnique();
             entity.HasIndex(booking => booking.TransactionReference).IsUnique()
@@ -286,6 +323,12 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(booking => booking.TaxAmount).HasPrecision(18, 2);
             entity.Property(booking => booking.FeeAmount).HasPrecision(18, 2);
             entity.Property(booking => booking.Amount).HasPrecision(18, 2);
+            entity.Property(booking => booking.ReservationPolicyVersion).HasMaxLength(80).IsRequired();
+            entity.Property(booking => booking.CancellationPenaltyPercent).HasPrecision(5, 2);
+            entity.Property(booking => booking.DepositPercent).HasPrecision(5, 2);
+            entity.Property(booking => booking.NoShowPenaltyPercent).HasPrecision(5, 2);
+            entity.Property(booking => booking.CancellationPenaltyAmount).HasPrecision(18, 2);
+            entity.Property(booking => booking.NoShowPenaltyAmount).HasPrecision(18, 2);
             entity.Property(booking => booking.StatusHistoryJson).HasColumnType("jsonb");
             entity.Property(booking => booking.GuestAccessTokenHash).HasMaxLength(44);
             entity.Property(booking => booking.PrivacyPolicyVersion).HasMaxLength(80);
@@ -625,6 +668,226 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .WithMany()
                 .HasForeignKey(entry => entry.PostedByUserId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        builder.Entity<BookingAmendment>(entity =>
+        {
+            entity.ToTable("booking_amendments", table =>
+            {
+                table.HasCheckConstraint("CK_booking_amendments_dates", "\"CheckOut\" > \"CheckIn\"");
+                table.HasCheckConstraint("CK_booking_amendments_occupancy", "\"AdultCount\" >= 1 AND \"ChildCount\" >= 0");
+                table.HasCheckConstraint("CK_booking_amendments_room_quantity", "\"RoomQuantity\" BETWEEN 1 AND 10");
+                table.HasCheckConstraint("CK_booking_amendments_amounts", "\"PreviousAmount\" >= 0 AND \"NewAmount\" >= 0 AND \"PriceDifference\" = \"NewAmount\" - \"PreviousAmount\"");
+            });
+            entity.HasKey(amendment => amendment.Id);
+            entity.Property(amendment => amendment.PreviousStateJson).HasColumnType("jsonb");
+            entity.Property(amendment => amendment.NewStateJson).HasColumnType("jsonb");
+            entity.Property(amendment => amendment.PreviousAmount).HasPrecision(18, 2);
+            entity.Property(amendment => amendment.NewAmount).HasPrecision(18, 2);
+            entity.Property(amendment => amendment.PriceDifference).HasPrecision(18, 2);
+            entity.Property(amendment => amendment.Reason).HasMaxLength(500).IsRequired();
+            entity.HasIndex(amendment => new { amendment.BookingId, amendment.AmendedAtUtc });
+            entity.HasOne(amendment => amendment.Booking)
+                .WithMany(booking => booking.Amendments)
+                .HasForeignKey(amendment => amendment.BookingId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(amendment => amendment.AmendedByUser)
+                .WithMany()
+                .HasForeignKey(amendment => amendment.AmendedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<HousekeepingTask>(entity =>
+        {
+            entity.ToTable("housekeeping_tasks", table =>
+            {
+                table.HasCheckConstraint("CK_housekeeping_tasks_timeline", "\"StartedAtUtc\" IS NULL OR \"AssignedAtUtc\" IS NOT NULL");
+                table.HasCheckConstraint("CK_housekeeping_tasks_completion", "(\"Status\" = 'Completed' AND \"CompletedAtUtc\" IS NOT NULL AND \"CompletedByUserId\" IS NOT NULL) OR (\"Status\" <> 'Completed' AND \"CompletedAtUtc\" IS NULL AND \"CompletedByUserId\" IS NULL)");
+                table.HasCheckConstraint("CK_housekeeping_tasks_inspection", "\"InspectionPassed\" IS NULL OR (\"Type\" = 'Inspection' AND \"Status\" = 'Completed')");
+            });
+            entity.HasKey(task => task.Id);
+            entity.Property(task => task.Type).HasConversion<string>().HasMaxLength(40);
+            entity.Property(task => task.Status).HasConversion<string>().HasMaxLength(30);
+            entity.Property(task => task.Priority).HasConversion<string>().HasMaxLength(20);
+            entity.Property(task => task.Notes).HasMaxLength(1000).IsRequired();
+            entity.HasIndex(task => new { task.Status, task.Priority, task.CreatedAtUtc });
+            entity.HasIndex(task => new { task.RoomId, task.Status });
+            entity.HasOne(task => task.Room)
+                .WithMany(room => room.HousekeepingTasks)
+                .HasForeignKey(task => task.RoomId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(task => task.Booking)
+                .WithMany()
+                .HasForeignKey(task => task.BookingId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(task => task.CreatedByUser)
+                .WithMany()
+                .HasForeignKey(task => task.CreatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(task => task.AssignedToUser)
+                .WithMany()
+                .HasForeignKey(task => task.AssignedToUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(task => task.CompletedByUser)
+                .WithMany()
+                .HasForeignKey(task => task.CompletedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<MaintenanceWorkOrder>(entity =>
+        {
+            entity.ToTable("maintenance_work_orders", table =>
+            {
+                table.HasCheckConstraint("CK_maintenance_work_orders_dates", "\"OutOfOrderUntil\" > \"OutOfOrderFrom\"");
+                table.HasCheckConstraint("CK_maintenance_work_orders_resolution", "(\"Status\" IN ('Resolved','Cancelled') AND \"ResolvedAtUtc\" IS NOT NULL AND \"ResolvedByUserId\" IS NOT NULL) OR (\"Status\" NOT IN ('Resolved','Cancelled') AND \"ResolvedAtUtc\" IS NULL AND \"ResolvedByUserId\" IS NULL)");
+            });
+            entity.HasKey(order => order.Id);
+            entity.Property(order => order.Title).HasMaxLength(160).IsRequired();
+            entity.Property(order => order.Description).HasMaxLength(2000).IsRequired();
+            entity.Property(order => order.Priority).HasConversion<string>().HasMaxLength(20);
+            entity.Property(order => order.Status).HasConversion<string>().HasMaxLength(30);
+            entity.Property(order => order.ResolutionNotes).HasMaxLength(1000);
+            entity.HasIndex(order => new { order.Status, order.Priority, order.CreatedAtUtc });
+            entity.HasIndex(order => new { order.RoomId, order.Status });
+            entity.HasIndex(order => order.InventoryClosureId).IsUnique()
+                .HasFilter("\"InventoryClosureId\" IS NOT NULL");
+            entity.HasOne(order => order.Room)
+                .WithMany(room => room.MaintenanceWorkOrders)
+                .HasForeignKey(order => order.RoomId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(order => order.InventoryClosure)
+                .WithOne()
+                .HasForeignKey<MaintenanceWorkOrder>(order => order.InventoryClosureId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(order => order.CreatedByUser)
+                .WithMany()
+                .HasForeignKey(order => order.CreatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(order => order.AssignedToUser)
+                .WithMany()
+                .HasForeignKey(order => order.AssignedToUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(order => order.ResolvedByUser)
+                .WithMany()
+                .HasForeignKey(order => order.ResolvedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<NightAudit>(entity =>
+        {
+            entity.ToTable("night_audits", table => table.HasCheckConstraint(
+                "CK_night_audits_values",
+                "\"AvailableRoomNights\" >= 0 AND \"OccupiedRoomNights\" >= 0 AND \"RoomRevenue\" >= 0 AND \"Payments\" >= 0 AND \"Refunds\" >= 0 AND \"Receivables\" >= 0 AND \"GuestCredits\" >= 0 AND \"Adr\" >= 0 AND \"RevPar\" >= 0"));
+            entity.HasKey(audit => audit.Id);
+            entity.Property(audit => audit.RoomRevenue).HasPrecision(18, 2);
+            entity.Property(audit => audit.Payments).HasPrecision(18, 2);
+            entity.Property(audit => audit.Refunds).HasPrecision(18, 2);
+            entity.Property(audit => audit.Receivables).HasPrecision(18, 2);
+            entity.Property(audit => audit.GuestCredits).HasPrecision(18, 2);
+            entity.Property(audit => audit.Adr).HasPrecision(18, 2);
+            entity.Property(audit => audit.RevPar).HasPrecision(18, 2);
+            entity.Property(audit => audit.SnapshotJson).HasColumnType("jsonb");
+            entity.HasIndex(audit => audit.BusinessDate).IsUnique();
+            entity.HasOne(audit => audit.ClosedByUser)
+                .WithMany()
+                .HasForeignKey(audit => audit.ClosedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<GuestNote>(entity =>
+        {
+            entity.ToTable("guest_notes");
+            entity.HasKey(note => note.Id);
+            entity.Property(note => note.GuestId).HasMaxLength(20);
+            entity.Property(note => note.Body).HasMaxLength(1000).IsRequired();
+            entity.HasIndex(note => new { note.GuestId, note.CreatedAtUtc });
+            entity.HasOne(note => note.Guest)
+                .WithMany(guest => guest.Notes)
+                .HasForeignKey(note => note.GuestId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(note => note.CreatedByUser)
+                .WithMany()
+                .HasForeignKey(note => note.CreatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<GuestMerge>(entity =>
+        {
+            entity.ToTable("guest_merges", table => table.HasCheckConstraint(
+                "CK_guest_merges_distinct_guests",
+                "\"PrimaryGuestId\" <> \"DuplicateGuestId\""));
+            entity.HasKey(merge => merge.Id);
+            entity.Property(merge => merge.PrimaryGuestId).HasMaxLength(20);
+            entity.Property(merge => merge.DuplicateGuestId).HasMaxLength(20);
+            entity.Property(merge => merge.EvidenceType).HasMaxLength(50).IsRequired();
+            entity.Property(merge => merge.Reason).HasMaxLength(500).IsRequired();
+            entity.HasIndex(merge => merge.DuplicateGuestId).IsUnique();
+            entity.HasIndex(merge => new { merge.PrimaryGuestId, merge.MergedAtUtc });
+            entity.HasOne(merge => merge.PrimaryGuest)
+                .WithMany()
+                .HasForeignKey(merge => merge.PrimaryGuestId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(merge => merge.DuplicateGuest)
+                .WithMany()
+                .HasForeignKey(merge => merge.DuplicateGuestId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(merge => merge.MergedByUser)
+                .WithMany()
+                .HasForeignKey(merge => merge.MergedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<DistributionChannel>(entity =>
+        {
+            entity.ToTable("distribution_channels");
+            entity.HasKey(channel => channel.Id);
+            entity.Property(channel => channel.Code).HasMaxLength(40).IsRequired();
+            entity.Property(channel => channel.Name).HasMaxLength(120).IsRequired();
+            entity.HasIndex(channel => channel.Code).IsUnique();
+        });
+
+        builder.Entity<ChannelEvent>(entity =>
+        {
+            entity.ToTable("channel_events", table =>
+            {
+                table.HasCheckConstraint("CK_channel_events_attempt_count", "\"AttemptCount\" >= 0");
+                table.HasCheckConstraint("CK_channel_events_state", "(\"Status\" = 'Pending' AND \"ProcessedAtUtc\" IS NULL AND \"LastError\" IS NULL) OR (\"Status\" = 'Processed' AND \"ProcessedAtUtc\" IS NOT NULL AND \"LastError\" IS NULL) OR (\"Status\" IN ('Failed','DeadLetter') AND \"ProcessedAtUtc\" IS NULL AND \"LastError\" IS NOT NULL)");
+            });
+            entity.HasKey(channelEvent => channelEvent.Id);
+            entity.Property(channelEvent => channelEvent.Direction).HasConversion<string>().HasMaxLength(20);
+            entity.Property(channelEvent => channelEvent.Status).HasConversion<string>().HasMaxLength(20);
+            entity.Property(channelEvent => channelEvent.EventType).HasMaxLength(80).IsRequired();
+            entity.Property(channelEvent => channelEvent.IdempotencyKey).HasMaxLength(160).IsRequired();
+            entity.Property(channelEvent => channelEvent.ExternalReservationId).HasMaxLength(160);
+            entity.Property(channelEvent => channelEvent.PayloadJson).HasColumnType("jsonb");
+            entity.Property(channelEvent => channelEvent.LastError).HasMaxLength(1000);
+            entity.HasIndex(channelEvent => new { channelEvent.ChannelId, channelEvent.IdempotencyKey }).IsUnique();
+            entity.HasIndex(channelEvent => new { channelEvent.Status, channelEvent.Direction, channelEvent.CreatedAtUtc });
+            entity.HasOne(channelEvent => channelEvent.Channel)
+                .WithMany(channel => channel.Events)
+                .HasForeignKey(channelEvent => channelEvent.ChannelId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        builder.Entity<ChannelReservationMapping>(entity =>
+        {
+            entity.ToTable("channel_reservation_mappings");
+            entity.HasKey(mapping => mapping.Id);
+            entity.Property(mapping => mapping.ExternalReservationId).HasMaxLength(160).IsRequired();
+            entity.HasIndex(mapping => new { mapping.ChannelId, mapping.ExternalReservationId }).IsUnique();
+            entity.HasIndex(mapping => new { mapping.ChannelId, mapping.BookingId }).IsUnique();
+            entity.HasOne(mapping => mapping.Channel)
+                .WithMany()
+                .HasForeignKey(mapping => mapping.ChannelId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(mapping => mapping.Booking)
+                .WithMany()
+                .HasForeignKey(mapping => mapping.BookingId)
+                .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(mapping => mapping.LinkedByUser)
+                .WithMany()
+                .HasForeignKey(mapping => mapping.LinkedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         builder.Entity<PrivacyRequest>(entity =>

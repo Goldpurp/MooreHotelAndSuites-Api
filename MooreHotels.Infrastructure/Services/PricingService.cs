@@ -39,9 +39,31 @@ public sealed class PricingService : IPricingService
         _settings = settings.Value;
     }
 
-    public async Task<PricingQuoteDto> CreateQuoteAsync(
+    public Task<PricingQuoteDto> CreateQuoteAsync(
+        CreatePricingQuoteRequest request,
+        CancellationToken cancellationToken = default) =>
+        CreateQuoteCoreAsync(request, null, cancellationToken);
+
+    public async Task<PricingQuoteDto> CreateAmendmentQuoteAsync(
+        Guid bookingId,
         CreatePricingQuoteRequest request,
         CancellationToken cancellationToken = default)
+    {
+        var booking = await _db.Bookings.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.Id == bookingId, cancellationToken)
+            ?? throw new NotFoundException("Booking not found.");
+        if (booking.Status is not (BookingStatus.Pending or BookingStatus.Confirmed))
+            throw new BadRequestException("Only pending or confirmed reservations can be repriced.");
+        if (DateTime.UtcNow >= booking.CheckIn)
+            throw new BadRequestException("A reservation cannot be repriced after its check-in time.");
+
+        return await CreateQuoteCoreAsync(request, bookingId, cancellationToken);
+    }
+
+    private async Task<PricingQuoteDto> CreateQuoteCoreAsync(
+        CreatePricingQuoteRequest request,
+        Guid? excludedBookingId,
+        CancellationToken cancellationToken)
     {
         var checkInDate = DateOnly.FromDateTime(request.CheckIn);
         var checkOutDate = DateOnly.FromDateTime(request.CheckOut);
@@ -61,10 +83,30 @@ public sealed class PricingService : IPricingService
             room = await _db.Rooms.AsNoTracking().Include(item => item.RoomType)
                 .SingleOrDefaultAsync(item => item.Id == request.RoomId.Value, cancellationToken)
                 ?? throw new NotFoundException("Room not found.");
-            if (!room.IsOnline || room.Status == RoomStatus.Maintenance)
+            if (!room.IsOnline || room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder)
                 throw new BadRequestException("This room is currently unavailable.");
             roomType = room.RoomType
                 ?? throw new InvalidOperationException("The room has no configured room type.");
+
+            var startUtc = _hotelTime.GetCheckInUtc(request.CheckIn);
+            var endUtc = _hotelTime.GetCheckOutUtc(request.CheckOut);
+            var expirationCutoff = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
+            if (await _db.Bookings.AsNoTracking().AnyAsync(existing =>
+                    (!excludedBookingId.HasValue || existing.Id != excludedBookingId.Value) &&
+                    (existing.ReservationRooms.Any(item => item.AssignedRoomId == room.Id) ||
+                     !existing.ReservationRooms.Any() && existing.RoomId == room.Id) &&
+                    existing.Status != BookingStatus.Cancelled &&
+                    existing.Status != BookingStatus.CheckedOut &&
+                    existing.Status != BookingStatus.NoShow &&
+                    !(existing.Status == BookingStatus.Pending &&
+                      (existing.PaymentStatus == PaymentStatus.Unpaid ||
+                       existing.PaymentStatus == PaymentStatus.AwaitingVerification) &&
+                      existing.CreatedAt <= expirationCutoff) &&
+                    existing.CheckIn < endUtc && existing.CheckOut > startUtc,
+                    cancellationToken))
+            {
+                throw new BadRequestException("This room is already assigned during the requested stay.");
+            }
         }
         else
         {
@@ -73,8 +115,12 @@ public sealed class PricingService : IPricingService
                     item => item.Id == request.RoomTypeId!.Value && item.IsActive,
                     cancellationToken)
                 ?? throw new NotFoundException("Room type not found or inactive.");
-            var availability = await _inventory.GetAvailabilityAsync(
-                roomType.Id, checkInDate, checkOutDate, request.RoomQuantity, cancellationToken);
+            var availability = excludedBookingId.HasValue
+                ? await _inventory.GetAvailabilityExcludingBookingAsync(
+                    roomType.Id, checkInDate, checkOutDate, request.RoomQuantity,
+                    excludedBookingId.Value, cancellationToken)
+                : await _inventory.GetAvailabilityAsync(
+                    roomType.Id, checkInDate, checkOutDate, request.RoomQuantity, cancellationToken);
             if (!availability.Available)
                 throw new BadRequestException(
                     $"Only {availability.AvailableUnits} {roomType.Name} room(s) remain for the full stay.");

@@ -114,19 +114,40 @@ public sealed class InventoryService : IInventoryService
         return ToDto(type, count);
     }
 
-    public async Task<RoomTypeAvailabilityDto> GetAvailabilityAsync(
+    public Task<RoomTypeAvailabilityDto> GetAvailabilityAsync(
         Guid roomTypeId,
         DateOnly checkInDate,
         DateOnly checkOutDate,
         int requestedUnits,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default) =>
+        GetAvailabilityCoreAsync(
+            roomTypeId, checkInDate, checkOutDate, requestedUnits, null, cancellationToken);
+
+    public Task<RoomTypeAvailabilityDto> GetAvailabilityExcludingBookingAsync(
+        Guid roomTypeId,
+        DateOnly checkInDate,
+        DateOnly checkOutDate,
+        int requestedUnits,
+        Guid excludedBookingId,
+        CancellationToken cancellationToken = default) =>
+        GetAvailabilityCoreAsync(
+            roomTypeId, checkInDate, checkOutDate, requestedUnits, excludedBookingId, cancellationToken);
+
+    private async Task<RoomTypeAvailabilityDto> GetAvailabilityCoreAsync(
+        Guid roomTypeId,
+        DateOnly checkInDate,
+        DateOnly checkOutDate,
+        int requestedUnits,
+        Guid? excludedBookingId,
+        CancellationToken cancellationToken)
     {
         ValidateStay(checkInDate, checkOutDate, requestedUnits);
         var roomType = await _db.RoomTypes.AsNoTracking()
             .SingleOrDefaultAsync(type => type.Id == roomTypeId && type.IsActive, cancellationToken)
             ?? throw new NotFoundException("Room type not found or inactive.");
         var physicalRoomIds = await _db.Rooms.AsNoTracking()
-            .Where(room => room.RoomTypeId == roomTypeId && room.IsOnline && room.Status != RoomStatus.Maintenance)
+            .Where(room => room.RoomTypeId == roomTypeId && room.IsOnline &&
+                           room.Status != RoomStatus.Maintenance && room.Status != RoomStatus.OutOfOrder)
             .Select(room => room.Id)
             .ToArrayAsync(cancellationToken);
         var startUtc = _hotelTime.GetCheckInUtc(checkInDate.ToDateTime(TimeOnly.MinValue));
@@ -135,6 +156,7 @@ public sealed class InventoryService : IInventoryService
         var reservations = await _db.ReservationRooms.AsNoTracking()
             .Where(item =>
                 item.RoomTypeId == roomTypeId &&
+                (!excludedBookingId.HasValue || item.BookingId != excludedBookingId.Value) &&
                 item.Booking != null &&
                 item.Booking.CheckIn < endUtc &&
                 item.Booking.CheckOut > startUtc &&
@@ -278,11 +300,23 @@ public sealed class InventoryService : IInventoryService
         var closure = await _db.RoomInventoryClosures.SingleOrDefaultAsync(item => item.Id == id, cancellationToken)
                       ?? throw new NotFoundException("Inventory closure not found.");
         if (!closure.IsActive) return;
-        closure.IsActive = false;
+        var oldEndDate = closure.EndDate;
+        if (closure.StartDate > _hotelTime.Today)
+        {
+            closure.IsActive = false;
+        }
+        else
+        {
+            var releaseDate = _hotelTime.Today.AddDays(1);
+            if (releaseDate < closure.EndDate) closure.EndDate = releaseDate;
+        }
         closure.UpdatedAtUtc = DateTime.UtcNow;
-        AddAudit(actorId, "INVENTORY_CLOSURE_DEACTIVATED", "RoomInventoryClosure", closure.Id,
-            JsonSerializer.Serialize(new { IsActive = true }),
-            JsonSerializer.Serialize(new { IsActive = false, closure.UpdatedAtUtc }));
+        AddAudit(actorId,
+            closure.IsActive ? "INVENTORY_CLOSURE_ENDED" : "INVENTORY_CLOSURE_DEACTIVATED",
+            "RoomInventoryClosure",
+            closure.Id,
+            JsonSerializer.Serialize(new { IsActive = true, EndDate = oldEndDate }),
+            JsonSerializer.Serialize(new { closure.IsActive, closure.EndDate, closure.UpdatedAtUtc }));
         await _db.SaveChangesAsync(cancellationToken);
     }
 
@@ -328,7 +362,7 @@ public sealed class InventoryService : IInventoryService
                 cancellationToken);
             if (room.RoomTypeId != unit.RoomTypeId)
                 throw new BadRequestException("The physical room does not match the reserved room type.");
-            if (!room.IsOnline || room.Status == RoomStatus.Maintenance)
+            if (!room.IsOnline || room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder)
                 throw new BadRequestException("The physical room is offline or under maintenance.");
 
             var checkInDate = DateOnly.FromDateTime(booking.CheckIn);
@@ -369,7 +403,28 @@ public sealed class InventoryService : IInventoryService
                     var previousRoom = await _db.Rooms.SingleOrDefaultAsync(
                         item => item.Id == previousRoomId.Value,
                         cancellationToken);
-                    if (previousRoom is not null) previousRoom.Status = RoomStatus.Cleaning;
+                    if (previousRoom is not null)
+                    {
+                        previousRoom.Status = RoomStatus.Dirty;
+                        if (!await _db.HousekeepingTasks.AnyAsync(task =>
+                                task.RoomId == previousRoom.Id &&
+                                task.Status != OperationalTaskStatus.Completed &&
+                                task.Status != OperationalTaskStatus.Cancelled,
+                                cancellationToken))
+                        {
+                            _db.HousekeepingTasks.Add(new HousekeepingTask
+                            {
+                                Id = Guid.NewGuid(),
+                                RoomId = previousRoom.Id,
+                                BookingId = booking.Id,
+                                Type = HousekeepingTaskType.RoomMoveCleaning,
+                                Priority = WorkPriority.High,
+                                Notes = $"Clean after in-house move for {booking.BookingCode}.",
+                                CreatedByUserId = actorId,
+                                CreatedAtUtc = DateTime.UtcNow
+                            });
+                        }
+                    }
                 }
                 room.Status = RoomStatus.Occupied;
             }

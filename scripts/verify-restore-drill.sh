@@ -39,6 +39,18 @@ BEGIN
         'rate_plans',
         'booking_quotes',
         'booking_quote_lines',
+        'reservation_rooms',
+        'folios',
+        'folio_entries',
+        'booking_amendments',
+        'housekeeping_tasks',
+        'maintenance_work_orders',
+        'night_audits',
+        'guest_notes',
+        'guest_merges',
+        'distribution_channels',
+        'channel_events',
+        'channel_reservation_mappings',
         '__EFMigrationsHistory'
     ]
     LOOP
@@ -54,9 +66,12 @@ BEGIN
     SELECT count(*) INTO invalid_count
     FROM bookings b
     LEFT JOIN guests g ON g."Id" = b."GuestId"
+    LEFT JOIN room_types rt ON rt."Id" = b."RoomTypeId"
     LEFT JOIN rooms r ON r."Id" = b."RoomId"
     WHERE g."Id" IS NULL
-       OR r."Id" IS NULL
+       OR rt."Id" IS NULL
+       OR (b."RoomId" IS NOT NULL AND
+           (r."Id" IS NULL OR r."RoomTypeId" <> b."RoomTypeId"))
        OR b."CheckOut" <= b."CheckIn";
 
     IF invalid_count > 0 THEN
@@ -71,6 +86,9 @@ SELECT
     (SELECT count(*) FROM guests) AS guests,
     (SELECT count(*) FROM bookings) AS bookings,
     (SELECT count(*) FROM booking_quotes) AS pricing_quotes,
+    (SELECT count(*) FROM booking_amendments) AS reservation_amendments,
+    (SELECT count(*) FROM night_audits) AS night_audits,
+    (SELECT count(*) FROM channel_events) AS channel_events,
     (SELECT count(*) FROM audit_logs) AS audit_entries,
     (SELECT max("CreatedAt") FROM bookings) AS newest_booking,
     (SELECT max("MigrationId") FROM "__EFMigrationsHistory") AS latest_migration;

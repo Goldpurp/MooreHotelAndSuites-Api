@@ -271,6 +271,59 @@ BEGIN
             RAISE EXCEPTION 'Preflight failed: % pricing quotes are invalid.', invalid_count;
         END IF;
     END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'bookings'
+          AND column_name = 'ReservationPolicyVersion'
+    ) THEN
+        SELECT count(*) INTO invalid_count
+        FROM bookings
+        WHERE length(btrim("ReservationPolicyVersion")) = 0
+           OR "FreeCancellationHours" NOT BETWEEN 0 AND 720
+           OR "CancellationPenaltyPercent" NOT BETWEEN 0 AND 100
+           OR "DepositPercent" NOT BETWEEN 0 AND 100
+           OR "NoShowPenaltyPercent" NOT BETWEEN 0 AND 100
+           OR "CancellationPenaltyAmount" < 0
+           OR "NoShowPenaltyAmount" < 0;
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % bookings have invalid reservation-policy snapshots.', invalid_count;
+        END IF;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'guests'
+          AND column_name = 'NormalizedEmail'
+    ) THEN
+        SELECT count(*) INTO invalid_count
+        FROM guests
+        WHERE "PreferencesJson" IS NULL
+           OR "NormalizedEmail" IS NULL
+           OR "NormalizedPhone" IS NULL;
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % guest CRM identities are not normalized.', invalid_count;
+        END IF;
+    END IF;
+
+    IF to_regclass('public.booking_amendments') IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'TR_booking_amendments_immutable' AND NOT tgisinternal
+    ) THEN
+        RAISE EXCEPTION 'Preflight failed: reservation amendment immutability trigger is missing.';
+    END IF;
+    IF to_regclass('public.guest_merges') IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'TR_guest_merges_immutable' AND NOT tgisinternal
+    ) THEN
+        RAISE EXCEPTION 'Preflight failed: guest merge immutability trigger is missing.';
+    END IF;
+    IF to_regclass('public.night_audits') IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'TR_night_audits_immutable' AND NOT tgisinternal
+    ) THEN
+        RAISE EXCEPTION 'Preflight failed: night-audit immutability trigger is missing.';
+    END IF;
 END
 $$;
 

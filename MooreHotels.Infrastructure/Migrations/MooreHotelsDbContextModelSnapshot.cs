@@ -374,6 +374,14 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
 
+                    b.Property<decimal>("CancellationPenaltyAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("CancellationPenaltyPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)");
+
                     b.Property<DateTime?>("CancelledAtUtc")
                         .HasColumnType("timestamp with time zone");
 
@@ -396,6 +404,10 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasColumnType("character varying(3)")
                         .HasDefaultValue("NGN");
 
+                    b.Property<decimal>("DepositPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)");
+
                     b.Property<decimal>("DiscountAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
@@ -403,6 +415,9 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<decimal>("FeeAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
+
+                    b.Property<int>("FreeCancellationHours")
+                        .HasColumnType("integer");
 
                     b.Property<DateTime?>("GuestAccessLinkLastRequestedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -427,6 +442,14 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<decimal>("IncludedTaxAmount")
                         .HasPrecision(18, 2)
                         .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("NoShowPenaltyAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("NoShowPenaltyPercent")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)");
 
                     b.Property<string>("Notes")
                         .HasMaxLength(1000)
@@ -507,6 +530,11 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<string>("RefundReference")
                         .HasMaxLength(160)
                         .HasColumnType("character varying(160)");
+
+                    b.Property<string>("ReservationPolicyVersion")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
 
                     b.Property<Guid?>("RoomId")
                         .HasColumnType("uuid");
@@ -594,6 +622,8 @@ namespace MooreHotels.Infrastructure.Migrations
 
                             t.HasCheckConstraint("CK_bookings_price_breakdown", "\"Amount\" >= 0 AND \"RoomSubtotal\" >= 0 AND \"DiscountAmount\" >= 0 AND \"IncludedTaxAmount\" >= 0 AND \"TaxAmount\" >= 0 AND \"FeeAmount\" >= 0");
 
+                            t.HasCheckConstraint("CK_bookings_reservation_policy", "\"FreeCancellationHours\" BETWEEN 0 AND 720 AND \"CancellationPenaltyPercent\" BETWEEN 0 AND 100 AND \"DepositPercent\" BETWEEN 0 AND 100 AND \"NoShowPenaltyPercent\" BETWEEN 0 AND 100 AND \"CancellationPenaltyAmount\" >= 0 AND \"NoShowPenaltyAmount\" >= 0");
+
                             t.HasCheckConstraint("CK_bookings_room_quantity", "\"RoomQuantity\" BETWEEN 1 AND 10");
 
                             t.HasCheckConstraint("CK_bookings_valid_dates", "\"CheckOut\" > \"CheckIn\"");
@@ -643,6 +673,82 @@ namespace MooreHotels.Infrastructure.Migrations
                             t.HasCheckConstraint("CK_booking_addons_total_matches_quantity", "\"TotalPrice\" = \"UnitPrice\" * \"Quantity\"");
 
                             t.HasCheckConstraint("CK_booking_addons_unit_price_positive", "\"UnitPrice\" > 0");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.BookingAmendment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AdultCount")
+                        .HasColumnType("integer");
+
+                    b.Property<DateTime>("AmendedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("AmendedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CheckIn")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("CheckOut")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("ChildCount")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("NewAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("NewStateJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<decimal>("PreviousAmount")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("PreviousStateJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<decimal>("PriceDifference")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<int>("RoomQuantity")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("RoomTypeId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AmendedByUserId");
+
+                    b.HasIndex("BookingId", "AmendedAtUtc");
+
+                    b.ToTable("booking_amendments", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_booking_amendments_amounts", "\"PreviousAmount\" >= 0 AND \"NewAmount\" >= 0 AND \"PriceDifference\" = \"NewAmount\" - \"PreviousAmount\"");
+
+                            t.HasCheckConstraint("CK_booking_amendments_dates", "\"CheckOut\" > \"CheckIn\"");
+
+                            t.HasCheckConstraint("CK_booking_amendments_occupancy", "\"AdultCount\" >= 1 AND \"ChildCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_booking_amendments_room_quantity", "\"RoomQuantity\" BETWEEN 1 AND 10");
                         });
                 });
 
@@ -868,6 +974,112 @@ namespace MooreHotels.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.ChannelEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("ChannelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("character varying(80)");
+
+                    b.Property<string>("ExternalReservationId")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<string>("LastError")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("OccurredAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.Property<DateTime?>("ProcessedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChannelId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "Direction", "CreatedAtUtc");
+
+                    b.ToTable("channel_events", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_channel_events_attempt_count", "\"AttemptCount\" >= 0");
+
+                            t.HasCheckConstraint("CK_channel_events_state", "(\"Status\" = 'Pending' AND \"ProcessedAtUtc\" IS NULL AND \"LastError\" IS NULL) OR (\"Status\" = 'Processed' AND \"ProcessedAtUtc\" IS NOT NULL AND \"LastError\" IS NULL) OR (\"Status\" IN ('Failed','DeadLetter') AND \"ProcessedAtUtc\" IS NULL AND \"LastError\" IS NOT NULL)");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.ChannelReservationMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ChannelId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("ExternalReservationId")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<DateTime>("LinkedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("LinkedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BookingId");
+
+                    b.HasIndex("LinkedByUserId");
+
+                    b.HasIndex("ChannelId", "BookingId")
+                        .IsUnique();
+
+                    b.HasIndex("ChannelId", "ExternalReservationId")
+                        .IsUnique();
+
+                    b.ToTable("channel_reservation_mappings", (string)null);
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.DailyRoomRate", b =>
                 {
                     b.Property<Guid>("Id")
@@ -924,6 +1136,39 @@ namespace MooreHotels.Infrastructure.Migrations
 
                             t.HasCheckConstraint("CK_daily_room_rates_scope", "(CASE WHEN \"RoomId\" IS NULL THEN 0 ELSE 1 END + CASE WHEN \"RoomTypeId\" IS NULL THEN 0 ELSE 1 END + CASE WHEN \"RoomCategory\" IS NULL THEN 0 ELSE 1 END) = 1");
                         });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.DistributionChannel", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("character varying(120)");
+
+                    b.Property<DateTime>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("Code")
+                        .IsUnique();
+
+                    b.ToTable("distribution_channels", (string)null);
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.EmailOutboxMessage", b =>
@@ -1131,6 +1376,9 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(254)
                         .HasColumnType("character varying(254)");
 
+                    b.Property<DateTime?>("EmailVerifiedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("FirstName")
                         .IsRequired()
                         .HasMaxLength(80)
@@ -1141,10 +1389,36 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
 
+                    b.Property<DateTime?>("MergedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("MergedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("MergedIntoGuestId")
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("NormalizedEmail")
+                        .IsRequired()
+                        .HasMaxLength(254)
+                        .HasColumnType("character varying(254)");
+
+                    b.Property<string>("NormalizedPhone")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
                     b.Property<string>("Phone")
                         .IsRequired()
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)");
+
+                    b.Property<DateTime?>("PhoneVerifiedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("PreferencesJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
 
                     b.HasKey("Id");
 
@@ -1152,9 +1426,268 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.HasIndex("Email");
 
+                    b.HasIndex("MergedByUserId");
+
+                    b.HasIndex("MergedIntoGuestId");
+
+                    b.HasIndex("NormalizedEmail", "MergedIntoGuestId");
+
+                    b.HasIndex("NormalizedPhone", "MergedIntoGuestId");
+
                     b.HasIndex("Email", "FirstName", "LastName");
 
-                    b.ToTable("guests", (string)null);
+                    b.ToTable("guests", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_guests_merge_state", "(\"MergedIntoGuestId\" IS NULL AND \"MergedAtUtc\" IS NULL AND \"MergedByUserId\" IS NULL) OR (\"MergedIntoGuestId\" IS NOT NULL AND \"MergedAtUtc\" IS NOT NULL AND \"MergedByUserId\" IS NOT NULL AND \"MergedIntoGuestId\" <> \"Id\")");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.GuestMerge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("DuplicateGuestId")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("EvidenceType")
+                        .IsRequired()
+                        .HasMaxLength(50)
+                        .HasColumnType("character varying(50)");
+
+                    b.Property<DateTime>("MergedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("MergedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<int>("MovedBookingCount")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("PrimaryGuestId")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("DuplicateGuestId")
+                        .IsUnique();
+
+                    b.HasIndex("MergedByUserId");
+
+                    b.HasIndex("PrimaryGuestId", "MergedAtUtc");
+
+                    b.ToTable("guest_merges", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_guest_merges_distinct_guests", "\"PrimaryGuestId\" <> \"DuplicateGuestId\"");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.GuestNote", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("GuestId")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<bool>("IsSensitive")
+                        .HasColumnType("boolean");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("GuestId", "CreatedAtUtc");
+
+                    b.ToTable("guest_notes", (string)null);
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.HousekeepingTask", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("AssignedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("AssignedToUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("BookingId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("CompletedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("CompletedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<bool?>("InspectionPassed")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("Notes")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<string>("Priority")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Type")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("character varying(40)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignedToUserId");
+
+                    b.HasIndex("BookingId");
+
+                    b.HasIndex("CompletedByUserId");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("RoomId", "Status");
+
+                    b.HasIndex("Status", "Priority", "CreatedAtUtc");
+
+                    b.ToTable("housekeeping_tasks", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_housekeeping_tasks_completion", "(\"Status\" = 'Completed' AND \"CompletedAtUtc\" IS NOT NULL AND \"CompletedByUserId\" IS NOT NULL) OR (\"Status\" <> 'Completed' AND \"CompletedAtUtc\" IS NULL AND \"CompletedByUserId\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_housekeeping_tasks_inspection", "\"InspectionPassed\" IS NULL OR (\"Type\" = 'Inspection' AND \"Status\" = 'Completed')");
+
+                            t.HasCheckConstraint("CK_housekeeping_tasks_timeline", "\"StartedAtUtc\" IS NULL OR \"AssignedAtUtc\" IS NOT NULL");
+                        });
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.MaintenanceWorkOrder", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("AssignedToUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("character varying(2000)");
+
+                    b.Property<Guid?>("InventoryClosureId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateOnly>("OutOfOrderFrom")
+                        .HasColumnType("date");
+
+                    b.Property<DateOnly>("OutOfOrderUntil")
+                        .HasColumnType("date");
+
+                    b.Property<string>("Priority")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("ResolutionNotes")
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<DateTime?>("ResolvedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("ResolvedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime?>("StartedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(30)
+                        .HasColumnType("character varying(30)");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AssignedToUserId");
+
+                    b.HasIndex("CreatedByUserId");
+
+                    b.HasIndex("InventoryClosureId")
+                        .IsUnique()
+                        .HasFilter("\"InventoryClosureId\" IS NOT NULL");
+
+                    b.HasIndex("ResolvedByUserId");
+
+                    b.HasIndex("RoomId", "Status");
+
+                    b.HasIndex("Status", "Priority", "CreatedAtUtc");
+
+                    b.ToTable("maintenance_work_orders", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_maintenance_work_orders_dates", "\"OutOfOrderUntil\" > \"OutOfOrderFrom\"");
+
+                            t.HasCheckConstraint("CK_maintenance_work_orders_resolution", "(\"Status\" IN ('Resolved','Cancelled') AND \"ResolvedAtUtc\" IS NOT NULL AND \"ResolvedByUserId\" IS NOT NULL) OR (\"Status\" NOT IN ('Resolved','Cancelled') AND \"ResolvedAtUtc\" IS NULL AND \"ResolvedByUserId\" IS NULL)");
+                        });
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.MediaAsset", b =>
@@ -1324,6 +1857,72 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.HasIndex("BookingCode", "Status");
 
                     b.ToTable("monnify_transactions", (string)null);
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.NightAudit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("Adr")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<int>("AvailableRoomNights")
+                        .HasColumnType("integer");
+
+                    b.Property<DateOnly>("BusinessDate")
+                        .HasColumnType("date");
+
+                    b.Property<DateTime>("ClosedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ClosedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<decimal>("GuestCredits")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<int>("OccupiedRoomNights")
+                        .HasColumnType("integer");
+
+                    b.Property<decimal>("Payments")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("Receivables")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("Refunds")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("RevPar")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<decimal>("RoomRevenue")
+                        .HasPrecision(18, 2)
+                        .HasColumnType("numeric(18,2)");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasColumnType("jsonb");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BusinessDate")
+                        .IsUnique();
+
+                    b.HasIndex("ClosedByUserId");
+
+                    b.ToTable("night_audits", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_night_audits_values", "\"AvailableRoomNights\" >= 0 AND \"OccupiedRoomNights\" >= 0 AND \"RoomRevenue\" >= 0 AND \"Payments\" >= 0 AND \"Refunds\" >= 0 AND \"Receivables\" >= 0 AND \"GuestCredits\" >= 0 AND \"Adr\" >= 0 AND \"RevPar\" >= 0");
+                        });
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.Notification", b =>
@@ -2150,6 +2749,25 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Navigation("Booking");
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.BookingAmendment", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "AmendedByUser")
+                        .WithMany()
+                        .HasForeignKey("AmendedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.Booking", "Booking")
+                        .WithMany("Amendments")
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AmendedByUser");
+
+                    b.Navigation("Booking");
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.BookingQuote", b =>
                 {
                     b.HasOne("MooreHotels.Domain.Entities.Promotion", "Promotion")
@@ -2192,6 +2810,44 @@ namespace MooreHotels.Infrastructure.Migrations
                         .IsRequired();
 
                     b.Navigation("BookingQuote");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.ChannelEvent", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.DistributionChannel", "Channel")
+                        .WithMany("Events")
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Channel");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.ChannelReservationMapping", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.Booking", "Booking")
+                        .WithMany()
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.DistributionChannel", "Channel")
+                        .WithMany()
+                        .HasForeignKey("ChannelId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "LinkedByUser")
+                        .WithMany()
+                        .HasForeignKey("LinkedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("Channel");
+
+                    b.Navigation("LinkedByUser");
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.DailyRoomRate", b =>
@@ -2262,6 +2918,149 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Navigation("ReversesEntry");
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.Guest", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "MergedByUser")
+                        .WithMany()
+                        .HasForeignKey("MergedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("MooreHotels.Domain.Entities.Guest", "MergedIntoGuest")
+                        .WithMany()
+                        .HasForeignKey("MergedIntoGuestId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("MergedByUser");
+
+                    b.Navigation("MergedIntoGuest");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.GuestMerge", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.Guest", "DuplicateGuest")
+                        .WithMany()
+                        .HasForeignKey("DuplicateGuestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "MergedByUser")
+                        .WithMany()
+                        .HasForeignKey("MergedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.Guest", "PrimaryGuest")
+                        .WithMany()
+                        .HasForeignKey("PrimaryGuestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("DuplicateGuest");
+
+                    b.Navigation("MergedByUser");
+
+                    b.Navigation("PrimaryGuest");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.GuestNote", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.Guest", "Guest")
+                        .WithMany("Notes")
+                        .HasForeignKey("GuestId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("Guest");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.HousekeepingTask", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "AssignedToUser")
+                        .WithMany()
+                        .HasForeignKey("AssignedToUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("MooreHotels.Domain.Entities.Booking", "Booking")
+                        .WithMany()
+                        .HasForeignKey("BookingId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "CompletedByUser")
+                        .WithMany()
+                        .HasForeignKey("CompletedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.Room", "Room")
+                        .WithMany("HousekeepingTasks")
+                        .HasForeignKey("RoomId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AssignedToUser");
+
+                    b.Navigation("Booking");
+
+                    b.Navigation("CompletedByUser");
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("Room");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.MaintenanceWorkOrder", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "AssignedToUser")
+                        .WithMany()
+                        .HasForeignKey("AssignedToUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "CreatedByUser")
+                        .WithMany()
+                        .HasForeignKey("CreatedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("MooreHotels.Domain.Entities.RoomInventoryClosure", "InventoryClosure")
+                        .WithOne()
+                        .HasForeignKey("MooreHotels.Domain.Entities.MaintenanceWorkOrder", "InventoryClosureId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "ResolvedByUser")
+                        .WithMany()
+                        .HasForeignKey("ResolvedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("MooreHotels.Domain.Entities.Room", "Room")
+                        .WithMany("MaintenanceWorkOrders")
+                        .HasForeignKey("RoomId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("AssignedToUser");
+
+                    b.Navigation("CreatedByUser");
+
+                    b.Navigation("InventoryClosure");
+
+                    b.Navigation("ResolvedByUser");
+
+                    b.Navigation("Room");
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.MediaAsset", b =>
                 {
                     b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "UploadedByUser")
@@ -2280,6 +3079,17 @@ namespace MooreHotels.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Booking");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.NightAudit", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "ClosedByUser")
+                        .WithMany()
+                        .HasForeignKey("ClosedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("ClosedByUser");
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.NotificationReceipt", b =>
@@ -2421,6 +3231,8 @@ namespace MooreHotels.Infrastructure.Migrations
                 {
                     b.Navigation("AddOns");
 
+                    b.Navigation("Amendments");
+
                     b.Navigation("Folio");
 
                     b.Navigation("ReservationRooms");
@@ -2433,6 +3245,11 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Navigation("Lines");
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.DistributionChannel", b =>
+                {
+                    b.Navigation("Events");
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.Folio", b =>
                 {
                     b.Navigation("Entries");
@@ -2441,6 +3258,8 @@ namespace MooreHotels.Infrastructure.Migrations
             modelBuilder.Entity("MooreHotels.Domain.Entities.Guest", b =>
                 {
                     b.Navigation("Bookings");
+
+                    b.Navigation("Notes");
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.RatePlan", b =>
@@ -2452,7 +3271,11 @@ namespace MooreHotels.Infrastructure.Migrations
                 {
                     b.Navigation("Assignments");
 
+                    b.Navigation("HousekeepingTasks");
+
                     b.Navigation("Images");
+
+                    b.Navigation("MaintenanceWorkOrders");
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.RoomType", b =>

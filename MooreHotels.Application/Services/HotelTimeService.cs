@@ -28,6 +28,12 @@ public sealed class HotelTimeService : IHotelTimeService
     public DateTime GetCheckOutUtc(DateTime calendarDate) =>
         ToUtc(calendarDate, CheckOutTime);
 
+    public DateTime GetLocalDayStartUtc(DateOnly businessDate) =>
+        ToUtc(businessDate.ToDateTime(TimeOnly.MinValue), TimeOnly.MinValue);
+
+    public DateTime GetLocalDayEndUtc(DateOnly businessDate) =>
+        GetLocalDayStartUtc(businessDate.AddDays(1));
+
     public DateTime ToHotelLocalTime(DateTime utcDateTime)
     {
         var utc = utcDateTime.Kind == DateTimeKind.Utc

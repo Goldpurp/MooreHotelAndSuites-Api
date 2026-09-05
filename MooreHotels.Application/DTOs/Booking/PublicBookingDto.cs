@@ -38,4 +38,5 @@ public sealed record PublicBookingDto(
     string? RoomTypeName = null,
     int RoomQuantity = 1,
     IReadOnlyList<ReservationRoomDto>? Rooms = null,
-    FolioSummaryDto? Folio = null);
+    FolioSummaryDto? Folio = null,
+    ReservationPolicySnapshotDto? ReservationPolicy = null);

@@ -107,8 +107,11 @@ public sealed class FolioService : IFolioService
                 _db.FolioEntries.Add(entry);
                 RecalculatePaymentStatus(booking, folio.Entries);
                 var updatedBalance = FolioAccounting.Calculate(folio.Entries);
+                var confirmedDeposit = FolioAccounting.Money(
+                    (booking.RoomSubtotal - booking.DiscountAmount + booking.TaxAmount + booking.FeeAmount) *
+                    booking.DepositPercent / 100m);
                 if (request.ConfirmReservation &&
-                    updatedBalance.AmountDue == 0 &&
+                    updatedBalance.Payments - updatedBalance.Refunds >= confirmedDeposit &&
                     booking.Status == BookingStatus.Pending)
                 {
                     booking.Status = BookingStatus.Confirmed;
@@ -253,35 +256,81 @@ public sealed class FolioService : IFolioService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        var now = booking.CancelledAtUtc ?? DateTime.UtcNow;
+        var freeCancellationDeadline = booking.CheckIn.AddHours(-booking.FreeCancellationHours);
+        var penaltyPercent = now <= freeCancellationDeadline
+            ? 0m
+            : booking.CancellationPenaltyPercent;
+        booking.CancellationPenaltyAmount = await ApplyTerminationPolicyAsync(
+            booking,
+            penaltyPercent,
+            "cancellation",
+            "Reservation cancellation credit",
+            reason,
+            actorId,
+            now,
+            cancellationToken);
+    }
+
+    public async Task ApplyNoShowPolicyAsync(
+        Booking booking,
+        string reason,
+        Guid actorId,
+        CancellationToken cancellationToken = default)
+    {
+        booking.NoShowPenaltyAmount = await ApplyTerminationPolicyAsync(
+            booking,
+            booking.NoShowPenaltyPercent,
+            "no-show",
+            "No-show policy credit",
+            reason,
+            actorId,
+            DateTime.UtcNow,
+            cancellationToken);
+    }
+
+    private async Task<decimal> ApplyTerminationPolicyAsync(
+        Booking booking,
+        decimal penaltyPercent,
+        string keySuffix,
+        string description,
+        string reason,
+        Guid actorId,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
         var folio = await _db.Folios.Include(item => item.Entries)
             .SingleAsync(item => item.BookingId == booking.Id, cancellationToken);
-        if (folio.Status == FolioStatus.Closed) return;
+        if (folio.Status == FolioStatus.Closed)
+            return keySuffix == "no-show" ? booking.NoShowPenaltyAmount : booking.CancellationPenaltyAmount;
+
         var billedBalance = FolioAccounting.Money(folio.Entries
             .Where(entry => entry.Type is not (FolioEntryType.Payment or FolioEntryType.Refund))
             .Sum(entry => entry.Direction == FolioEntryDirection.Debit ? entry.Amount : -entry.Amount));
-        if (billedBalance > 0)
+        var penalty = Math.Min(
+            Math.Max(0m, billedBalance),
+            FolioAccounting.Money(booking.RoomSubtotal * Math.Clamp(penaltyPercent, 0m, 100m) / 100m));
+        var creditAmount = FolioAccounting.Money(Math.Max(0m, billedBalance - penalty));
+        var key = $"booking:{booking.Id:N}:{keySuffix}-credit";
+        if (creditAmount > 0 && !folio.Entries.Any(entry => entry.IdempotencyKey == key))
         {
-            var key = $"booking:{booking.Id:N}:cancellation-credit";
-            if (!folio.Entries.Any(entry => entry.IdempotencyKey == key))
-            {
-                var now = booking.CancelledAtUtc ?? DateTime.UtcNow;
-                var entry = FolioAccounting.NewEntry(
-                    folio,
-                    FolioEntryType.Credit,
-                    FolioEntryDirection.Credit,
-                    billedBalance,
-                    "Reservation cancellation credit",
-                    "Cancellation",
-                    booking.Id.ToString(),
-                    key,
-                    now,
-                    actorId == BookingPaymentPolicy.SystemActorId ? null : actorId,
-                    notes: Clean(reason));
-                _db.FolioEntries.Add(entry);
-            }
+            var entry = FolioAccounting.NewEntry(
+                folio,
+                FolioEntryType.Credit,
+                FolioEntryDirection.Credit,
+                creditAmount,
+                description,
+                keySuffix == "no-show" ? "NoShow" : "Cancellation",
+                booking.Id.ToString(),
+                key,
+                now,
+                actorId == BookingPaymentPolicy.SystemActorId ? null : actorId,
+                notes: Clean(reason));
+            _db.FolioEntries.Add(entry);
         }
         RecalculatePaymentStatus(booking, folio.Entries);
         await _db.SaveChangesAsync(cancellationToken);
+        return penalty;
     }
 
     public async Task ApplyRefundAsync(

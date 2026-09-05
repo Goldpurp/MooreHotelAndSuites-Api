@@ -145,6 +145,10 @@ metadata and the indexes and constraints used by the final production gates.
 `CompleteProductionReadinessSevenToTen` adds rate plans, room/category daily
 rates, taxes/fees, promotions, expiring quotes, immutable nightly price lines,
 booking price snapshots and the latest recovery/provider readiness controls.
+`CompleteHotelOperationsAndDistribution` adds snapshotted reservation policies,
+append-only reservation amendments, housekeeping and maintenance work orders,
+hotel-local operational reports and night audits, guest CRM merge evidence, and
+the durable provider-neutral channel event/reconciliation ledger.
 
 ## Public booking references
 
@@ -190,6 +194,23 @@ one booking. Reception assigns or moves the actual rooms before arrival. Every
 booking also has an append-only folio supporting deposits, split payments,
 later charges, credits, immutable voids, and partial refunds; checkout requires
 a zero balance. See `docs/INVENTORY_AND_FOLIOS.md` for API and launch guidance.
+
+Reservation policy terms are copied onto each booking so a later configuration
+change cannot rewrite an existing guest agreement. Staff can amend an unstarted
+reservation only with a current immutable quote; the old folio pricing is
+reversed, the replacement pricing is posted, and the before/after record is
+append-only. Checkout marks assigned rooms dirty, opens cleaning tasks, and
+requires a passed inspection before a room returns to `Available`. Maintenance
+work orders create date-based inventory closures.
+
+The operations API exposes a hotel-local arrivals/departures board, reservation
+calendar, room-only ADR/RevPAR, payment/refund reconciliation, receivables and
+immutable daily night-audit snapshots. Guest CRM supports verified-contact
+evidence, preferences, restricted notes and controlled duplicate merges.
+Channel records/events are intentionally provider-neutral and disabled until a
+specific channel adapter, its webhook signature verification, sandbox tests and
+reconciliation acceptance are complete. See
+`docs/HOTEL_OPERATIONS_AND_CHANNELS.md`.
 
 ## Manual bank-transfer confirmation
 

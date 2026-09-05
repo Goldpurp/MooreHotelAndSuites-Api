@@ -67,6 +67,7 @@ public static class ServiceCollectionExtensions
         services.Configure<OperationalReadinessSettings>(configuration.GetSection("OperationalReadiness"));
         services.Configure<ProviderAcceptanceSettings>(configuration.GetSection("ProviderAcceptance"));
         services.Configure<PricingSettings>(configuration.GetSection("Pricing"));
+        services.Configure<ReservationPolicySettings>(configuration.GetSection("ReservationPolicies"));
         services.Configure<ForwardedHeadersSettings>(configuration.GetSection("ForwardedHeaders"));
         services.Configure<EmailSettings>(configuration.GetSection("EmailSettings"));
         services.Configure<CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
@@ -284,6 +285,20 @@ public static class ServiceCollectionExtensions
                     context.User.IsInRole("Admin") ||
                     context.User.IsInRole("Manager") ||
                     HotelAuthorization.HasDepartment(context.User, "Reception", "FrontDesk")));
+            options.AddPolicy(HotelAuthorization.HousekeepingManage, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") || context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Housekeeping")));
+            options.AddPolicy(HotelAuthorization.MaintenanceManage, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") || context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Maintenance", "Engineering")));
+            options.AddPolicy(HotelAuthorization.NightAuditClose, policy =>
+                policy.RequireRole("Admin", "Manager"));
+            options.AddPolicy(HotelAuthorization.GuestCrmManage, policy =>
+                policy.RequireRole("Admin", "Manager"));
+            options.AddPolicy(HotelAuthorization.ChannelsManage, policy =>
+                policy.RequireRole("Admin", "Manager"));
         });
 
         var origins = configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [];
@@ -455,6 +470,11 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IPricingService, PricingService>();
         services.AddScoped<IInventoryService, InventoryService>();
         services.AddScoped<IFolioService, FolioService>();
+        services.AddScoped<IReservationAmendmentService, ReservationAmendmentService>();
+        services.AddScoped<IHousekeepingService, HousekeepingService>();
+        services.AddScoped<IOperationalReportingService, OperationalReportingService>();
+        services.AddScoped<IGuestCrmService, GuestCrmService>();
+        services.AddScoped<IChannelManagementService, ChannelManagementService>();
         services.AddScoped<IMonnifyPaymentProcessor, MonnifyPaymentProcessor>();
         services.AddScoped<IGuestService, GuestService>();
         services.AddScoped<IAuditService, AuditService>();

@@ -8,6 +8,10 @@ public interface IPricingService
     Task<PricingQuoteDto> CreateQuoteAsync(
         CreatePricingQuoteRequest request,
         CancellationToken cancellationToken = default);
+    Task<PricingQuoteDto> CreateAmendmentQuoteAsync(
+        Guid bookingId,
+        CreatePricingQuoteRequest request,
+        CancellationToken cancellationToken = default);
     Task<ValidatedBookingQuote> ValidateBookingQuoteAsync(
         Guid quoteId,
         string quoteToken,

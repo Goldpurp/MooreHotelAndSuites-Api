@@ -219,6 +219,8 @@ public static class ConfigurationBootstrap
             .Get<ProviderAcceptanceSettings>() ?? new ProviderAcceptanceSettings();
         var pricing = configuration.GetSection("Pricing")
             .Get<PricingSettings>() ?? new PricingSettings();
+        var reservationPolicies = configuration.GetSection("ReservationPolicies")
+            .Get<ReservationPolicySettings>() ?? new ReservationPolicySettings();
 
         if (IsMissingOrPlaceholder(connectionString))
         {
@@ -408,6 +410,17 @@ public static class ConfigurationBootstrap
         {
             errors.Add("Pricing:RequireQuoteForBooking must be true in Production.");
         }
+        if (IsMissingOrPlaceholder(reservationPolicies.Version) ||
+            reservationPolicies.Version.Length > 80)
+            errors.Add("ReservationPolicies:Version is required and cannot exceed 80 characters.");
+        if (reservationPolicies.FreeCancellationHours is < 0 or > 720)
+            errors.Add("ReservationPolicies:FreeCancellationHours must be between 0 and 720.");
+        if (reservationPolicies.CancellationPenaltyPercent is < 0 or > 100)
+            errors.Add("ReservationPolicies:CancellationPenaltyPercent must be between 0 and 100.");
+        if (reservationPolicies.DepositPercent is < 0 or > 100)
+            errors.Add("ReservationPolicies:DepositPercent must be between 0 and 100.");
+        if (reservationPolicies.NoShowPenaltyPercent is < 0 or > 100)
+            errors.Add("ReservationPolicies:NoShowPenaltyPercent must be between 0 and 100.");
 
         if (environment.IsDeployed())
         {

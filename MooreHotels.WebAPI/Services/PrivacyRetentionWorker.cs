@@ -97,7 +97,10 @@ public sealed class PrivacyRetentionWorker : BackgroundService
                         guest.FirstName = "Former";
                         guest.LastName = "Guest";
                         guest.Email = $"anonymized-{guest.Id.ToLowerInvariant()}@privacy.invalid";
+                        guest.NormalizedEmail = guest.Email;
                         guest.Phone = "REDACTED";
+                        guest.NormalizedPhone = string.Empty;
+                        guest.PreferencesJson = "{}";
                         guest.AvatarUrl = null;
                         guest.AnonymizedAtUtc = now;
                         db.AuditLogs.Add(new AuditLog
@@ -120,6 +123,13 @@ public sealed class PrivacyRetentionWorker : BackgroundService
                         .Where(record => guestIds.Contains(record.GuestId))
                         .ExecuteUpdateAsync(
                             updates => updates.SetProperty(record => record.GuestName, "Former Guest"),
+                            cancellationToken);
+                    await db.GuestNotes
+                        .Where(note => guestIds.Contains(note.GuestId))
+                        .ExecuteUpdateAsync(
+                            updates => updates
+                                .SetProperty(note => note.Body, "Removed by retention policy")
+                                .SetProperty(note => note.IsSensitive, false),
                             cancellationToken);
                     await db.Notifications
                         .Where(notification =>
