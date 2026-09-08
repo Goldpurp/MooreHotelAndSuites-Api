@@ -270,6 +270,31 @@ BEGIN
         IF invalid_count > 0 THEN
             RAISE EXCEPTION 'Preflight failed: % pricing quotes are invalid.', invalid_count;
         END IF;
+
+        SELECT count(*) INTO invalid_count
+        FROM bookings booking
+        JOIN booking_quotes quote ON quote."Id" = booking."QuoteId"
+        WHERE quote."AmendmentBookingId" IS NOT NULL
+          AND quote."AmendmentBookingId" <> booking."Id";
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % bookings reference an amendment quote bound to another reservation.', invalid_count;
+        END IF;
+    END IF;
+
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public' AND table_name = 'email_outbox'
+          AND column_name = 'QuarantinedAtUtc'
+    ) THEN
+        SELECT count(*) INTO invalid_count
+        FROM email_outbox
+        WHERE "QuarantinedAtUtc" IS NOT NULL
+          AND ("Recipient" <> 'privacy-migration@delivery-failure.invalid'
+               AND "Recipient" <> 'redacted@delivery-failure.invalid'
+               OR "ProtectedPayload" <> '{}');
+        IF invalid_count > 0 THEN
+            RAISE EXCEPTION 'Preflight failed: % quarantined email records retain delivery payload data.', invalid_count;
+        END IF;
     END IF;
 
     IF EXISTS (

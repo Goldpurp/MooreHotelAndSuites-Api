@@ -14,16 +14,16 @@ public class RoomServiceTests
 {
     private readonly Mock<IRoomRepository> _roomRepoMock;
     private readonly Mock<IBookingRepository> _bookingRepoMock;
-    private readonly Mock<IImageService> _imageServiceMock;
     private readonly Mock<IHotelTimeService> _hotelTimeMock;
+    private readonly Mock<IAuditService> _auditServiceMock;
     private readonly RoomService _service;
 
     public RoomServiceTests()
     {
         _roomRepoMock = new Mock<IRoomRepository>();
         _bookingRepoMock = new Mock<IBookingRepository>();
-        _imageServiceMock = new Mock<IImageService>();
         _hotelTimeMock = new Mock<IHotelTimeService>();
+        _auditServiceMock = new Mock<IAuditService>();
         _hotelTimeMock.Setup(service => service.GetCheckInUtc(It.IsAny<DateTime>()))
             .Returns<DateTime>(date => DateTime.SpecifyKind(date.Date.AddHours(13), DateTimeKind.Utc));
         _hotelTimeMock.Setup(service => service.GetCheckOutUtc(It.IsAny<DateTime>()))
@@ -34,8 +34,8 @@ public class RoomServiceTests
         _service = new RoomService(
             _roomRepoMock.Object,
             _bookingRepoMock.Object,
-            _imageServiceMock.Object,
-            _hotelTimeMock.Object);
+            _hotelTimeMock.Object,
+            _auditServiceMock.Object);
     }
 
     [Fact]
@@ -86,7 +86,8 @@ public class RoomServiceTests
             RoomNumber = "102",
             Name = "Deluxe Room",
             IsOnline = true,
-            Status = RoomStatus.Available
+            Status = RoomStatus.Available,
+            RoomType = new RoomType { Id = Guid.NewGuid(), IsActive = true }
         };
 
         var checkIn = DateTime.UtcNow.Date.AddDays(2);
@@ -114,7 +115,8 @@ public class RoomServiceTests
             RoomNumber = "103",
             Name = "Standard Room",
             IsOnline = true,
-            Status = RoomStatus.Available
+            Status = RoomStatus.Available,
+            RoomType = new RoomType { Id = Guid.NewGuid(), IsActive = true }
         };
 
         var checkIn = DateTime.UtcNow.Date.AddDays(5);

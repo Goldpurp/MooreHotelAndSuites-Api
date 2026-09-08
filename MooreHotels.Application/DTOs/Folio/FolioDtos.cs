@@ -60,7 +60,7 @@ public sealed record PostFolioChargeRequest(
 
 public sealed record PostFolioPaymentRequest(
     [Range(typeof(decimal), "0.01", "9999999999999999")] decimal Amount,
-    [Required, RegularExpression("^(BankTransfer|Cash|Monnify|Other)$")] string Method,
+    [Required, RegularExpression("^(BankTransfer|Cash|Other)$")] string Method,
     [Required, StringLength(160, MinimumLength = 4)] string ExternalReference,
     [Required, StringLength(100, MinimumLength = 8)] string IdempotencyKey,
     bool ConfirmReservation = true,

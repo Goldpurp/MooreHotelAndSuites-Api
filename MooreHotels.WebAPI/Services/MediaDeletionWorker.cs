@@ -13,7 +13,7 @@ public sealed class MediaDeletionWorker : BackgroundService
     public const int MaximumAttempts = 12;
     private const int BatchSize = 10;
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(10);
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly RuntimeSettings _runtime;
@@ -53,7 +53,9 @@ public sealed class MediaDeletionWorker : BackgroundService
         }
         catch (Exception exception)
         {
-            _logger.LogError(exception, "The media-deletion outbox sweep failed.");
+            _logger.LogError(
+                "The media-deletion outbox sweep failed with {ExceptionType}.",
+                exception.GetType().Name);
             return 0;
         }
     }

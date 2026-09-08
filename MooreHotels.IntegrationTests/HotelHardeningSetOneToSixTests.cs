@@ -162,14 +162,12 @@ public sealed class HotelHardeningSetOneToSixTests
     {
         var staff = await _fixture.CreateUserAsync(UserRole.Staff, "FrontDesk");
         string resetToken;
-        string email;
         string oldStamp;
         await using (var scope = _fixture.Services.CreateAsyncScope())
         {
             var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
             var user = await userManager.FindByIdAsync(staff.Id.ToString());
             Assert.NotNull(user);
-            email = user.Email!;
             oldStamp = user.SecurityStamp!;
             resetToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(
                 await userManager.GeneratePasswordResetTokenAsync(user)));
@@ -188,7 +186,7 @@ public sealed class HotelHardeningSetOneToSixTests
             "/api/auth/reset-password",
             new
             {
-                email,
+                userId = staff.Id,
                 token = resetToken,
                 newPassword = "ChangedPassword123!",
                 confirmNewPassword = "ChangedPassword123!"
@@ -274,7 +272,9 @@ public sealed class HotelHardeningSetOneToSixTests
                    new
                    {
                        status = "completed",
-                       resolutionNotes = "Identity verified and the requested export was supplied securely."
+                       resolutionNotes = "Identity verified and the requested export was supplied securely.",
+                       identityVerificationReference = "DSAR-ID-VERIFIED-001",
+                       fulfillmentEvidenceReference = "SECURE-DELIVERY-001"
                    }))
         using (var response = await _fixture.Client.SendAsync(close))
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
@@ -289,7 +289,7 @@ public sealed class HotelHardeningSetOneToSixTests
         Assert.Equal(2, await _fixture.WithDbAsync(db => db.AuditLogs.CountAsync(log =>
             log.EntityId == requestId.ToString() &&
             (log.Action == "PRIVACY_REQUEST_CREATED" ||
-             log.Action == "PRIVACY_REQUEST_STATUS_CHANGED"))));
+             log.Action == "PRIVACY_REQUEST_FULFILLED"))));
     }
 
     [Fact]

@@ -17,6 +17,12 @@ values after `#`, not in the query string. On the destination page:
 5. Confirm expired, reused and modified tokens fail without revealing account
    existence.
 
+Account verification uses `POST /api/auth/verify-email` with JSON
+`{ "userId": "...", "token": "..." }`; the old query-string `GET` route no
+longer exists. Password reset uses `POST /api/auth/reset-password` with
+`userId`, `token`, `newPassword`, and `confirmNewPassword`. Neither flow sends
+an email address or token in an API URL.
+
 ## Staff MFA
 
 1. After login, check `mfaSetupRequired` in the successful auth response.
@@ -38,11 +44,11 @@ values after `#`, not in the query string. On the destination page:
 
 1. Before an anonymous reservation, call
    `POST /api/bookings/verification/request` with the guest email. Read
-   `email` and `bookingVerificationToken` from the `/book` URL fragment, clear
-   the fragment immediately, and send the token as `emailVerificationToken`
-   in `POST /api/bookings`. Prompt for a new link after expiry or use; never
-   persist the token in browser storage or analytics. Signed-in Client accounts
-   with a linked guest profile do not require this step.
+   `bookingVerificationToken` from the `/book` URL fragment, clear the fragment
+   immediately, and send the token as `emailVerificationToken` with the email
+   entered in `POST /api/bookings`. Prompt for a new link after expiry or use;
+   never persist the token in browser storage or analytics. Signed-in Client
+   accounts with a linked guest profile do not require this step.
 2. Before `POST /api/bookings`, call `POST /api/pricing/quotes`; display its
    currency, nightly lines, discount, included tax, exclusive tax/fees, total
    and expiry exactly as returned. Keep `quoteToken` in memory only and submit
@@ -73,35 +79,99 @@ values after `#`, not in the query string. On the destination page:
    that an older tab or link will continue working.
 3. Send the fragment token only in `X-Booking-Access-Token`. Code plus email no
    longer authorizes lookup, invoice download, or cancellation for historical
-   bookings either.
+   bookings either. Submit `{ "code": "..." }` to
+   `POST /api/bookings/lookup`; never put a guest email, cancellation narrative,
+   or credential in a URL/query string.
 4. A successful guest or staff cancellation revokes the guest link.
 
 ## Staff operations
 
-1. Listen for SignalR `AccessRevoked`. Immediately clear dashboard state and
-   authentication material and return to sign-in. Suspension, deletion, role
-   changes and security-stamp changes also make reconnect attempts fail.
-2. Image detach/delete responses can be `202 Accepted` with
+1. Before each SignalR connection or reconnect, send the normal JWT only in the
+   `Authorization` header to `POST /api/notifications/realtime-ticket`. Use the
+   returned one-minute, single-use opaque `ticket` as SignalR's access token,
+   force WebSockets, and set `skipNegotiation: true`. Never place the normal JWT
+   in `access_token`. Listen for `AccessRevoked`, then immediately clear
+   dashboard state and authentication material and return to sign-in.
+   Suspension, deletion, role changes and security-stamp changes also make
+   reconnect attempts fail.
+2. The ordinary account-status route continues to reject Administrator
+   targets. The emergency admin dialog calls
+   `POST /api/admin/management/accounts/{id}/emergency-suspend-admin` or
+   `.../emergency-reactivate-admin` with `currentPassword`, the current TOTP
+   `authenticatorCode`, a non-sensitive `reason`, and exact confirmation text
+   `SUSPEND <target-email>` or `REACTIVATE <target-email>`. Never retain or log
+   the password or code. Hide self-action controls and never claim success
+   until the API confirms it.
+3. Image detach/delete responses can be `202 Accepted` with
    `storageDeletion: "Pending"`; the application reference is already gone and
    provider cleanup is durable. Show exhausted jobs from
    `GET /api/admin/media-deletions/failed` and allow an Admin/Manager to call
    `POST /api/admin/media-deletions/{id}/retry`.
-3. Admins must resolve every result from
+4. Admins must resolve every result from
    `GET /api/admin/client-guest-links/issues` with
    `POST /api/admin/client-guest-links/{userId}/reconcile`, supplying the chosen
    guest ID, allowed evidence type, and a non-sensitive reason. Do not put ID
    numbers or document images in the reason field.
-4. Complete a refund by posting JSON to
+5. Complete a refund by posting JSON to
    `POST /api/bookings/{id}/complete-refund` with `transactionReference`, exact
    `amount`, `channel`, matching `evidenceType`, and optional `notes`. For an
    amount at or above the configured high-value threshold, a different
    Admin/Manager must first call `POST /api/bookings/{id}/approve-refund` with a
    reason.
 
+## Reservation amendments and pricing quotes
+
+1. Before amending a reservation, call
+   `POST /api/pricing/quotes/amendments` with `bookingId`, target room type,
+   dates, room quantity, and occupancy.
+2. Display the repriced breakdown: previous stay amount, new room subtotal,
+   price difference, taxes, fees, and updated total amount.
+3. Retain `quoteToken` in-memory only and submit with `quoteId` to
+   `POST /api/reservation-operations/{bookingId}/amend`. Requote if the stay
+   selection changes or expires.
+4. Inform staff and guest that a durable `BookingAmendmentConfirmation` email is
+   automatically queued and dispatched with updated stay dates, room allocations,
+   and remaining balance.
+
+## Folio receipts and staff financial operations
+
+1. Every staff-posted payment (`POST /api/folios/{code}/payments`), discretionary
+   credit (`POST /api/folios/{code}/credits`), and processed refund queues a
+   durable `FolioReceipt` email within the exact same database transaction.
+2. Supply a client-generated UUID in `idempotencyKey` on every financial mutation.
+   On network failure or timeout, resubmit with the identical key to receive the
+   existing entry without duplicating charges, receipts, or emails.
+3. Render `receiptNumber`, `entryType`, `paymentMethod`, `amount`, and
+   `balanceRemaining` on staff checkout and folio receipt screens.
+4. Only Admin, Manager, Finance, and Cashier accounts are authorized for
+   folio payments and closeouts. Reception/FrontDesk accounts may only post
+   itemized add-on charges.
+
+## Privacy management and legal holds
+
+1. Staff dashboard identifies guests under legal hold via `isUnderLegalHold` on
+   the guest profile.
+2. Anonymization and right-to-erasure actions (`DELETE /api/privacy/guests/{id}/erasure`)
+   are strictly rejected (400 Bad Request) while a guest is under legal hold.
+3. Only Admin accounts may place (`POST /api/privacy/guests/{id}/legal-hold`) or
+   release (`DELETE /api/privacy/guests/{id}/legal-hold`) a legal hold with a
+   documented reason.
+4. Retention sweeps and verified erasures scrub guest PII, booking notes, refund
+   notes, guest access tokens, add-on notes, linked Client credentials, external
+   logins, claims, tokens, avatars and subject-linked queued email. A linked
+   Client is eligible only after both the guest-stay retention period and the
+   account-inactivity period expire; every successful login refreshes account
+   activity. Staff-linked guests, legal holds and active privacy requests remain
+   protected. Quarantined email delivery failures retain only minimal delivery
+   failure metadata.
+5. Guest-merge `reason` is an external evidence/case reference with no spaces or
+   personal narrative; show the server validation message when it is rejected.
+
 ## Release acceptance
 
 Test desktop and mobile paths for registration, email verification, login,
 staff MFA enrollment and recovery, room search, direct-transfer booking,
 secure booking lookup, add-ons, invoice download, cancellation, profile/avatar
-updates and role-restricted dashboard actions. Verify no browser console error,
-failed network request, accessibility blocker or secret-bearing URL remains.
+updates, reservation amendments, folio settlement receipts, legal hold
+enforcement, and role-restricted dashboard actions. Verify no browser console
+error, failed network request, accessibility blocker or secret-bearing URL remains.

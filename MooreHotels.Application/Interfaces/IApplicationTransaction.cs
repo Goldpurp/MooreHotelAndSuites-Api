@@ -7,4 +7,7 @@ public interface IApplicationTransaction
         Guid userId,
         Func<Task> operation,
         CancellationToken cancellationToken = default);
+    Task ExecuteWithAdminStatusLockAsync(
+        Func<Task> operation,
+        CancellationToken cancellationToken = default);
 }

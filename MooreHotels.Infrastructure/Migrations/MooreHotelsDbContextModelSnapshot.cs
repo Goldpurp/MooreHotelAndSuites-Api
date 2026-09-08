@@ -202,6 +202,9 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<int>("AccessFailedCount")
                         .HasColumnType("integer");
 
+                    b.Property<DateTime?>("AnonymizedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("AvatarPublicId")
                         .HasMaxLength(512)
                         .HasColumnType("character varying(512)");
@@ -231,6 +234,9 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<string>("GuestId")
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
+
+                    b.Property<DateTime?>("LastAuthenticatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<bool>("LockoutEnabled")
                         .HasColumnType("boolean");
@@ -280,6 +286,9 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(30)
                         .HasColumnType("character varying(30)");
 
+                    b.Property<DateTime?>("StatusChangedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<bool>("TwoFactorEnabled")
                         .HasColumnType("boolean");
 
@@ -302,8 +311,12 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.HasIndex("Status", "Role");
 
+                    b.HasIndex("Role", "AnonymizedAtUtc", "LastAuthenticatedAtUtc", "StatusChangedAtUtc");
+
                     b.ToTable("users", null, t =>
                         {
+                            t.HasCheckConstraint("CK_users_anonymized_accounts_suspended", "\"AnonymizedAtUtc\" IS NULL OR \"Status\" = 'Suspended'");
+
                             t.HasCheckConstraint("CK_users_privacy_acceptance_consistent", "(\"PrivacyPolicyVersion\" IS NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NULL) OR (\"PrivacyPolicyVersion\" IS NOT NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NOT NULL)");
                         });
                 });
@@ -823,6 +836,9 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<int>("AdultCount")
                         .HasColumnType("integer");
 
+                    b.Property<Guid?>("AmendmentBookingId")
+                        .HasColumnType("uuid");
+
                     b.Property<DateOnly>("CheckInDate")
                         .HasColumnType("date");
 
@@ -889,6 +905,8 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.HasIndex("AccessTokenHash")
                         .IsUnique();
+
+                    b.HasIndex("AmendmentBookingId");
 
                     b.HasIndex("PromotionId");
 
@@ -1138,6 +1156,32 @@ namespace MooreHotels.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.DatabaseEnvironmentBoundary", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime>("BoundAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("EnvironmentName")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("environment_boundaries", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_environment_boundaries_environment", "\"EnvironmentName\" IN ('local', 'production')");
+
+                            t.HasCheckConstraint("CK_environment_boundaries_singleton", "\"Id\" = 1");
+                        });
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.DistributionChannel", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1183,6 +1227,13 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("DataSubjectGuestId")
+                        .HasMaxLength(20)
+                        .HasColumnType("character varying(20)");
+
+                    b.Property<string>("DeliveryFailureMetadataJson")
+                        .HasColumnType("jsonb");
+
                     b.Property<string>("LastErrorCode")
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
@@ -1200,6 +1251,9 @@ namespace MooreHotels.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<DateTime?>("QuarantinedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("Recipient")
                         .IsRequired()
                         .HasMaxLength(254)
@@ -1213,6 +1267,10 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CreatedAtUtc");
+
+                    b.HasIndex("DataSubjectGuestId");
+
+                    b.HasIndex("QuarantinedAtUtc");
 
                     b.HasIndex("NextAttemptAtUtc", "LockedUntilUtc", "AttemptCount");
 
@@ -1384,10 +1442,26 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
 
+                    b.Property<bool>("IsUnderLegalHold")
+                        .HasColumnType("boolean");
+
                     b.Property<string>("LastName")
                         .IsRequired()
                         .HasMaxLength(80)
                         .HasColumnType("character varying(80)");
+
+                    b.Property<DateTime?>("LegalHoldPlacedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("LegalHoldPlacedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("LegalHoldReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime?>("MarketingObjectedAtUtc")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<DateTime?>("MergedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -1420,11 +1494,16 @@ namespace MooreHotels.Infrastructure.Migrations
                         .IsRequired()
                         .HasColumnType("jsonb");
 
+                    b.Property<DateTime?>("ProcessingRestrictedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
                     b.HasKey("Id");
 
                     b.HasIndex("AnonymizedAtUtc");
 
                     b.HasIndex("Email");
+
+                    b.HasIndex("IsUnderLegalHold");
 
                     b.HasIndex("MergedByUserId");
 
@@ -1474,8 +1553,8 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.Property<string>("Reason")
                         .IsRequired()
-                        .HasMaxLength(500)
-                        .HasColumnType("character varying(500)");
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
 
                     b.HasKey("Id");
 
@@ -2064,10 +2143,37 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasMaxLength(2000)
                         .HasColumnType("character varying(2000)");
 
+                    b.Property<DateTime>("DueAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("ExportGeneratedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("FulfilledAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("FulfillmentDigest")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<string>("FulfillmentEvidenceReference")
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
                     b.Property<string>("GuestId")
                         .IsRequired()
                         .HasMaxLength(20)
                         .HasColumnType("character varying(20)");
+
+                    b.Property<string>("IdentityVerificationReference")
+                        .HasMaxLength(160)
+                        .HasColumnType("character varying(160)");
+
+                    b.Property<DateTime?>("IdentityVerifiedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("IdentityVerifiedByUserId")
+                        .HasColumnType("uuid");
 
                     b.Property<DateTime>("RequestedAtUtc")
                         .HasColumnType("timestamp with time zone");
@@ -2097,16 +2203,30 @@ namespace MooreHotels.Infrastructure.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("IdentityVerifiedByUserId");
+
                     b.HasIndex("RequestedByUserId");
 
                     b.HasIndex("ResolvedByUserId");
 
                     b.HasIndex("GuestId", "RequestedAtUtc");
 
+                    b.HasIndex("GuestId", "Type")
+                        .IsUnique()
+                        .HasFilter("\"Status\" IN ('Pending', 'InProgress')");
+
+                    b.HasIndex("Status", "DueAtUtc");
+
                     b.HasIndex("Status", "RequestedAtUtc");
 
                     b.ToTable("privacy_requests", null, t =>
                         {
+                            t.HasCheckConstraint("CK_privacy_requests_due_date", "\"DueAtUtc\" >= \"RequestedAtUtc\"");
+
+                            t.HasCheckConstraint("CK_privacy_requests_fulfillment_consistent", "(\"Status\" = 'Completed' AND \"FulfilledAtUtc\" IS NOT NULL AND \"FulfillmentEvidenceReference\" IS NOT NULL AND \"FulfillmentDigest\" IS NOT NULL) OR (\"Status\" <> 'Completed' AND \"FulfilledAtUtc\" IS NULL AND \"FulfillmentEvidenceReference\" IS NULL AND \"FulfillmentDigest\" IS NULL AND \"ExportGeneratedAtUtc\" IS NULL)");
+
+                            t.HasCheckConstraint("CK_privacy_requests_identity_consistent", "(\"IdentityVerifiedAtUtc\" IS NULL AND \"IdentityVerifiedByUserId\" IS NULL AND \"IdentityVerificationReference\" IS NULL) OR (\"IdentityVerifiedAtUtc\" IS NOT NULL AND \"IdentityVerifiedByUserId\" IS NOT NULL AND \"IdentityVerificationReference\" IS NOT NULL)");
+
                             t.HasCheckConstraint("CK_privacy_requests_resolution_consistent", "(\"Status\" IN ('Completed', 'Rejected') AND \"ResolvedAtUtc\" IS NOT NULL AND \"ResolvedByUserId\" IS NOT NULL) OR (\"Status\" IN ('Pending', 'InProgress') AND \"ResolvedAtUtc\" IS NULL AND \"ResolvedByUserId\" IS NULL)");
                         });
                 });
@@ -2498,6 +2618,38 @@ namespace MooreHotels.Infrastructure.Migrations
                         });
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.RoomInventoryPeriod", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateOnly?>("EndDate")
+                        .HasColumnType("date");
+
+                    b.Property<DateTime>("RecordedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("RoomId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateOnly>("StartDate")
+                        .HasColumnType("date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("RoomId")
+                        .IsUnique()
+                        .HasFilter("\"EndDate\" IS NULL");
+
+                    b.HasIndex("RoomId", "StartDate", "EndDate");
+
+                    b.ToTable("room_inventory_periods", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_room_inventory_periods_dates", "\"EndDate\" IS NULL OR \"EndDate\" > \"StartDate\"");
+                        });
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.RoomType", b =>
                 {
                     b.Property<Guid>("Id")
@@ -2770,6 +2922,11 @@ namespace MooreHotels.Infrastructure.Migrations
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.BookingQuote", b =>
                 {
+                    b.HasOne("MooreHotels.Domain.Entities.Booking", "AmendmentBooking")
+                        .WithMany()
+                        .HasForeignKey("AmendmentBookingId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("MooreHotels.Domain.Entities.Promotion", "Promotion")
                         .WithMany()
                         .HasForeignKey("PromotionId")
@@ -2791,6 +2948,8 @@ namespace MooreHotels.Infrastructure.Migrations
                         .HasForeignKey("RoomTypeId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("AmendmentBooking");
 
                     b.Navigation("Promotion");
 
@@ -2873,6 +3032,14 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Navigation("Room");
 
                     b.Navigation("RoomType");
+                });
+
+            modelBuilder.Entity("MooreHotels.Domain.Entities.EmailOutboxMessage", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.Guest", null)
+                        .WithMany()
+                        .HasForeignKey("DataSubjectGuestId")
+                        .OnDelete(DeleteBehavior.Cascade);
                 });
 
             modelBuilder.Entity("MooreHotels.Domain.Entities.Folio", b =>
@@ -3119,6 +3286,11 @@ namespace MooreHotels.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
+                    b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "IdentityVerifiedByUser")
+                        .WithMany()
+                        .HasForeignKey("IdentityVerifiedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
                     b.HasOne("MooreHotels.Domain.Entities.ApplicationUser", "RequestedByUser")
                         .WithMany()
                         .HasForeignKey("RequestedByUserId")
@@ -3130,6 +3302,8 @@ namespace MooreHotels.Infrastructure.Migrations
                         .OnDelete(DeleteBehavior.SetNull);
 
                     b.Navigation("Guest");
+
+                    b.Navigation("IdentityVerifiedByUser");
 
                     b.Navigation("RequestedByUser");
 
@@ -3227,6 +3401,17 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Navigation("RoomType");
                 });
 
+            modelBuilder.Entity("MooreHotels.Domain.Entities.RoomInventoryPeriod", b =>
+                {
+                    b.HasOne("MooreHotels.Domain.Entities.Room", "Room")
+                        .WithMany("InventoryPeriods")
+                        .HasForeignKey("RoomId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Room");
+                });
+
             modelBuilder.Entity("MooreHotels.Domain.Entities.Booking", b =>
                 {
                     b.Navigation("AddOns");
@@ -3274,6 +3459,8 @@ namespace MooreHotels.Infrastructure.Migrations
                     b.Navigation("HousekeepingTasks");
 
                     b.Navigation("Images");
+
+                    b.Navigation("InventoryPeriods");
 
                     b.Navigation("MaintenanceWorkOrders");
                 });

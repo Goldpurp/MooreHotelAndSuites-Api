@@ -35,6 +35,14 @@ it, applies every EF Core migration, creates the Identity roles, and provisions
 the configured initial administrator. Database creation is rejected in every
 non-Local environment.
 
+Local accepts only PostgreSQL on loopback (or an explicitly enabled,
+single-label test-container host) and a database name containing a distinct
+`local`, `dev`, or `test` segment. The first startup permanently stamps that
+database `local`; startup stops before serving traffic if the stored stamp is
+`production`. Production pre-deploy performs the inverse check and will not
+bind or migrate a Local-stamped database. Local and Production also use
+different JWT issuer/audience pairs and Data Protection application names.
+
 The API listens on `http://127.0.0.1:5222`; local Swagger is available at
 `/swagger`. `/health/live` reports process liveness, `/health/ready` reports
 database readiness, and `/api/health` reports detailed operational health.
@@ -62,12 +70,10 @@ restricted to the configured browser origins.
 
 ## Transactional email (Brevo)
 
-Local and Production can both use the real Brevo transactional-email API.
-Email is configured independently from `Runtime__EnableExternalServices` and
-`MonnifySettings__Enabled`, so Monnify can remain disabled while real mail and
-Production Cloudinary uploads continue to work. Put these
-values in the ignored `.env.local` for Local and in the cloud secret manager
-for Production:
+Local is capture-only and cannot call Brevo, Cloudinary, Monnify or another
+external provider. This prevents local tests, seeded accounts and sample data
+from affecting production systems. Production Brevo configuration belongs only
+in the cloud secret manager:
 
 - `EmailSettings__DeliveryMode=Brevo`
 - `EmailSettings__ApiPass`
@@ -78,9 +84,10 @@ for Production:
 
 The sender address must exist as a verified Brevo sender. Authenticate its
 domain in Brevo as well so messages are not rejected or routed to spam.
-Startup fails with a clear configuration error when Brevo mode has a missing
-key, invalid sender/admin address, or placeholder value. Never commit or log the
-API key.
+Production startup fails with a clear configuration error when Brevo mode has a
+missing key, invalid sender/admin address, or placeholder value. Local startup
+fails if Brevo mode or external provider access is enabled. Never commit or log
+the API key.
 
 The API sends lifecycle messages for:
 
@@ -163,7 +170,9 @@ after 24 hours. The API stores only its hash and validity window; it does not
 retain a reversible copy, and the raw token is never written to audit logs.
 The browser sends the token in `X-Booking-Access-Token`, not an API URL, and
 email links put it in the URL fragment so it is not sent to the website host or
-CDN. A non-enumerating access-link request rotates the token and emails a
+CDN. Booking lookup uses `POST /api/bookings/lookup` with `{ "code": "..." }`
+in JSON; neither guest email nor the token belongs in a query string. A
+non-enumerating access-link request rotates the token and emails a
 two-hour replacement. Code plus email alone cannot read or cancel either new or
 historical bookings, and cancellation revokes the active link.
 
@@ -279,10 +288,10 @@ HMAC-SHA512 `monnify-signature`, ignores payment facts in the webhook body, and
 performs a new server-to-server verification before changing the booking.
 
 Monnify's sandbox does not add the production signature. This API therefore
-does not accept sandbox webhooks. For an optional Local sandbox checkout, use
-the commented values in `.env.local.example`, complete the hosted payment, and
-then use the authenticated Admin/Manager “Verify Monnify” action. Never paste
-Monnify credentials into source files, tickets, logs, or chat.
+does not accept sandbox webhooks. Local is provider-isolated and cannot perform
+a real sandbox checkout or verification; automated tests may opt into in-memory
+provider doubles without enabling network access. Never paste Monnify
+credentials into source files, tickets, logs, or chat.
 
 ## Production requirements
 

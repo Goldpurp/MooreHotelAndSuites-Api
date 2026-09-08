@@ -36,6 +36,9 @@ API contract before production promotion.
   `GET /api/privacy/requests/mine`.
 - A guest without an account may submit the same request with a booking code
   and the secure booking-link token in `X-Booking-Access-Token`.
+- Guest booking lookup is `POST /api/bookings/lookup` with the booking code in
+  JSON and the secure-link token in `X-Booking-Access-Token`; query-string
+  lookup is intentionally unsupported.
 
 ## Staff dashboard
 
@@ -44,16 +47,35 @@ API contract before production promotion.
   access.
 - Reservation read: Reception, FrontDesk, Concierge.
 - Reservation mutation and guest PII: Reception, FrontDesk.
-- Booking folio/add-ons: Reception, FrontDesk, Concierge.
+- Folio read: Reception, FrontDesk, Finance, Cashier. Itemized add-on charges:
+  Reception and FrontDesk. Manual bank/cash/other payments and folio close:
+  Finance and Cashier. Credits, voids, and non-add-on adjustments: Admin and
+  Manager only. Concierge may add an approved booking incidental but cannot
+  read the financial folio.
 - Operations and visit records: Reception, FrontDesk.
 - Housekeeping does not receive these broad scopes; its dedicated task board
   is a separate feature set.
 - Admin privacy queue: `GET /api/privacy/requests`; resolve with
-  `PATCH /api/privacy/requests/{id}/status`. A completed or rejected request
+  `PATCH /api/privacy/requests/{id}/status`. Completion requires
+  `identityVerificationReference`, `fulfillmentEvidenceReference`, and the
+  type-specific payload: `rectification` for rectification, or
+  `confirmAction: true` for erasure, restriction, and objection. Access and
+  portability completion records the generated export digest and timestamp.
+  A completed or rejected request
   requires resolution notes and cannot be reopened through this endpoint.
-- On SignalR `AccessRevoked`, immediately clear local credentials and return to
-  sign-in. Password reset, account suspension, role changes, department
-  changes, and security-sensitive profile changes can cause this event.
+- Obtain a single-use ticket from
+  `POST /api/notifications/realtime-ticket` using the JWT in the
+  `Authorization` header. Connect to SignalR with that ticket, WebSockets, and
+  `skipNegotiation: true`; never put the JWT itself in `access_token`. Obtain a
+  fresh ticket for every reconnect. On `AccessRevoked`, immediately clear local
+  credentials and return to sign-in. Password reset, account suspension, role
+  changes, department changes, and security-sensitive profile changes can
+  cause this event.
+- Ordinary status controls must not target an Administrator. The emergency
+  suspend/reactivate UI requires the acting Admin's current password, current
+  TOTP code, a non-sensitive reason, and exact target-email confirmation. Do
+  not retain those step-up values. Self-suspension is prohibited and the API
+  serializes concurrent actions to preserve one operational administrator.
 
 ## Required acceptance tests in the frontend repositories
 

@@ -4,27 +4,37 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Domain.Entities;
+using Microsoft.AspNetCore.RateLimiting;
+using MooreHotels.WebAPI.Extensions;
+using MooreHotels.Infrastructure.Identity;
 
 namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/mfa")]
-[Authorize(Roles = "Admin,Manager,Staff")]
+[Authorize]
 public sealed class MfaController : ControllerBase
 {
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly SignInManager<ApplicationUser> _signInManager;
+    private readonly IJwtService _jwtService;
     private readonly IConfiguration _configuration;
 
     public MfaController(
         UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
+        IJwtService jwtService,
         IConfiguration configuration)
     {
         _userManager = userManager;
+        _signInManager = signInManager;
+        _jwtService = jwtService;
         _configuration = configuration;
     }
 
     [HttpPost("setup")]
-    public async Task<IActionResult> Setup()
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
+    public async Task<IActionResult> Setup([FromBody] SetupMfaRequest request)
     {
         var user = await GetCurrentUserAsync();
         if (user is null) return Unauthorized();
@@ -32,6 +42,8 @@ public sealed class MfaController : ControllerBase
         {
             return Conflict(new { Message = "Two-factor authentication is already enabled." });
         }
+        if (!await HasValidPasswordAsync(user, request.CurrentPassword))
+            return Unauthorized(new { Message = "Current password verification failed." });
 
         var key = await _userManager.GetAuthenticatorKeyAsync(user);
         if (string.IsNullOrWhiteSpace(key))
@@ -54,11 +66,13 @@ public sealed class MfaController : ControllerBase
         {
             SharedKey = key,
             AuthenticatorUri = authenticatorUri,
+            AccessToken = _jwtService.GenerateToken(user),
             Message = "Add this account to an authenticator app, then confirm a current code."
         });
     }
 
     [HttpPost("enable")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> Enable([FromBody] EnableMfaRequest request)
     {
         var user = await GetCurrentUserAsync();
@@ -67,6 +81,8 @@ public sealed class MfaController : ControllerBase
         {
             return Conflict(new { Message = "Two-factor authentication is already enabled." });
         }
+        if (!await HasValidPasswordAsync(user, request.CurrentPassword))
+            return Unauthorized(new { Message = "Current password verification failed." });
 
         var code = request.Code
             .Replace(" ", string.Empty, StringComparison.Ordinal)
@@ -100,5 +116,16 @@ public sealed class MfaController : ControllerBase
         return Guid.TryParse(userId, out _)
             ? await _userManager.FindByIdAsync(userId)
             : null;
+    }
+
+    private async Task<bool> HasValidPasswordAsync(
+        ApplicationUser user,
+        string currentPassword)
+    {
+        var result = await _signInManager.CheckPasswordSignInAsync(
+            user,
+            currentPassword,
+            lockoutOnFailure: true);
+        return result.Succeeded || result.RequiresTwoFactor;
     }
 }

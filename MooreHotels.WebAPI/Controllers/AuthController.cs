@@ -17,6 +17,7 @@ using MooreHotels.Infrastructure.Identity;
 using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.WebAPI.Extensions;
 using System.Text;
+using System.Diagnostics;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -123,6 +124,13 @@ public class AuthController : ControllerBase
             return Unauthorized(new { Message = "Sign-in is unavailable for this account." });
         }
 
+        var authenticatedAtUtc = DateTime.UtcNow;
+        await _dbContext.Users
+            .Where(account => account.Id == user.Id)
+            .ExecuteUpdateAsync(setters => setters.SetProperty(
+                account => account.LastAuthenticatedAtUtc,
+                authenticatedAtUtc));
+        user.LastAuthenticatedAtUtc = authenticatedAtUtc;
         var token = _jwtService.GenerateToken(user);
         var staffMfaRequired = _configuration.GetValue<bool>("Security:RequireStaffMfa") &&
                                user.Role is UserRole.Admin or UserRole.Manager or UserRole.Staff &&
@@ -201,7 +209,8 @@ public class AuthController : ControllerBase
                     : null,
                 EmailConfirmed = autoConfirm,
                 LockoutEnabled = true,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                StatusChangedAtUtc = DateTime.UtcNow
             };
 
             await using var transaction = await _dbContext.Database.BeginTransactionAsync();
@@ -247,17 +256,17 @@ public class AuthController : ControllerBase
         return value.TrimStart().StartsWith('+') && digits.Length > 0 ? $"+{digits}" : digits;
     }
 
-    [HttpGet("verify-email")]
+    [HttpPost("verify-email")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.LookupRateLimitPolicy)]
-    public async Task<IActionResult> VerifyEmail([FromQuery] string userId, [FromQuery] string token)
+    public async Task<IActionResult> VerifyEmail([FromBody] VerifyEmailRequest request)
     {
-        if (!Guid.TryParse(userId, out _) || string.IsNullOrWhiteSpace(token) || token.Length > 4096)
+        if (!Guid.TryParse(request.UserId, out _) || string.IsNullOrWhiteSpace(request.Token))
         {
             return BadRequest(new { Message = "The verification link is invalid or expired." });
         }
 
-        var user = await _userManager.FindByIdAsync(userId);
+        var user = await _userManager.FindByIdAsync(request.UserId);
         if (user is null)
         {
             return BadRequest(new { Message = "The verification link is invalid or expired." });
@@ -272,7 +281,7 @@ public class AuthController : ControllerBase
         string decodedToken;
         try
         {
-            decodedToken = Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(token));
+            decodedToken = Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(request.Token));
         }
         catch (FormatException)
         {
@@ -306,6 +315,7 @@ public class AuthController : ControllerBase
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> ResendVerification([FromBody] ForgotPasswordRequest request)
     {
+        var started = Stopwatch.GetTimestamp();
         var user = await _userManager.FindByEmailAsync(request.Email.Trim().ToLowerInvariant());
         if (user is not null && !user.EmailConfirmed)
         {
@@ -315,9 +325,13 @@ public class AuthController : ControllerBase
             }
             catch (Exception exception)
             {
-                _logger.LogWarning(exception, "Verification email could not be queued.");
+                _logger.LogWarning(
+                    "Verification email could not be queued because of {ExceptionType}.",
+                    exception.GetType().Name);
             }
         }
+
+        await DelayEnumerationResponseAsync(started);
 
         return Ok(new { Message = "If the account requires verification, a new link has been sent." });
     }
@@ -327,6 +341,7 @@ public class AuthController : ControllerBase
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
     {
+        var started = Stopwatch.GetTimestamp();
         var user = await _userManager.FindByEmailAsync(request.Email.Trim().ToLowerInvariant());
         if (user is not null && user.EmailConfirmed)
         {
@@ -336,19 +351,24 @@ public class AuthController : ControllerBase
                 var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
                 var resetUrl = BuildFrontendFragmentUrl("reset-password", new Dictionary<string, string?>
                 {
-                    ["email"] = user.Email,
+                    ["userId"] = user.Id.ToString(),
                     ["token"] = encodedToken
                 });
                 await _emailOutbox.EnqueueAsync(
                     TransactionalEmailTemplates.PasswordReset,
                     user.Email!,
-                    new PasswordResetEmail(user.Name, resetUrl));
+                    new PasswordResetEmail(user.Name, resetUrl),
+                    dataSubjectGuestId: user.GuestId);
             }
             catch (Exception exception)
             {
-                _logger.LogWarning(exception, "Password reset email delivery failed.");
+                _logger.LogWarning(
+                    "Password reset email delivery failed because of {ExceptionType}.",
+                    exception.GetType().Name);
             }
         }
+
+        await DelayEnumerationResponseAsync(started);
 
         return Ok(new { Message = "If an eligible account exists, password reset instructions have been sent." });
     }
@@ -358,7 +378,12 @@ public class AuthController : ControllerBase
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
     {
-        var user = await _userManager.FindByEmailAsync(request.Email.Trim().ToLowerInvariant());
+        if (!Guid.TryParse(request.UserId, out _))
+        {
+            return BadRequest(new { Message = "The password reset link is invalid or expired." });
+        }
+
+        var user = await _userManager.FindByIdAsync(request.UserId);
         if (user is null)
         {
             return BadRequest(new { Message = "The password reset link is invalid or expired." });
@@ -413,7 +438,8 @@ public class AuthController : ControllerBase
         await _emailOutbox.EnqueueAsync(
             TransactionalEmailTemplates.EmailVerification,
             user.Email!,
-            new EmailVerificationEmail(user.Name, verificationUrl));
+            new EmailVerificationEmail(user.Name, verificationUrl),
+            dataSubjectGuestId: user.GuestId);
     }
 
     private string BuildFrontendFragmentUrl(string path, IDictionary<string, string?> values)
@@ -421,5 +447,14 @@ public class AuthController : ControllerBase
         var baseUrl = _configuration["PublicAppUrl"]
             ?? throw new InvalidOperationException("PublicAppUrl is not configured.");
         return FrontendLinkBuilder.WithFragment(baseUrl, path, values);
+    }
+
+    private static async Task DelayEnumerationResponseAsync(long startedTimestamp)
+    {
+        var targetMilliseconds = Random.Shared.Next(150, 251);
+        var elapsed = Stopwatch.GetElapsedTime(startedTimestamp).TotalMilliseconds;
+        var remaining = targetMilliseconds - elapsed;
+        if (remaining > 0)
+            await Task.Delay(TimeSpan.FromMilliseconds(remaining));
     }
 }

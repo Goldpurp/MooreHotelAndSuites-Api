@@ -2,6 +2,9 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Application.Common;
+using MooreHotels.WebAPI.Extensions;
+using MooreHotels.WebAPI.Services;
+using Microsoft.AspNetCore.RateLimiting;
 using System.Security.Claims;
 
 namespace MooreHotels.WebAPI.Controllers;
@@ -13,13 +16,40 @@ public class NotificationsController : ControllerBase
 {
     private readonly INotificationService _notificationService;
     private readonly IAuthorizationService _authorizationService;
+    private readonly RealtimeAccessTicketStore _realtimeTickets;
 
     public NotificationsController(
         INotificationService notificationService,
-        IAuthorizationService authorizationService)
+        IAuthorizationService authorizationService,
+        RealtimeAccessTicketStore realtimeTickets)
     {
         _notificationService = notificationService;
         _authorizationService = authorizationService;
+        _realtimeTickets = realtimeTickets;
+    }
+
+    [HttpPost("realtime-ticket")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
+    public IActionResult IssueRealtimeTicket()
+    {
+        var authorization = Request.Headers.Authorization.ToString();
+        const string bearerPrefix = "Bearer ";
+        if (!authorization.StartsWith(bearerPrefix, StringComparison.OrdinalIgnoreCase))
+            return Unauthorized();
+
+        var bearerToken = authorization[bearerPrefix.Length..].Trim();
+        if (bearerToken.Length is 0 or > 8192)
+            return Unauthorized();
+
+        var ticket = _realtimeTickets.Issue(bearerToken);
+        return Ok(new
+        {
+            ticket.Ticket,
+            ticket.ExpiresAtUtc,
+            Transport = "WebSockets",
+            SkipNegotiation = true
+        });
     }
 
     [HttpGet("staff")]

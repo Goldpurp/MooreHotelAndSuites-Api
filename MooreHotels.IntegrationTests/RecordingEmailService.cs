@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces;
 
 namespace MooreHotels.IntegrationTests;
@@ -155,4 +156,14 @@ public sealed class RecordingEmailService : IEmailService
         string roomName,
         decimal amount) =>
         Record("AdminRefund", adminEmail, bookingCode);
+
+    public Task SendBookingAmendmentConfirmationAsync(
+        string email,
+        BookingAmendmentConfirmationEmail payload) =>
+        Record("BookingAmendmentConfirmation", email, payload.BookingCode, payload.ManageBookingUrl);
+
+    public Task SendFolioReceiptAsync(
+        string email,
+        FolioReceiptEmail payload) =>
+        Record("FolioReceipt", email, payload.BookingCode, payload.ReceiptNumber);
 }

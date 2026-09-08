@@ -77,7 +77,11 @@ public sealed class RemainingProductionControlsTests
             HttpMethod.Put,
             "/api/profile/me",
             staff,
-            new { email = $"changed-{Guid.NewGuid():N}@example.test" });
+            new
+            {
+                email = $"changed-{Guid.NewGuid():N}@example.test",
+                currentPassword = "TransferTest123!"
+            });
         using var response = await _fixture.Client.SendAsync(update);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

@@ -101,7 +101,10 @@ public class ImagesController : ControllerBase
                     "OrphanedMediaAsset",
                     HttpContext.TraceIdentifier);
             }
-            _logger.LogError(exception, "Image upload failed for folder {Folder}.", folder);
+            _logger.LogError(
+                "Image upload failed for folder {Folder} with {ExceptionType}.",
+                folder,
+                exception.GetType().Name);
             return StatusCode(500, new { message = "The image could not be uploaded." });
         }
     }

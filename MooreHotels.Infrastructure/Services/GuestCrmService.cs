@@ -1,10 +1,12 @@
 using System.Data;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
+using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Persistence;
 
 namespace MooreHotels.Infrastructure.Services;
@@ -12,6 +14,10 @@ namespace MooreHotels.Infrastructure.Services;
 public sealed class GuestCrmService : IGuestCrmService
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+    private static readonly Regex EvidenceReferencePattern = new(
+        "^[A-Za-z0-9][A-Za-z0-9._:/-]{9,159}$",
+        RegexOptions.CultureInvariant,
+        TimeSpan.FromMilliseconds(100));
     private readonly MooreHotelsDbContext _db;
 
     public GuestCrmService(MooreHotelsDbContext db) => _db = db;
@@ -46,16 +52,29 @@ public sealed class GuestCrmService : IGuestCrmService
             ParsePreferences(guest.PreferencesJson), stays, notes);
     }
 
-    public async Task<GuestCrmProfileDto> UpdatePreferencesAsync(
+    public async Task<GuestPreferencesDto> UpdatePreferencesAsync(
         string guestId,
         UpdateGuestPreferencesRequest request,
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequireActorAsync(actorId, managementOnly: false, cancellationToken);
+        var preferredLanguage = Clean(request.PreferredLanguage, "Preferred language", 40);
+        var beddingPreference = Clean(request.BeddingPreference, "Bedding preference", 80);
+        var dietaryNotes = Clean(request.DietaryNotes, "Dietary notes", 300);
+        var accessibilityNeeds = Clean(request.AccessibilityNeeds, "Accessibility needs", 300);
+        var consentReference = Clean(request.MarketingConsentReference,
+            "Marketing consent reference", 160);
+        if (request.MarketingOptIn &&
+            (consentReference is null || !EvidenceReferencePattern.IsMatch(consentReference)))
+        {
+            throw new BadRequestException(
+                "A non-sensitive consent or case reference is required for marketing opt-in.");
+        }
         var guest = await ResolveGuestAsync(guestId, cancellationToken, tracked: true);
         var preferences = new GuestPreferencesDto(
-            Clean(request.PreferredLanguage), Clean(request.BeddingPreference),
-            Clean(request.DietaryNotes), Clean(request.AccessibilityNeeds), request.MarketingOptIn);
+            preferredLanguage, beddingPreference, dietaryNotes, accessibilityNeeds,
+            request.MarketingOptIn);
         guest.PreferencesJson = JsonSerializer.Serialize(preferences, JsonOptions);
         AddAudit(actorId, "GUEST_PREFERENCES_UPDATED", guest.Id, null,
             JsonSerializer.Serialize(new
@@ -66,10 +85,11 @@ public sealed class GuestCrmService : IGuestCrmService
                     nameof(request.DietaryNotes), nameof(request.AccessibilityNeeds),
                     nameof(request.MarketingOptIn)
                 },
-                request.MarketingOptIn
+                request.MarketingOptIn,
+                MarketingConsentReference = consentReference
             }));
         await _db.SaveChangesAsync(cancellationToken);
-        return await GetProfileAsync(guest.Id, true, cancellationToken);
+        return preferences;
     }
 
     public async Task<GuestNoteDto> AddNoteAsync(
@@ -78,9 +98,10 @@ public sealed class GuestCrmService : IGuestCrmService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequireActorAsync(actorId, managementOnly: true, cancellationToken);
         var guest = await ResolveGuestAsync(guestId, cancellationToken);
         var body = request.Body?.Trim() ?? string.Empty;
-        if (body.Length is < 4 or > 1000)
+        if (body.Length is < 4 or > 1000 || body.Any(IsUnsafeControlCharacter))
             throw new BadRequestException("Guest notes must contain 4 to 1000 characters.");
         var note = new GuestNote
         {
@@ -104,15 +125,21 @@ public sealed class GuestCrmService : IGuestCrmService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequireActorAsync(actorId, managementOnly: true, cancellationToken);
+        var contactType = request.ContactType?.Trim() ?? string.Empty;
+        var evidenceReference = request.EvidenceReference?.Trim() ?? string.Empty;
+        if (contactType is not ("Email" or "Phone") ||
+            !EvidenceReferencePattern.IsMatch(evidenceReference))
+            throw new BadRequestException("Contact verification evidence is invalid.");
         var guest = await ResolveGuestAsync(guestId, cancellationToken, tracked: true);
         var now = DateTime.UtcNow;
-        if (request.ContactType.Equals("Email", StringComparison.OrdinalIgnoreCase))
+        if (contactType == "Email")
             guest.EmailVerifiedAtUtc = now;
-        else if (request.ContactType.Equals("Phone", StringComparison.OrdinalIgnoreCase))
+        else if (contactType == "Phone")
             guest.PhoneVerifiedAtUtc = now;
         else throw new BadRequestException("Contact type must be Email or Phone.");
-        AddAudit(actorId, $"GUEST_{request.ContactType.ToUpperInvariant()}_VERIFIED", guest.Id, null,
-            JsonSerializer.Serialize(new { request.EvidenceReference, VerifiedAtUtc = now }));
+        AddAudit(actorId, $"GUEST_{contactType.ToUpperInvariant()}_VERIFIED", guest.Id, null,
+            JsonSerializer.Serialize(new { EvidenceReference = evidenceReference, VerifiedAtUtc = now }));
         await _db.SaveChangesAsync(cancellationToken);
     }
 
@@ -143,37 +170,55 @@ public sealed class GuestCrmService : IGuestCrmService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
-        if (request.PrimaryGuestId == request.DuplicateGuestId)
+        await RequireActorAsync(actorId, managementOnly: true, cancellationToken);
+        var primaryGuestId = NormalizeGuestId(request.PrimaryGuestId);
+        var duplicateGuestId = NormalizeGuestId(request.DuplicateGuestId);
+        if (primaryGuestId == duplicateGuestId)
             throw new BadRequestException("Primary and duplicate guest must be different records.");
+        var evidenceType = request.EvidenceType?.Trim() ?? string.Empty;
+        if (evidenceType is not ("VerifiedEmail" or "VerifiedPhone" or "GovernmentIdReviewed" or "ManualReview"))
+            throw new BadRequestException("The merge evidence type is invalid.");
+        var evidenceReference = request.Reason?.Trim() ?? string.Empty;
+        if (!EvidenceReferencePattern.IsMatch(evidenceReference))
+            throw new BadRequestException(
+                "Reason must be a non-sensitive evidence or case reference without spaces.");
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
             _db.ChangeTracker.Clear();
             await using var transaction = await _db.Database.BeginTransactionAsync(
                 IsolationLevel.Serializable, cancellationToken);
-            var ids = new[] { request.PrimaryGuestId.Trim(), request.DuplicateGuestId.Trim() }
+            var ids = new[] { primaryGuestId, duplicateGuestId }
                 .OrderBy(item => item, StringComparer.Ordinal).ToArray();
             var locked = await _db.Guests.FromSqlInterpolated(
                     $"SELECT * FROM guests WHERE \"Id\" = ANY({ids}) ORDER BY \"Id\" FOR UPDATE")
                 .ToListAsync(cancellationToken);
-            var primary = locked.SingleOrDefault(item => item.Id == request.PrimaryGuestId)
+            var primary = locked.SingleOrDefault(item => item.Id == primaryGuestId)
                 ?? throw new NotFoundException("Primary guest not found.");
-            var duplicate = locked.SingleOrDefault(item => item.Id == request.DuplicateGuestId)
+            var duplicate = locked.SingleOrDefault(item => item.Id == duplicateGuestId)
                 ?? throw new NotFoundException("Duplicate guest not found.");
             if (primary.MergedIntoGuestId is not null || duplicate.MergedIntoGuestId is not null)
                 throw new ConflictException("One of the guest records has already been merged.");
-            ValidateMergeEvidence(primary, duplicate, request.EvidenceType);
+            ValidateMergeEvidence(primary, duplicate, evidenceType);
 
             var primaryUser = await _db.Users.SingleOrDefaultAsync(item => item.GuestId == primary.Id, cancellationToken);
             var duplicateUser = await _db.Users.SingleOrDefaultAsync(item => item.GuestId == duplicate.Id, cancellationToken);
             if (primaryUser is not null && duplicateUser is not null)
                 throw new ConflictException("Both guest records have client accounts; reconcile account ownership before merging.");
-            if (duplicateUser is not null) duplicateUser.GuestId = primary.Id;
+            if (duplicateUser is not null)
+            {
+                duplicateUser.GuestId = primary.Id;
+                duplicateUser.SecurityStamp = Guid.NewGuid().ToString();
+            }
 
             var moved = await _db.Bookings.Where(item => item.GuestId == duplicate.Id)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.GuestId, primary.Id), cancellationToken);
             await _db.PrivacyRequests.Where(item => item.GuestId == duplicate.Id)
                 .ExecuteUpdateAsync(setters => setters.SetProperty(item => item.GuestId, primary.Id), cancellationToken);
+            await _db.EmailOutboxMessages.Where(item => item.DataSubjectGuestId == duplicate.Id)
+                .ExecuteUpdateAsync(
+                    setters => setters.SetProperty(item => item.DataSubjectGuestId, primary.Id),
+                    cancellationToken);
             if (NormalizeEmail(primary.Email) == NormalizeEmail(duplicate.Email))
                 primary.EmailVerifiedAtUtc ??= duplicate.EmailVerifiedAtUtc;
             if (!string.IsNullOrEmpty(NormalizePhone(primary.Phone)) &&
@@ -194,8 +239,8 @@ public sealed class GuestCrmService : IGuestCrmService
                 Id = Guid.NewGuid(),
                 PrimaryGuestId = primary.Id,
                 DuplicateGuestId = duplicate.Id,
-                EvidenceType = request.EvidenceType,
-                Reason = request.Reason.Trim(),
+                EvidenceType = evidenceType,
+                Reason = evidenceReference,
                 MovedBookingCount = moved,
                 MergedAtUtc = now,
                 MergedByUserId = actorId
@@ -213,7 +258,7 @@ public sealed class GuestCrmService : IGuestCrmService
 
     private async Task<Guest> ResolveGuestAsync(string guestId, CancellationToken ct, bool tracked = false)
     {
-        var normalizedId = guestId?.Trim() ?? string.Empty;
+        var normalizedId = NormalizeGuestId(guestId);
         var query = tracked ? _db.Guests.AsQueryable() : _db.Guests.AsNoTracking();
         var guest = await query.SingleOrDefaultAsync(item => item.Id == normalizedId, ct)
             ?? throw new NotFoundException("Guest not found.");
@@ -274,11 +319,48 @@ public sealed class GuestCrmService : IGuestCrmService
             CreatedAt = DateTime.UtcNow
         });
 
+    private async Task RequireActorAsync(
+        Guid actorId,
+        bool managementOnly,
+        CancellationToken cancellationToken)
+    {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The authenticated actor is invalid.");
+        var actor = await _db.Users.AsNoTracking().SingleOrDefaultAsync(user =>
+            user.Id == actorId && user.Status == ProfileStatus.Active,
+            cancellationToken);
+        if (actor is null)
+            throw new UnauthorizedAccessException("The actor is not authorized for this guest CRM operation.");
+        var allowed = actor.Role is UserRole.Admin or UserRole.Manager ||
+                      !managementOnly && actor.Role == UserRole.Staff &&
+                      actor.Department is "Reception" or "FrontDesk";
+        if (!allowed)
+            throw new UnauthorizedAccessException("The actor is not authorized for this guest CRM operation.");
+    }
+
+    private static string NormalizeGuestId(string? value)
+    {
+        var id = value?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (id.Length is < 4 or > 20 || id.Any(char.IsControl))
+            throw new BadRequestException("Guest identifier is invalid.");
+        return id;
+    }
+
     private static string NormalizeEmail(string value) => value.Trim().ToLowerInvariant();
     private static string NormalizePhone(string value)
     {
         var digits = new string(value.Where(char.IsDigit).ToArray());
         return value.TrimStart().StartsWith('+') && digits.Length > 0 ? $"+{digits}" : digits;
     }
-    private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? Clean(string? value, string field, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var cleaned = value.Trim();
+        if (cleaned.Length > maximumLength || cleaned.Any(IsUnsafeControlCharacter))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
+
+    private static bool IsUnsafeControlCharacter(char value) =>
+        char.IsControl(value) && value is not ('\r' or '\n' or '\t');
 }

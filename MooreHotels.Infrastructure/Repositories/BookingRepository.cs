@@ -127,6 +127,22 @@ public class BookingRepository : IBookingRepository
             booking.CheckOut > checkIn);
     }
 
+    public async Task<bool> HasActiveOrFutureRoomReservationAsync(Guid roomId, DateTime utcNow)
+    {
+        var expirationCutoffUtc = BookingPaymentPolicy.GetExpirationCutoffUtc(utcNow);
+        return await _db.Bookings.AsNoTracking().AnyAsync(booking =>
+            (booking.ReservationRooms.Any(item => item.AssignedRoomId == roomId) ||
+             !booking.ReservationRooms.Any() && booking.RoomId == roomId) &&
+            booking.Status != BookingStatus.Cancelled &&
+            booking.Status != BookingStatus.CheckedOut &&
+            booking.Status != BookingStatus.NoShow &&
+            !(booking.Status == BookingStatus.Pending &&
+              (booking.PaymentStatus == PaymentStatus.Unpaid ||
+               booking.PaymentStatus == PaymentStatus.AwaitingVerification) &&
+              booking.CreatedAt <= expirationCutoffUtc) &&
+            booking.CheckOut > utcNow);
+    }
+
     public async Task<bool> QueueBookingEmailVerificationAsync(
         BookingEmailVerification verification,
         EmailOutboxMessage emailMessage,
@@ -210,6 +226,23 @@ public class BookingRepository : IBookingRepository
                 IsolationLevel.ReadCommitted,
                 cancellationToken);
 
+            if (newGuest is null)
+            {
+                // Synchronize with retention/erasure. A service request that
+                // found the guest just before anonymization must not create a
+                // fresh reservation against the anonymized record afterward.
+                var lockedGuest = await _db.Guests
+                    .FromSqlInterpolated(
+                        $"SELECT * FROM guests WHERE \"Id\" = {booking.GuestId} FOR UPDATE")
+                    .SingleOrDefaultAsync(cancellationToken);
+                if (lockedGuest is null || lockedGuest.AnonymizedAtUtc.HasValue ||
+                    lockedGuest.MergedIntoGuestId is not null)
+                {
+                    throw new BadRequestException(
+                        "The guest profile is no longer available. Start the reservation again.");
+                }
+            }
+
             BookingEmailVerification? verification = null;
             if (emailVerification is not null)
             {
@@ -244,6 +277,7 @@ public class BookingRepository : IBookingRepository
                          """)
                     .SingleOrDefaultAsync(cancellationToken);
                 if (lockedQuote is null ||
+                    lockedQuote.AmendmentBookingId.HasValue ||
                     lockedQuote.ConsumedAtUtc.HasValue ||
                     lockedQuote.ExpiresAtUtc <= DateTime.UtcNow)
                 {
@@ -538,7 +572,8 @@ public class BookingRepository : IBookingRepository
                         booking.BookingCode,
                         room?.Name ?? roomTypeName ?? "Reserved Room",
                         amountDue,
-                        internalReference)));
+                        internalReference),
+                    booking.GuestId));
             }
 
             await _db.SaveChangesAsync(cancellationToken);
@@ -590,36 +625,51 @@ public class BookingRepository : IBookingRepository
             var guestIds = expired.Select(item => item.GuestId).Distinct();
             var roomIds = expired.Where(item => item.RoomId.HasValue)
                 .Select(item => item.RoomId!.Value).Distinct();
+            var roomTypeIds = expired.Select(item => item.RoomTypeId).Distinct();
             var guests = await _db.Guests
                 .Where(item => guestIds.Contains(item.Id))
                 .ToDictionaryAsync(item => item.Id, cancellationToken);
             var rooms = await _db.Rooms
                 .Where(item => roomIds.Contains(item.Id))
                 .ToDictionaryAsync(item => item.Id, cancellationToken);
+            var roomTypes = await _db.RoomTypes
+                .Where(item => roomTypeIds.Contains(item.Id))
+                .ToDictionaryAsync(item => item.Id, cancellationToken);
             foreach (var booking in expired)
             {
-                if (guests.TryGetValue(booking.GuestId, out var guest) &&
-                    booking.RoomId.HasValue &&
-                    rooms.TryGetValue(booking.RoomId.Value, out var room))
+                if (guests.TryGetValue(booking.GuestId, out var guest))
                 {
+                    Room? physicalRoom = null;
+                    if (booking.RoomId.HasValue)
+                    {
+                        rooms.TryGetValue(booking.RoomId.Value, out physicalRoom);
+                    }
+
+                    var roomName = physicalRoom is not null
+                        ? physicalRoom.Name
+                        : roomTypes.TryGetValue(booking.RoomTypeId, out var roomType)
+                            ? roomType.Name
+                            : "Reserved Room";
+                    var roomCategory = physicalRoom is not null
+                        ? physicalRoom.Category.ToString()
+                        : roomTypes.TryGetValue(booking.RoomTypeId, out var categoryType)
+                            ? categoryType.Category.ToString()
+                            : "Standard";
                     _db.EmailOutboxMessages.Add(_emailOutbox.Create(
                         TransactionalEmailTemplates.Cancellation,
                         guest.Email,
                         new CancellationEmail(
                             $"{guest.FirstName} {guest.LastName}",
                             booking.BookingCode,
-                            room.Name,
-                            room.Category.ToString(),
+                            roomName,
+                            roomCategory,
                             booking.CheckIn,
-                            "Payment was not confirmed within one hour, so the room hold was released.")));
+                            "Payment was not confirmed within one hour, so the room hold was released."),
+                        booking.GuestId));
                 }
 
                 var previousStatus = booking.Status;
-                var history = JsonSerializer.Deserialize<List<object>>(
-                                  string.IsNullOrWhiteSpace(booking.StatusHistoryJson)
-                                      ? "[]"
-                                      : booking.StatusHistoryJson)
-                              ?? [];
+                var history = ReadStatusHistory(booking.StatusHistoryJson);
                 history.Add(new
                 {
                     Status = BookingStatus.Cancelled.ToString(),
@@ -723,6 +773,7 @@ public class BookingRepository : IBookingRepository
             .Include(b => b.Quote).ThenInclude(quote => quote!.Lines)
             .Where(b => b.PaymentStatus == PaymentStatus.RefundPending)
             .OrderByDescending(b => b.CreatedAt)
+            .Take(2000)
             .ToListAsync();
     }
 
@@ -751,7 +802,10 @@ public class BookingRepository : IBookingRepository
     public async Task<int> GetActiveGuestsCountAsync(CancellationToken cancellationToken = default)
     {
         return await _db.Bookings.AsNoTracking()
-            .CountAsync(b => b.Status == BookingStatus.CheckedIn, cancellationToken);
+            .Where(b => b.Status == BookingStatus.CheckedIn)
+            .Select(b => b.GuestId)
+            .Distinct()
+            .CountAsync(cancellationToken);
     }
 
     public async Task<int> GetOccupiedRoomNightsAsync(
@@ -808,6 +862,7 @@ public class BookingRepository : IBookingRepository
 
     public async Task<IReadOnlyList<RevenuePoint>> GetDailyRevenueDynamicsAsync(int days = 7, CancellationToken cancellationToken = default)
     {
+        days = Math.Clamp(days, 1, 366);
         var now = DateTime.UtcNow;
         var startDate = now.Date.AddDays(-(days - 1));
         var dailyTotals = await _db.FolioEntries.AsNoTracking()
@@ -844,6 +899,7 @@ public class BookingRepository : IBookingRepository
 
     public async Task<IReadOnlyList<ActiveOperationDto>> GetActiveOperationsAsync(int limit = 5, CancellationToken cancellationToken = default)
     {
+        limit = Math.Clamp(limit, 1, 100);
         return await _db.Bookings.AsNoTracking()
             .Include(b => b.Guest)
             .Include(b => b.Room)
@@ -892,7 +948,7 @@ public class BookingRepository : IBookingRepository
         string? search = null,
         CancellationToken cancellationToken = default)
     {
-        var normalizedPage = Math.Max(1, pageNumber);
+        var normalizedPage = Math.Clamp(pageNumber, 1, 1_000_000);
         var normalizedSize = Math.Clamp(pageSize, 1, 100);
 
         var query = _db.Bookings
@@ -933,5 +989,19 @@ public class BookingRepository : IBookingRepository
             .ToListAsync(cancellationToken);
 
         return PagedResult<Booking>.Create(items, totalCount, normalizedPage, normalizedSize);
+    }
+
+    private static List<object> ReadStatusHistory(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            var history = JsonSerializer.Deserialize<List<object>>(json) ?? [];
+            return history.Count <= 199 ? history : history.TakeLast(199).ToList();
+        }
+        catch (JsonException)
+        {
+            return [];
+        }
     }
 }

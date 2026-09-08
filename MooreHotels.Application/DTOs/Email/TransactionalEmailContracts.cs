@@ -16,7 +16,38 @@ public static class TransactionalEmailTemplates
     public const string StaffWelcome = "StaffWelcome";
     public const string AccountSuspended = "AccountSuspended";
     public const string AccountActivated = "AccountActivated";
+    public const string BookingAmendmentConfirmation = "BookingAmendmentConfirmation";
+    public const string FolioReceipt = "FolioReceipt";
 }
+
+public sealed record BookingAmendmentConfirmationEmail(
+    string GuestName,
+    string BookingCode,
+    string RoomTypeName,
+    int RoomQuantity,
+    DateTime CheckIn,
+    DateTime CheckOut,
+    int Nights,
+    decimal RoomSubtotal,
+    decimal TaxAmount,
+    decimal FeeAmount,
+    decimal TotalAmount,
+    decimal BalanceDue,
+    decimal PriceDifference,
+    string ManageBookingUrl,
+    string AmendmentReason);
+
+public sealed record FolioReceiptEmail(
+    string GuestName,
+    string BookingCode,
+    string ReceiptNumber,
+    string EntryType,
+    string PaymentMethod,
+    decimal Amount,
+    string Currency,
+    decimal BalanceAfter,
+    string Description,
+    DateTime ProcessedAtUtc);
 
 public sealed record BookingConfirmationEmail(
     string GuestName,

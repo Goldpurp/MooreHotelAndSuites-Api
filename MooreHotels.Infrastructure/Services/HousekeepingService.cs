@@ -39,12 +39,24 @@ public sealed class HousekeepingService : IHousekeepingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (request.RoomId == Guid.Empty || request.BookingId == Guid.Empty)
+            throw new BadRequestException("Room or booking identifier is invalid.");
+        if (!Enum.IsDefined(request.Type) || !Enum.IsDefined(request.Priority))
+            throw new BadRequestException("Housekeeping task type or priority is invalid.");
+        var notes = Clean(request.Notes, "Housekeeping notes", 1000);
+        await RequireOperationalActorAsync(actorId, "Housekeeping", cancellationToken);
         var room = await _db.Rooms.SingleOrDefaultAsync(item => item.Id == request.RoomId, cancellationToken)
                    ?? throw new NotFoundException("Room not found.");
-        if (request.BookingId.HasValue && !await _db.Bookings.AnyAsync(
-                booking => booking.Id == request.BookingId,
-                cancellationToken))
-            throw new NotFoundException("Booking not found.");
+        if (request.BookingId.HasValue)
+        {
+            var bookingMatchesRoom = await _db.Bookings.AnyAsync(booking =>
+                booking.Id == request.BookingId &&
+                (booking.RoomId == room.Id ||
+                 booking.ReservationRooms.Any(unit => unit.AssignedRoomId == room.Id)),
+                cancellationToken);
+            if (!bookingMatchesRoom)
+                throw new BadRequestException("The booking is not assigned to this room.");
+        }
         if (await _db.HousekeepingTasks.AnyAsync(task =>
                 task.RoomId == room.Id &&
                 task.Type == request.Type &&
@@ -58,7 +70,7 @@ public sealed class HousekeepingService : IHousekeepingService
             request.BookingId,
             request.Type,
             request.Priority,
-            Clean(request.Notes),
+            notes,
             actorId,
             DateTime.UtcNow);
         _db.HousekeepingTasks.Add(task);
@@ -82,6 +94,12 @@ public sealed class HousekeepingService : IHousekeepingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (id == Guid.Empty) throw new NotFoundException("Housekeeping task not found.");
+        if (!Enum.IsDefined(request.Status))
+            throw new BadRequestException("Housekeeping task status is invalid.");
+        if (request.AssignedToUserId == Guid.Empty)
+            throw new BadRequestException("Assigned user identifier is invalid.");
+        var notes = Clean(request.Notes, "Housekeeping notes", 1000);
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -93,9 +111,13 @@ public sealed class HousekeepingService : IHousekeepingService
                 .FromSqlInterpolated($"SELECT * FROM housekeeping_tasks WHERE \"Id\" = {id} FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken)
                 ?? throw new NotFoundException("Housekeeping task not found.");
-            var room = await _db.Rooms.SingleAsync(item => item.Id == task.RoomId, cancellationToken);
+            var actor = await RequireOperationalActorAsync(actorId, "Housekeeping", cancellationToken);
+            var room = await _db.Rooms
+                .FromSqlInterpolated($"SELECT * FROM rooms WHERE \"Id\" = {task.RoomId} FOR UPDATE")
+                .SingleAsync(cancellationToken);
             var oldStatus = task.Status;
             ValidateTaskTransition(task.Status, request.Status);
+            EnsureActorOwnsTask(actor, task.AssignedToUserId, request.Status);
             if (task.Status == request.Status &&
                 task.Status is OperationalTaskStatus.Completed or OperationalTaskStatus.Cancelled)
             {
@@ -112,7 +134,11 @@ public sealed class HousekeepingService : IHousekeepingService
             {
                 if (request.Status == OperationalTaskStatus.Pending)
                     throw new BadRequestException("An assigned task must use Assigned or InProgress status.");
-                await RequireActiveUserAsync(request.AssignedToUserId.Value, cancellationToken);
+                await RequireAssignableUserAsync(
+                    request.AssignedToUserId.Value,
+                    actor,
+                    "Housekeeping",
+                    cancellationToken);
                 task.AssignedToUserId = request.AssignedToUserId;
                 task.AssignedAtUtc ??= DateTime.UtcNow;
             }
@@ -144,6 +170,10 @@ public sealed class HousekeepingService : IHousekeepingService
                             order.Status != MaintenanceWorkOrderStatus.Cancelled,
                             cancellationToken);
                         room.Status = maintenanceOpen ? RoomStatus.OutOfOrder : RoomStatus.Available;
+                        if (maintenanceOpen)
+                            await SetRoomOfflineAsync(room, cancellationToken);
+                        else
+                            await SetRoomOnlineAsync(room, cancellationToken);
                     }
                     else
                     {
@@ -180,7 +210,7 @@ public sealed class HousekeepingService : IHousekeepingService
                 }
             }
             task.Status = request.Status;
-            if (!string.IsNullOrWhiteSpace(request.Notes)) task.Notes = request.Notes.Trim();
+            if (notes is not null) task.Notes = notes;
             AddAudit(actorId, "HOUSEKEEPING_TASK_UPDATED", "HousekeepingTask", task.Id, new
             {
                 OldStatus = oldStatus,
@@ -218,6 +248,17 @@ public sealed class HousekeepingService : IHousekeepingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (request.RoomId == Guid.Empty || request.AssignedToUserId == Guid.Empty)
+            throw new BadRequestException("Room or assigned-user identifier is invalid.");
+        if (!Enum.IsDefined(request.Priority))
+            throw new BadRequestException("Work-order priority is invalid.");
+        var title = RequireText(request.Title, "Work-order title", 160, 4);
+        var description = RequireText(request.Description, "Work-order description", 2000, 10);
+        var actor = await RequireOperationalActorAsync(
+            actorId,
+            "Maintenance",
+            cancellationToken,
+            "Engineering");
         if (request.OutOfOrderUntil <= request.OutOfOrderFrom ||
             request.OutOfOrderFrom < _hotelTime.Today.AddDays(-1) ||
             request.OutOfOrderUntil > _hotelTime.Today.AddYears(2).AddDays(1))
@@ -244,7 +285,14 @@ public sealed class HousekeepingService : IHousekeepingService
                 throw new ConflictException("An active maintenance work order already exists for this room.");
             await EnsureMaintenanceCapacityAsync(room, request, cancellationToken);
             if (request.AssignedToUserId.HasValue)
-                await RequireActiveUserAsync(request.AssignedToUserId.Value, cancellationToken);
+            {
+                await RequireAssignableUserAsync(
+                    request.AssignedToUserId.Value,
+                    actor,
+                    "Maintenance",
+                    cancellationToken,
+                    "Engineering");
+            }
             var now = DateTime.UtcNow;
             var closure = new RoomInventoryClosure
             {
@@ -254,7 +302,7 @@ public sealed class HousekeepingService : IHousekeepingService
                 StartDate = request.OutOfOrderFrom,
                 EndDate = request.OutOfOrderUntil,
                 Units = 1,
-                Reason = $"Maintenance: {RequireText(request.Title, "Work-order title", 160)}",
+                Reason = $"Maintenance: {title}",
                 CreatedByUserId = actorId,
                 CreatedAtUtc = now,
                 UpdatedAtUtc = now
@@ -264,8 +312,8 @@ public sealed class HousekeepingService : IHousekeepingService
                 Id = Guid.NewGuid(),
                 RoomId = room.Id,
                 InventoryClosureId = closure.Id,
-                Title = request.Title.Trim(),
-                Description = RequireText(request.Description, "Work-order description", 2000),
+                Title = title,
+                Description = description,
                 Priority = request.Priority,
                 Status = request.AssignedToUserId.HasValue
                     ? MaintenanceWorkOrderStatus.Assigned
@@ -279,7 +327,10 @@ public sealed class HousekeepingService : IHousekeepingService
             _db.RoomInventoryClosures.Add(closure);
             _db.MaintenanceWorkOrders.Add(order);
             if (request.OutOfOrderFrom <= _hotelTime.Today && request.OutOfOrderUntil > _hotelTime.Today)
+            {
                 room.Status = RoomStatus.OutOfOrder;
+                await SetRoomOfflineAsync(room, cancellationToken);
+            }
             AddAudit(actorId, "MAINTENANCE_WORK_ORDER_CREATED", "MaintenanceWorkOrder", order.Id, new
             {
                 order.RoomId,
@@ -302,6 +353,12 @@ public sealed class HousekeepingService : IHousekeepingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (id == Guid.Empty) throw new NotFoundException("Maintenance work order not found.");
+        if (!Enum.IsDefined(request.Status))
+            throw new BadRequestException("Maintenance work-order status is invalid.");
+        if (request.AssignedToUserId == Guid.Empty)
+            throw new BadRequestException("Assigned user identifier is invalid.");
+        var resolutionNotes = Clean(request.ResolutionNotes, "Resolution notes", 1000);
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -313,13 +370,26 @@ public sealed class HousekeepingService : IHousekeepingService
                 .FromSqlInterpolated($"SELECT * FROM maintenance_work_orders WHERE \"Id\" = {id} FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken)
                 ?? throw new NotFoundException("Maintenance work order not found.");
+            var actor = await RequireOperationalActorAsync(
+                actorId,
+                "Maintenance",
+                cancellationToken,
+                "Engineering");
             ValidateWorkOrderTransition(order.Status, request.Status);
-            var room = await _db.Rooms.SingleAsync(item => item.Id == order.RoomId, cancellationToken);
+            EnsureActorOwnsWorkOrder(actor, order.AssignedToUserId, request.Status);
+            var room = await _db.Rooms
+                .FromSqlInterpolated($"SELECT * FROM rooms WHERE \"Id\" = {order.RoomId} FOR UPDATE")
+                .SingleAsync(cancellationToken);
             if (request.AssignedToUserId.HasValue)
             {
                 if (request.Status == MaintenanceWorkOrderStatus.Open)
                     throw new BadRequestException("An assigned work order must use Assigned or InProgress status.");
-                await RequireActiveUserAsync(request.AssignedToUserId.Value, cancellationToken);
+                await RequireAssignableUserAsync(
+                    request.AssignedToUserId.Value,
+                    actor,
+                    "Maintenance",
+                    cancellationToken,
+                    "Engineering");
                 order.AssignedToUserId = request.AssignedToUserId;
             }
             if (request.Status is MaintenanceWorkOrderStatus.Assigned or MaintenanceWorkOrderStatus.InProgress &&
@@ -329,15 +399,16 @@ public sealed class HousekeepingService : IHousekeepingService
             {
                 order.StartedAtUtc ??= DateTime.UtcNow;
                 room.Status = RoomStatus.OutOfOrder;
+                await SetRoomOfflineAsync(room, cancellationToken);
             }
             if (request.Status is MaintenanceWorkOrderStatus.Resolved or MaintenanceWorkOrderStatus.Cancelled)
             {
                 if (request.Status == MaintenanceWorkOrderStatus.Resolved &&
-                    string.IsNullOrWhiteSpace(request.ResolutionNotes))
+                    resolutionNotes is null)
                     throw new BadRequestException("Resolution notes are required to resolve a work order.");
                 order.ResolvedAtUtc = DateTime.UtcNow;
                 order.ResolvedByUserId = actorId;
-                order.ResolutionNotes = Clean(request.ResolutionNotes);
+                order.ResolutionNotes = resolutionNotes;
                 if (order.InventoryClosureId.HasValue)
                 {
                     var closure = await _db.RoomInventoryClosures.SingleAsync(
@@ -356,7 +427,11 @@ public sealed class HousekeepingService : IHousekeepingService
                 }
                 var needsRecovery = room.Status == RoomStatus.OutOfOrder ||
                                     request.Status == MaintenanceWorkOrderStatus.Resolved;
-                if (needsRecovery) room.Status = RoomStatus.Dirty;
+                if (needsRecovery)
+                {
+                    room.Status = RoomStatus.Dirty;
+                    await SetRoomOfflineAsync(room, cancellationToken);
+                }
                 if (needsRecovery && !await _db.HousekeepingTasks.AnyAsync(task =>
                         task.RoomId == room.Id &&
                         task.Status != OperationalTaskStatus.Completed &&
@@ -418,11 +493,79 @@ public sealed class HousekeepingService : IHousekeepingService
     private IQueryable<MaintenanceWorkOrder> WorkOrderQuery() => _db.MaintenanceWorkOrders
         .Include(order => order.Room);
 
-    private async Task RequireActiveUserAsync(Guid id, CancellationToken cancellationToken)
+    private async Task<ApplicationUser> RequireOperationalActorAsync(
+        Guid id,
+        string department,
+        CancellationToken cancellationToken,
+        params string[] additionalDepartments)
     {
-        if (!await _db.Users.AnyAsync(user => user.Id == id && user.Status == ProfileStatus.Active, cancellationToken))
-            throw new BadRequestException("The assigned user is not active.");
+        if (id == Guid.Empty)
+            throw new UnauthorizedAccessException("The operational actor is invalid.");
+        var user = await _db.Users.AsNoTracking().SingleOrDefaultAsync(
+            item => item.Id == id && item.Status == ProfileStatus.Active,
+            cancellationToken) ?? throw new UnauthorizedAccessException("The operational actor is not active.");
+        if (IsManagement(user) || IsStaffInDepartment(user, department, additionalDepartments)) return user;
+        throw new UnauthorizedAccessException("The staff account is not authorized for this department.");
     }
+
+    private async Task RequireAssignableUserAsync(
+        Guid targetId,
+        ApplicationUser actor,
+        string department,
+        CancellationToken cancellationToken,
+        params string[] additionalDepartments)
+    {
+        if (targetId == Guid.Empty)
+            throw new BadRequestException("The assigned user is invalid.");
+        var target = await _db.Users.AsNoTracking().SingleOrDefaultAsync(
+            user => user.Id == targetId && user.Status == ProfileStatus.Active,
+            cancellationToken) ?? throw new BadRequestException("The assigned user is not active.");
+        if (!IsManagement(target) && !IsStaffInDepartment(target, department, additionalDepartments))
+            throw new BadRequestException("The assigned user does not belong to the required department.");
+        if (!IsManagement(actor) && target.Id != actor.Id)
+            throw new UnauthorizedAccessException("Staff may claim only unassigned work for themselves.");
+    }
+
+    private static void EnsureActorOwnsTask(
+        ApplicationUser actor,
+        Guid? assignedToUserId,
+        OperationalTaskStatus requestedStatus)
+    {
+        if (IsManagement(actor)) return;
+        if (assignedToUserId.HasValue && assignedToUserId != actor.Id)
+            throw new UnauthorizedAccessException("Only the assigned housekeeper or management may update this task.");
+        if (!assignedToUserId.HasValue &&
+            requestedStatus is not (OperationalTaskStatus.Assigned or OperationalTaskStatus.InProgress))
+        {
+            throw new UnauthorizedAccessException("Claim the housekeeping task before changing its status.");
+        }
+    }
+
+    private static void EnsureActorOwnsWorkOrder(
+        ApplicationUser actor,
+        Guid? assignedToUserId,
+        MaintenanceWorkOrderStatus requestedStatus)
+    {
+        if (IsManagement(actor)) return;
+        if (assignedToUserId.HasValue && assignedToUserId != actor.Id)
+            throw new UnauthorizedAccessException("Only the assigned engineer or management may update this work order.");
+        if (!assignedToUserId.HasValue &&
+            requestedStatus is not (MaintenanceWorkOrderStatus.Assigned or MaintenanceWorkOrderStatus.InProgress))
+        {
+            throw new UnauthorizedAccessException("Claim the maintenance work order before changing its status.");
+        }
+    }
+
+    private static bool IsManagement(ApplicationUser user) =>
+        user.Role is UserRole.Admin or UserRole.Manager;
+
+    private static bool IsStaffInDepartment(
+        ApplicationUser user,
+        string department,
+        params string[] additionalDepartments) =>
+        user.Role == UserRole.Staff &&
+        (string.Equals(user.Department, department, StringComparison.OrdinalIgnoreCase) ||
+         additionalDepartments.Contains(user.Department, StringComparer.OrdinalIgnoreCase));
 
     private async Task EnsureMaintenanceCapacityAsync(
         Room room,
@@ -545,6 +688,35 @@ public sealed class HousekeepingService : IHousekeepingService
             CreatedAtUtc = now
         };
 
+    private async Task SetRoomOfflineAsync(Room room, CancellationToken cancellationToken)
+    {
+        room.IsOnline = false;
+        var openPeriod = await _db.RoomInventoryPeriods.SingleOrDefaultAsync(
+            period => period.RoomId == room.Id && !period.EndDate.HasValue,
+            cancellationToken);
+        if (openPeriod is null) return;
+        if (openPeriod.StartDate < _hotelTime.Today)
+            openPeriod.EndDate = _hotelTime.Today;
+        else
+            _db.RoomInventoryPeriods.Remove(openPeriod);
+    }
+
+    private async Task SetRoomOnlineAsync(Room room, CancellationToken cancellationToken)
+    {
+        room.IsOnline = true;
+        var hasOpenPeriod = await _db.RoomInventoryPeriods.AnyAsync(
+            period => period.RoomId == room.Id && !period.EndDate.HasValue,
+            cancellationToken);
+        if (hasOpenPeriod) return;
+        _db.RoomInventoryPeriods.Add(new RoomInventoryPeriod
+        {
+            Id = Guid.NewGuid(),
+            RoomId = room.Id,
+            StartDate = _hotelTime.Today,
+            RecordedAtUtc = DateTime.UtcNow
+        });
+    }
+
     private void AddAudit(Guid actorId, string action, string entityType, Guid id, object data) =>
         _db.AuditLogs.Add(new AuditLog
         {
@@ -590,14 +762,28 @@ public sealed class HousekeepingService : IHousekeepingService
         order.ResolvedAtUtc,
         order.ResolutionNotes);
 
-    private static string RequireText(string? value, string field, int maximumLength)
+    private static string RequireText(
+        string? value,
+        string field,
+        int maximumLength,
+        int minimumLength = 1)
     {
         var cleaned = value?.Trim() ?? string.Empty;
-        if (cleaned.Length == 0 || cleaned.Length > maximumLength)
+        if (cleaned.Length < minimumLength || cleaned.Length > maximumLength ||
+            cleaned.Any(IsUnsafeControlCharacter))
             throw new BadRequestException($"{field} is required and cannot exceed {maximumLength} characters.");
         return cleaned;
     }
 
-    private static string? Clean(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? Clean(string? value, string field, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var cleaned = value.Trim();
+        if (cleaned.Length > maximumLength || cleaned.Any(IsUnsafeControlCharacter))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
+
+    private static bool IsUnsafeControlCharacter(char value) =>
+        char.IsControl(value) && value is not ('\r' or '\n' or '\t');
 }

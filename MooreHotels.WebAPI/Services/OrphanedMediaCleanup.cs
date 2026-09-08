@@ -38,9 +38,8 @@ public sealed class OrphanedMediaCleanup
         catch (Exception exception)
         {
             _logger.LogWarning(
-                exception,
-                "Immediate cleanup failed for orphaned media {PublicId}; durable cleanup will be queued.",
-                publicId);
+                "Immediate orphaned-media cleanup failed with {ErrorCode}; durable cleanup will be queued.",
+                exception.GetType().Name);
         }
 
         try
@@ -63,9 +62,7 @@ public sealed class OrphanedMediaCleanup
             { SqlState: PostgresErrorCodes.UniqueViolation })
         {
             _logger.LogWarning(
-                exception,
-                "Orphaned media cleanup {PublicId} was already queued concurrently.",
-                publicId);
+                "Orphaned-media cleanup was already queued concurrently.");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -74,9 +71,8 @@ public sealed class OrphanedMediaCleanup
         catch (Exception exception)
         {
             _logger.LogError(
-                exception,
-                "Orphaned media {PublicId} could not be deleted or durably queued.",
-                publicId);
+                "Orphaned media could not be deleted or durably queued. ErrorCode={ErrorCode}.",
+                exception.GetType().Name);
         }
     }
 }

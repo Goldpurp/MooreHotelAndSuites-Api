@@ -31,7 +31,7 @@ public class AuditLogRepository : IAuditLogRepository
         string? search = null,
         CancellationToken cancellationToken = default)
     {
-        var normalizedPage = Math.Max(1, pageNumber);
+        var normalizedPage = Math.Clamp(pageNumber, 1, 1_000_000);
         var normalizedSize = Math.Clamp(pageSize, 1, 100);
 
         var query = _db.AuditLogs.AsNoTracking().AsQueryable();

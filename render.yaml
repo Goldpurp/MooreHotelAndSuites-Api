@@ -23,12 +23,16 @@ services:
         value: 8080
       - key: ConnectionStrings__DefaultConnection
         sync: false
-      # A separate schema-owner credential used only by the pre-deploy
-      # migration bundle. The running API uses DefaultConnection above.
+      # Use Supabase's IPv4 session pooler (*.pooler.supabase.com:5432), a
+      # dedicated runtime login, and SSL Mode=VerifyFull.
+      # A separate postgres-owner session-pooler credential is used only by
+      # the pre-deploy migration bundle. Runtime never loads it.
       - key: MIGRATION_CONNECTION_STRING
         sync: false
       - key: DATABASE_RUNTIME_ROLE
         sync: false
+      - key: Database__Provider
+        value: Supabase
       - key: Jwt__Key
         generateValue: true
       - key: Jwt__Issuer
@@ -203,6 +207,8 @@ services:
         value: true
       - key: Privacy__GuestRetentionDays
         sync: false
+      - key: Privacy__InactiveAccountRetentionDays
+        sync: false
       - key: Security__RequireStaffMfa
         value: true
       - key: Runtime__EnableSwagger
@@ -221,12 +227,20 @@ services:
         value: true
       - key: Runtime__EnableMediaDeletion
         value: true
+      - key: Runtime__ExternalRequestTimeoutSeconds
+        value: 20
       - key: Database__CreateIfMissing
         value: false
       - key: Database__ApplyMigrationsOnStartup
         value: false
+      - key: Database__MaxRetryCount
+        value: 5
+      - key: Database__CommandTimeoutSeconds
+        value: 30
+      - key: Database__ContextPoolSize
+        value: 128
       - key: Database__TrustRenderPrivateNetwork
-        value: true
+        value: false
       - key: DataProtection__KeysPath
         value: /var/data/moorehotels-keys
       - key: DataProtection__CertificateBase64

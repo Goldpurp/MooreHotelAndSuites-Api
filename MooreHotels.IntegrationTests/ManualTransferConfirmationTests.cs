@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Domain.Enums;
 
@@ -223,7 +224,9 @@ public sealed class ManualTransferConfirmationTests
         Assert.Equal("Paid", data.GetProperty("NewPaymentStatus").GetString());
         Assert.StartsWith("MANUAL-", data.GetProperty("InternalConfirmationReference").GetString());
         Assert.Equal(_fixture.Manager.Id, data.GetProperty("ConfirmingStaffId").GetGuid());
-        Assert.Equal("Integration Manager", data.GetProperty("ConfirmingStaffName").GetString());
+        Assert.Equal(
+            AuditDataSanitizer.RedactedValue,
+            data.GetProperty("ConfirmingStaffName").GetString());
         Assert.Equal("Manager", data.GetProperty("ConfirmingStaffRole").GetString());
         Assert.Equal("TypedAcknowledgement", data.GetProperty("ConfirmationMethod").GetString());
         Assert.False(string.IsNullOrWhiteSpace(data.GetProperty("RequestId").GetString()));

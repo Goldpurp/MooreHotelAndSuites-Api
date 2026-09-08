@@ -22,7 +22,7 @@ public class RegisterRequestValidator : AbstractValidator<RegisterRequest>
 
         RuleFor(x => x.Password)
             .NotEmpty().WithMessage("Password is required.")
-            .MinimumLength(8).WithMessage("Password must be at least 8 characters long.")
+            .MinimumLength(12).WithMessage("Password must be at least 12 characters long.")
             .MaximumLength(128).WithMessage("Password cannot exceed 128 characters.")
             .Must(password => !string.IsNullOrEmpty(password) && password.Any(char.IsUpper))
             .WithMessage("Password must contain an uppercase character.")

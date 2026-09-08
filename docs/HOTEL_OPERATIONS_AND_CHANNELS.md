@@ -56,11 +56,16 @@ Calculations use `HotelSettings__TimeZoneId`, not UTC calendar boundaries.
 Room revenue is allocated from nightly quote lines and excludes discounts,
 included/exclusive taxes, fees and add-ons. ADR is net room revenue divided by
 occupied room nights, and RevPAR uses sellable room nights after historical
-closures/out-of-order stock. Reports include scheduled and actual arrivals and
-departures, global open-folio receivables and pending refunds. Payments and
-refunds come from append-only folio entries and their voids. Only a completed
-hotel business date can be closed; night audit freezes the result as an
-immutable JSON and typed snapshot.
+inventory periods and closures/out-of-order stock. Reports include scheduled and
+actual arrivals and departures plus receivables and pending refunds as they
+stood at the requested period end; later folio entries cannot rewrite an older
+report. Payments and refunds come from append-only folio entries and their
+voids. Only a completed hotel business date can be closed, and after the first
+close dates must be closed sequentially. Night audit blocks impossible occupancy
+and reservations missing folios, then freezes the result as an immutable JSON
+and typed snapshot. A physical room that has contributed sellable inventory
+cannot be hard-deleted; take it offline so prior room-night capacity remains
+reconstructable.
 
 ## Guest CRM
 
@@ -75,7 +80,9 @@ Sensitive notes are visible only to Admin/Manager. Merges require matching
 verified email/phone evidence or an explicitly documented government-ID/manual
 review, reject two independently linked client accounts, move reservations and
 open privacy requests, and retain the duplicate as a merge trace. The retention
-worker clears preferences and redacts note bodies along with core guest PII.
+`reason` is a non-sensitive evidence/case reference, not free-form prose. The
+retention worker clears preferences and redacts note bodies along with core
+guest PII.
 
 ## Distribution channels
 

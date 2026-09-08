@@ -288,7 +288,8 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                             booking.BookingCode,
                             roomName,
                             verification.AmountPaid,
-                            verification.PaymentReference)));
+                            verification.PaymentReference),
+                        booking.GuestId));
                 }
                 outcomeKind = MonnifyPaymentOutcomeKind.Confirmed;
             }
@@ -323,6 +324,7 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                 "Monnify has not confirmed a successful payment.");
         }
 
+        const decimal maximumAcceptedPayment = 1_000_000_000m;
         if (string.IsNullOrWhiteSpace(verification.TransactionReference) ||
             verification.TransactionReference.Length > 160 ||
             !string.Equals(
@@ -333,7 +335,12 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                 verification.CurrencyCode,
                 "NGN",
                 StringComparison.OrdinalIgnoreCase) ||
+            verification.AmountPaid <= 0 ||
+            verification.AmountPaid > maximumAcceptedPayment ||
             verification.AmountPaid < booking.Amount ||
+            verification.Fee is < 0 or > maximumAcceptedPayment ||
+            verification.SettlementAmount is < 0 or > maximumAcceptedPayment ||
+            verification.TotalPayable is < 0 or > maximumAcceptedPayment ||
             string.IsNullOrWhiteSpace(verification.BookingCode) ||
             !string.Equals(
                 verification.BookingCode,
@@ -445,11 +452,26 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
         string actor,
         string reason)
     {
-        var history = JsonSerializer.Deserialize<List<object>>(
+        List<object> history;
+        try
+        {
+            history = JsonSerializer.Deserialize<List<object>>(
                           string.IsNullOrWhiteSpace(historyJson)
                               ? "[]"
                               : historyJson)
                       ?? [];
+        }
+        catch (JsonException)
+        {
+            // A malformed legacy audit trail must not prevent a verified
+            // payment from being recorded atomically.
+            history = [];
+        }
+
+        if (history.Count > 199)
+        {
+            history = history.TakeLast(199).ToList();
+        }
         history.Add(new
         {
             Status = status.ToString(),

@@ -43,7 +43,10 @@ public sealed record UpdateGuestPreferencesRequest(
     [StringLength(80)] string? BeddingPreference,
     [StringLength(300)] string? DietaryNotes,
     [StringLength(300)] string? AccessibilityNeeds,
-    bool MarketingOptIn);
+    bool MarketingOptIn,
+    [StringLength(160, MinimumLength = 10),
+     RegularExpression("^[A-Za-z0-9][A-Za-z0-9._:/-]{9,159}$")]
+    string? MarketingConsentReference = null);
 
 public sealed record AddGuestNoteRequest(
     [Required, StringLength(1000, MinimumLength = 4)] string Body,
@@ -66,7 +69,10 @@ public sealed record MergeGuestRequest(
     [Required, StringLength(20)] string DuplicateGuestId,
     [Required, RegularExpression("^(VerifiedEmail|VerifiedPhone|GovernmentIdReviewed|ManualReview)$")]
     string EvidenceType,
-    [Required, StringLength(500, MinimumLength = 10)] string Reason);
+    [Required, StringLength(160, MinimumLength = 10),
+     RegularExpression("^[A-Za-z0-9][A-Za-z0-9._:/-]{9,159}$",
+         ErrorMessage = "Reason must be a non-sensitive evidence or case reference without spaces.")]
+    string Reason);
 
 public sealed record GuestMergeDto(
     Guid Id,

@@ -16,6 +16,7 @@ public interface IBookingRepository
     Task<IEnumerable<Booking>> GetByGuestIdAsync(string guestId);
     Task<string> GenerateBookingCodeAsync(CancellationToken cancellationToken = default);
     Task<bool> IsRoomBookedAsync(Guid roomId, DateTime checkIn, DateTime checkOut);
+    Task<bool> HasActiveOrFutureRoomReservationAsync(Guid roomId, DateTime utcNow);
     Task<bool> QueueBookingEmailVerificationAsync(
         BookingEmailVerification verification,
         EmailOutboxMessage emailMessage,

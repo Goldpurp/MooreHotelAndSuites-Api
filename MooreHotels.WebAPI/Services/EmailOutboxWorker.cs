@@ -1,4 +1,5 @@
 using System.Data;
+using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces;
@@ -12,7 +13,7 @@ public sealed class EmailOutboxWorker : BackgroundService
     private const int BatchSize = 5;
     private const int MaximumAttempts = 12;
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
-    private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(5);
+    private static readonly TimeSpan LeaseDuration = TimeSpan.FromMinutes(10);
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<EmailOutboxWorker> _logger;
@@ -48,7 +49,9 @@ public sealed class EmailOutboxWorker : BackgroundService
         }
         catch (Exception exception)
         {
-            _logger.LogError(exception, "The transactional email outbox sweep failed.");
+            _logger.LogError(
+                "The transactional email outbox sweep failed with {ExceptionType}.",
+                exception.GetType().Name);
             return 0;
         }
     }
@@ -71,6 +74,7 @@ public sealed class EmailOutboxWorker : BackgroundService
                     $"""
                      SELECT * FROM email_outbox
                      WHERE "AttemptCount" < {MaximumAttempts}
+                       AND "QuarantinedAtUtc" IS NULL
                        AND "NextAttemptAtUtc" <= {now}
                        AND ("LockedUntilUtc" IS NULL OR "LockedUntilUtc" <= {now})
                      ORDER BY "CreatedAtUtc"
@@ -145,14 +149,38 @@ public sealed class EmailOutboxWorker : BackgroundService
         message.LockId = null;
         message.LockedUntilUtc = null;
         message.LastErrorCode = exception.GetType().Name[..Math.Min(80, exception.GetType().Name.Length)];
-        var delayMinutes = Math.Min(360, Math.Pow(2, Math.Min(message.AttemptCount, 8)));
-        message.NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(delayMinutes);
-        await db.SaveChangesAsync(cancellationToken);
 
-        _logger.LogWarning(
-            "Transactional email {EmailId} failed on attempt {Attempt}; a retry was scheduled.",
-            message.Id,
-            message.AttemptCount);
+        if (message.AttemptCount >= MaximumAttempts)
+        {
+            message.QuarantinedAtUtc = DateTime.UtcNow;
+            var failureMetadata = new
+            {
+                QuarantinedAtUtc = message.QuarantinedAtUtc.Value,
+                Attempts = message.AttemptCount,
+                LastErrorCode = message.LastErrorCode
+            };
+            message.DeliveryFailureMetadataJson = JsonSerializer.Serialize(failureMetadata);
+            message.Recipient = "quarantined-failure@delivery-failure.invalid";
+            message.ProtectedPayload = "{}";
+
+            _logger.LogError(
+                "Transactional email {EmailId} permanently exhausted after {Attempt} attempts with {ErrorCode} and has been quarantined with recipient and payload scrubbed.",
+                message.Id,
+                message.AttemptCount,
+                message.LastErrorCode);
+        }
+        else
+        {
+            var delayMinutes = Math.Min(360, Math.Pow(2, Math.Min(message.AttemptCount, 8)));
+            message.NextAttemptAtUtc = DateTime.UtcNow.AddMinutes(delayMinutes);
+
+            _logger.LogWarning(
+                "Transactional email {EmailId} failed on attempt {Attempt}; a retry was scheduled.",
+                message.Id,
+                message.AttemptCount);
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
     }
 
     private static Task DispatchAsync(
@@ -189,8 +217,24 @@ public sealed class EmailOutboxWorker : BackgroundService
                 SendAccountSuspendedAsync(sender, outbox, message),
             TransactionalEmailTemplates.AccountActivated =>
                 SendAccountActivatedAsync(sender, outbox, message),
+            TransactionalEmailTemplates.BookingAmendmentConfirmation =>
+                SendBookingAmendmentConfirmationAsync(sender, outbox, message),
+            TransactionalEmailTemplates.FolioReceipt =>
+                SendFolioReceiptAsync(sender, outbox, message),
             _ => throw new InvalidOperationException("Unknown transactional email template.")
         };
+
+    private static Task SendBookingAmendmentConfirmationAsync(IEmailService sender, IEmailOutbox outbox, EmailOutboxMessage message)
+    {
+        var payload = outbox.ReadPayload<BookingAmendmentConfirmationEmail>(message);
+        return sender.SendBookingAmendmentConfirmationAsync(message.Recipient, payload);
+    }
+
+    private static Task SendFolioReceiptAsync(IEmailService sender, IEmailOutbox outbox, EmailOutboxMessage message)
+    {
+        var payload = outbox.ReadPayload<FolioReceiptEmail>(message);
+        return sender.SendFolioReceiptAsync(message.Recipient, payload);
+    }
 
     private static Task SendBookingConfirmationAsync(IEmailService sender, IEmailOutbox outbox, EmailOutboxMessage message)
     {

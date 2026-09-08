@@ -105,33 +105,57 @@ public sealed class OperationalReportingService : IOperationalReportingService
         ValidateRange(fromDate, toDate);
         var startUtc = _hotelTime.GetLocalDayStartUtc(fromDate);
         var endUtc = _hotelTime.GetLocalDayEndUtc(toDate);
-        var onlineRooms = await _db.Rooms.AsNoTracking()
-            .Where(room => room.IsOnline)
-            .Select(room => new { room.Id, room.Status }).ToArrayAsync(cancellationToken);
-        var sellableRoomIds = onlineRooms.Select(room => room.Id).ToArray();
-        var currentlyUnavailableRoomIds = onlineRooms
-            .Where(room => room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder)
-            .Select(room => room.Id).ToArray();
+        var inventoryPeriods = await _db.RoomInventoryPeriods.AsNoTracking()
+            .Where(period => period.StartDate <= toDate &&
+                             (!period.EndDate.HasValue || period.EndDate > fromDate))
+            .Select(period => new
+            {
+                period.RoomId,
+                RoomTypeId = period.Room!.RoomTypeId,
+                period.StartDate,
+                period.EndDate
+            })
+            .ToListAsync(cancellationToken);
         var closures = await _db.RoomInventoryClosures.AsNoTracking()
             .Where(item => item.IsActive && item.StartDate <= toDate && item.EndDate > fromDate)
-            .Select(item => new { item.RoomId, item.StartDate, item.EndDate, item.Units })
+            .Select(item => new
+            {
+                item.RoomTypeId,
+                item.RoomId,
+                item.StartDate,
+                item.EndDate,
+                item.Units
+            })
             .ToListAsync(cancellationToken);
         var availableRoomNights = 0;
         for (var date = fromDate; date <= toDate; date = date.AddDays(1))
         {
+            var sellableRooms = inventoryPeriods
+                .Where(period => period.StartDate <= date &&
+                                 (!period.EndDate.HasValue || period.EndDate > date))
+                .Select(period => new { period.RoomId, period.RoomTypeId })
+                .Distinct()
+                .ToArray();
             var active = closures.Where(item => item.StartDate <= date && item.EndDate > date).ToArray();
-            var closedRoomIds = active
-                .Where(item => item.RoomId.HasValue && sellableRoomIds.Contains(item.RoomId.Value))
-                .Select(item => item.RoomId!.Value);
-            if (date >= _hotelTime.Today)
-                closedRoomIds = closedRoomIds.Concat(currentlyUnavailableRoomIds);
-            var physicalClosures = closedRoomIds.Distinct().Count();
-            var typeClosures = active.Where(item => !item.RoomId.HasValue).Sum(item => item.Units);
-            availableRoomNights += Math.Max(0, sellableRoomIds.Length -
-                Math.Min(sellableRoomIds.Length, physicalClosures + typeClosures));
+            foreach (var roomTypeGroup in sellableRooms.GroupBy(room => room.RoomTypeId))
+            {
+                var roomIds = roomTypeGroup.Select(room => room.RoomId).ToHashSet();
+                var physicalClosures = active
+                    .Where(item => item.RoomTypeId == roomTypeGroup.Key &&
+                                   item.RoomId.HasValue && roomIds.Contains(item.RoomId.Value))
+                    .Select(item => item.RoomId!.Value)
+                    .Distinct()
+                    .Count();
+                var typeClosures = active
+                    .Where(item => item.RoomTypeId == roomTypeGroup.Key && !item.RoomId.HasValue)
+                    .Sum(item => item.Units);
+                var physicalCount = roomIds.Count;
+                availableRoomNights += Math.Max(0, physicalCount -
+                    Math.Min(physicalCount, physicalClosures + typeClosures));
+            }
         }
 
-        var bookings = await _db.Bookings.AsNoTracking()
+        var bookings = await _db.Bookings.AsNoTracking().AsSplitQuery()
             .Include(item => item.Folio)!.ThenInclude(folio => folio!.Entries)
             .Include(item => item.Quote)!.ThenInclude(quote => quote!.Lines)
             .Where(item => item.CheckIn < endUtc && item.CheckOut > startUtc)
@@ -183,8 +207,10 @@ public sealed class OperationalReportingService : IOperationalReportingService
             item.Type == FolioEntryType.Void && item.ReversesEntryId.HasValue &&
             reversed.TryGetValue(item.ReversesEntryId.Value, out var original) &&
             original.Type == FolioEntryType.Refund ? -item.Amount : 0m));
-        var openFolios = await _db.Folios.AsNoTracking().Include(item => item.Entries)
-            .Where(item => item.Status == FolioStatus.Open)
+        var openFolios = await _db.Folios.AsNoTracking()
+            .Include(item => item.Entries.Where(entry => entry.PostedAtUtc < endUtc))
+            .Where(item => item.OpenedAtUtc < endUtc &&
+                           (!item.ClosedAtUtc.HasValue || item.ClosedAtUtc >= endUtc))
             .ToListAsync(cancellationToken);
         var balances = openFolios.Select(item => FolioAccounting.Calculate(item.Entries)).ToArray();
         var receivables = FolioAccounting.Money(balances.Sum(item => item.AmountDue));
@@ -205,9 +231,7 @@ public sealed class OperationalReportingService : IOperationalReportingService
             fromDate, toDate, availableRoomNights, occupiedRoomNights, roomRevenue, adr, revPar,
             payments, refunds, receivables, guestCredits, scheduledArrivals, actualCheckIns,
             scheduledDepartures, actualCheckOuts,
-            await _db.Bookings.AsNoTracking().CountAsync(
-                item => item.PaymentStatus == PaymentStatus.RefundPending,
-                cancellationToken));
+            balances.Count(item => item.GuestCredit > 0));
     }
 
     public async Task<NightAuditDto> CloseNightAuditAsync(
@@ -215,6 +239,14 @@ public sealed class OperationalReportingService : IOperationalReportingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The night-audit actor is invalid.");
+        var actorAuthorized = await _db.Users.AsNoTracking().AnyAsync(user =>
+            user.Id == actorId && user.Status == ProfileStatus.Active &&
+            (user.Role == UserRole.Admin || user.Role == UserRole.Manager),
+            cancellationToken);
+        if (!actorAuthorized)
+            throw new UnauthorizedAccessException("An active administrator or manager must close night audit.");
         if (businessDate >= _hotelTime.Today)
             throw new BadRequestException("Only a completed hotel business date can be closed.");
         var strategy = _db.Database.CreateExecutionStrategy();
@@ -233,7 +265,26 @@ public sealed class OperationalReportingService : IOperationalReportingService
                 await transaction.CommitAsync(cancellationToken);
                 return ToNightAuditDto(existing);
             }
+            var latestClosedDate = await _db.NightAudits.AsNoTracking()
+                .MaxAsync(item => (DateOnly?)item.BusinessDate, cancellationToken);
+            if (latestClosedDate.HasValue && businessDate != latestClosedDate.Value.AddDays(1))
+            {
+                throw new ConflictException(
+                    $"Close business dates sequentially. The next date is {latestClosedDate.Value.AddDays(1):yyyy-MM-dd}.");
+            }
             var snapshot = await GetReportAsync(businessDate, businessDate, cancellationToken);
+            if (snapshot.OccupiedRoomNights > snapshot.AvailableRoomNights)
+            {
+                throw new ConflictException(
+                    "Night audit cannot close while occupied room nights exceed effective sellable inventory.");
+            }
+            var dayEndUtc = _hotelTime.GetLocalDayEndUtc(businessDate);
+            if (await _db.Bookings.AsNoTracking().AnyAsync(
+                    booking => booking.CreatedAt < dayEndUtc && booking.Folio == null,
+                    cancellationToken))
+            {
+                throw new ConflictException("Night audit cannot close while a reservation is missing its folio.");
+            }
             var closedAt = DateTime.UtcNow;
             var audit = new NightAudit
             {
@@ -298,8 +349,17 @@ public sealed class OperationalReportingService : IOperationalReportingService
 
     private static NightAuditDto ToNightAuditDto(NightAudit audit)
     {
-        var snapshot = JsonSerializer.Deserialize<OperationalReportDto>(audit.SnapshotJson) ??
-            new OperationalReportDto(
+        OperationalReportDto? snapshot = null;
+        try
+        {
+            snapshot = JsonSerializer.Deserialize<OperationalReportDto>(audit.SnapshotJson);
+        }
+        catch (JsonException)
+        {
+            // Preserve access to immutable accounting fields even if a legacy
+            // snapshot document was damaged before database constraints existed.
+        }
+        snapshot ??= new OperationalReportDto(
                 audit.BusinessDate, audit.BusinessDate, audit.AvailableRoomNights,
                 audit.OccupiedRoomNights, audit.RoomRevenue, audit.Adr, audit.RevPar,
                 audit.Payments, audit.Refunds, audit.Receivables, audit.GuestCredits, 0, 0, 0, 0, 0);

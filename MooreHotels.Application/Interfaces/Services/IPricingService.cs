@@ -11,6 +11,7 @@ public interface IPricingService
     Task<PricingQuoteDto> CreateAmendmentQuoteAsync(
         Guid bookingId,
         CreatePricingQuoteRequest request,
+        Guid actorId,
         CancellationToken cancellationToken = default);
     Task<ValidatedBookingQuote> ValidateBookingQuoteAsync(
         Guid quoteId,

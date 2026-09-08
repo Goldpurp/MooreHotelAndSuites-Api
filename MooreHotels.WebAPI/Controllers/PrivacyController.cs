@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using System.Data;
 using System.Text.Json;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -12,6 +13,7 @@ using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.WebAPI.Extensions;
+using MooreHotels.WebAPI.Services;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -21,13 +23,16 @@ public sealed class PrivacyController : ControllerBase
 {
     private readonly MooreHotelsDbContext _db;
     private readonly PrivacySettings _settings;
+    private readonly PrivacyDataService _privacyData;
 
     public PrivacyController(
         MooreHotelsDbContext db,
-        IOptions<PrivacySettings> settings)
+        IOptions<PrivacySettings> settings,
+        PrivacyDataService privacyData)
     {
         _db = db;
         _settings = settings.Value;
+        _privacyData = privacyData;
     }
 
     [HttpGet("policies/current")]
@@ -52,83 +57,10 @@ public sealed class PrivacyController : ControllerBase
         if (user is null || string.IsNullOrWhiteSpace(user.GuestId))
             return NotFound(new { Message = "No linked guest profile is available for export." });
 
-        var guest = await _db.Guests
-            .AsNoTracking()
-            .Include(item => item.Bookings)
-                .ThenInclude(booking => booking.Room)
-            .Include(item => item.Bookings)
-                .ThenInclude(booking => booking.AddOns)
-                    .ThenInclude(addOn => addOn.AddOnService)
-            .SingleOrDefaultAsync(item => item.Id == user.GuestId, cancellationToken);
-        if (guest is null)
-            return NotFound(new { Message = "No linked guest profile is available for export." });
-
-        var requests = await _db.PrivacyRequests
-            .AsNoTracking()
-            .Where(item => item.GuestId == guest.Id)
-            .OrderByDescending(item => item.RequestedAtUtc)
-            .Select(item => ToDto(item))
-            .ToListAsync(cancellationToken);
-
-        return Ok(new
-        {
-            ExportedAtUtc = DateTime.UtcNow,
-            Account = new
-            {
-                user.Id,
-                user.Name,
-                user.Email,
-                user.PhoneNumber,
-                Role = user.Role.ToString(),
-                Status = user.Status.ToString(),
-                user.CreatedAt,
-                user.PrivacyPolicyVersion,
-                user.PrivacyPolicyAcceptedAtUtc
-            },
-            Guest = new
-            {
-                guest.Id,
-                guest.FirstName,
-                guest.LastName,
-                guest.Email,
-                guest.Phone,
-                guest.AvatarUrl,
-                guest.CreatedAt,
-                guest.AnonymizedAtUtc
-            },
-            Bookings = guest.Bookings
-                .OrderByDescending(booking => booking.CreatedAt)
-                .Select(booking => new
-                {
-                    booking.Id,
-                    booking.BookingCode,
-                    Room = booking.Room?.Name,
-                    booking.CheckIn,
-                    booking.CheckOut,
-                    booking.AdultCount,
-                    booking.ChildCount,
-                    Status = booking.Status.ToString(),
-                    booking.Amount,
-                    PaymentStatus = booking.PaymentStatus.ToString(),
-                    PaymentMethod = booking.PaymentMethod?.ToString(),
-                    booking.TransactionReference,
-                    booking.Notes,
-                    booking.PrivacyPolicyVersion,
-                    booking.BookingTermsVersion,
-                    booking.PoliciesAcceptedAtUtc,
-                    booking.CreatedAt,
-                    AddOns = booking.AddOns.Select(addOn => new
-                    {
-                        Service = addOn.AddOnService?.Name,
-                        addOn.Quantity,
-                        addOn.UnitPrice,
-                        addOn.TotalPrice,
-                        addOn.Notes,
-                        addOn.AddedAtUtc
-                    })
-                }),
-            PrivacyRequests = requests
-        });
+        return Ok(await _privacyData.BuildExportAsync(
+            user.GuestId,
+            DateTime.UtcNow,
+            cancellationToken));
     }
 
     [HttpPost("requests")]
@@ -198,7 +130,8 @@ public sealed class PrivacyController : ControllerBase
             Type = request.Type,
             Status = DataSubjectRequestStatus.Pending,
             Details = request.Details?.Trim(),
-            RequestedAtUtc = now
+            RequestedAtUtc = now,
+            DueAtUtc = now.AddDays(30)
         };
         _db.PrivacyRequests.Add(entity);
         _db.AuditLogs.Add(new AuditLog
@@ -282,54 +215,129 @@ public sealed class PrivacyController : ControllerBase
         }
         if (!TryGetUserId(out var actorId)) return Unauthorized();
 
-        var entity = await _db.PrivacyRequests.SingleOrDefaultAsync(
-            item => item.Id == id,
-            cancellationToken);
-        if (entity is null) return NotFound();
-        if (entity.Status is DataSubjectRequestStatus.Completed or DataSubjectRequestStatus.Rejected)
-            return Conflict(new { Message = "This privacy request is already closed." });
-
-        var oldStatus = entity.Status;
-        var now = DateTime.UtcNow;
-        entity.Status = request.Status;
-        entity.ResolutionNotes = request.ResolutionNotes?.Trim();
-        if (request.Status is DataSubjectRequestStatus.Completed or DataSubjectRequestStatus.Rejected)
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync<IActionResult>(async () =>
         {
-            entity.ResolvedAtUtc = now;
-            entity.ResolvedByUserId = actorId;
-        }
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+            var entity = await _db.PrivacyRequests
+                .FromSqlInterpolated($"SELECT * FROM privacy_requests WHERE \"Id\" = {id} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken);
+            if (entity is null) return NotFound();
+            if (entity.Status is DataSubjectRequestStatus.Completed or DataSubjectRequestStatus.Rejected)
+                return Conflict(new { Message = "This privacy request is already closed." });
 
-        _db.AuditLogs.Add(new AuditLog
-        {
-            Id = Guid.NewGuid(),
-            ProfileId = actorId,
-            Action = "PRIVACY_REQUEST_STATUS_CHANGED",
-            EntityType = "PrivacyRequest",
-            EntityId = entity.Id.ToString(),
-            OldDataJson = JsonSerializer.Serialize(new { Status = oldStatus.ToString() }),
-            NewDataJson = JsonSerializer.Serialize(new
+            var oldStatus = entity.Status;
+            var now = DateTime.UtcNow;
+            if (!string.IsNullOrWhiteSpace(request.IdentityVerificationReference))
             {
-                Status = entity.Status.ToString(),
-                entity.ResolvedAtUtc,
-                entity.ResolvedByUserId
-            }),
-            CreatedAt = now
+                var evidence = request.IdentityVerificationReference.Trim();
+                if (entity.IdentityVerificationReference is not null &&
+                    !string.Equals(entity.IdentityVerificationReference, evidence, StringComparison.Ordinal))
+                {
+                    return Conflict(new { Message = "Identity verification evidence cannot be replaced." });
+                }
+                entity.IdentityVerifiedAtUtc ??= now;
+                entity.IdentityVerifiedByUserId ??= actorId;
+                entity.IdentityVerificationReference ??= evidence;
+            }
+
+            entity.Status = request.Status;
+            entity.ResolutionNotes = request.ResolutionNotes?.Trim();
+            if (request.Status == DataSubjectRequestStatus.Completed)
+            {
+                if (!entity.IdentityVerifiedAtUtc.HasValue)
+                    return BadRequest(new { Message = "Identity verification evidence is required before fulfillment." });
+                if (string.IsNullOrWhiteSpace(request.FulfillmentEvidenceReference))
+                    return BadRequest(new { Message = "Secure delivery or action evidence is required before fulfillment." });
+                var fulfillment = await _privacyData.FulfillAsync(
+                    entity,
+                    request,
+                    actorId,
+                    now,
+                    cancellationToken);
+                entity.FulfilledAtUtc = now;
+                entity.FulfillmentEvidenceReference = request.FulfillmentEvidenceReference.Trim();
+                entity.FulfillmentDigest = fulfillment.Digest;
+                entity.ExportGeneratedAtUtc = fulfillment.ExportGeneratedAtUtc;
+            }
+            if (request.Status is DataSubjectRequestStatus.Completed or DataSubjectRequestStatus.Rejected)
+            {
+                entity.ResolvedAtUtc = now;
+                entity.ResolvedByUserId = actorId;
+            }
+
+            _db.AuditLogs.Add(new AuditLog
+            {
+                Id = Guid.NewGuid(),
+                ProfileId = actorId,
+                Action = request.Status == DataSubjectRequestStatus.Completed
+                    ? "PRIVACY_REQUEST_FULFILLED"
+                    : "PRIVACY_REQUEST_STATUS_CHANGED",
+                EntityType = "PrivacyRequest",
+                EntityId = entity.Id.ToString(),
+                OldDataJson = JsonSerializer.Serialize(new { Status = oldStatus.ToString() }),
+                NewDataJson = JsonSerializer.Serialize(new
+                {
+                    Status = entity.Status.ToString(),
+                    entity.IdentityVerifiedAtUtc,
+                    entity.FulfilledAtUtc,
+                    entity.FulfillmentDigest,
+                    entity.ResolvedAtUtc,
+                    entity.ResolvedByUserId
+                }),
+                CreatedAt = now
+            });
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return Ok(ToDto(entity));
         });
-        await _db.SaveChangesAsync(cancellationToken);
-        return Ok(ToDto(entity));
+    }
+
+    [HttpPost("guests/{id}/legal-hold")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> PlaceLegalHold(
+        string id,
+        [FromBody] PlaceLegalHoldRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        var result = await _privacyData.PlaceLegalHoldAsync(id, request, userId, cancellationToken);
+        return Ok(result);
+    }
+
+    [HttpDelete("guests/{id}/legal-hold")]
+    [Authorize(Roles = "Admin")]
+    public async Task<IActionResult> ReleaseLegalHold(
+        string id,
+        [FromBody] ReleaseLegalHoldRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId)) return Unauthorized();
+        var result = await _privacyData.ReleaseLegalHoldAsync(id, request, userId, cancellationToken);
+        return Ok(result);
     }
 
     private bool TryGetUserId(out Guid userId) => Guid.TryParse(
         User.FindFirstValue(ClaimTypes.NameIdentifier),
         out userId);
 
-    private static PrivacyRequestDto ToDto(PrivacyRequest request) => new(
+    public static PrivacyRequestDto ToDto(PrivacyRequest request) => new(
         request.Id,
         request.GuestId,
         request.Type,
         request.Status,
         request.Details,
         request.RequestedAtUtc,
+        request.DueAtUtc,
+        request.IdentityVerifiedAtUtc,
+        request.IdentityVerificationReference,
+        request.FulfilledAtUtc,
+        request.FulfillmentEvidenceReference,
+        request.FulfillmentDigest,
+        request.ExportGeneratedAtUtc,
         request.ResolvedAtUtc,
         request.ResolutionNotes);
 }

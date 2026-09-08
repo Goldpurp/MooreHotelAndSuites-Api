@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -20,6 +21,11 @@ public static class WebApplicationExtensions
 
         try
         {
+            if (app.Environment.IsDeployed())
+            {
+                VerifyDataProtectionReadiness(scope.ServiceProvider);
+            }
+
             if (database.CreateIfMissing)
             {
                 if (!app.Environment.IsLocal())
@@ -32,6 +38,10 @@ public static class WebApplicationExtensions
             }
 
             var context = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
+            await VerifyDatabaseEnvironmentBoundaryAsync(
+                context,
+                app.Environment.ToClientName(),
+                allowMissing: app.Environment.IsLocal());
             if (database.ApplyMigrationsOnStartup)
             {
                 await context.Database.MigrateAsync();
@@ -49,6 +59,20 @@ public static class WebApplicationExtensions
                     throw new InvalidOperationException("The configured database is not reachable.");
                 }
             }
+
+            if (app.Environment.IsLocal())
+            {
+                await context.Database.ExecuteSqlInterpolatedAsync(
+                    $"""
+                     INSERT INTO public.environment_boundaries ("Id", "EnvironmentName", "BoundAtUtc")
+                     VALUES (1, {app.Environment.ToClientName()}, CURRENT_TIMESTAMP)
+                     ON CONFLICT ("Id") DO NOTHING
+                     """);
+            }
+            await VerifyDatabaseEnvironmentBoundaryAsync(
+                context,
+                app.Environment.ToClientName(),
+                allowMissing: false);
 
             if (app.Environment.IsDeployed())
             {
@@ -68,8 +92,73 @@ public static class WebApplicationExtensions
         }
         catch (Exception exception)
         {
-            logger.LogCritical(exception, "Database initialization failed; the API will not start.");
+            if (logger.IsEnabled(LogLevel.Critical))
+            {
+                logger.LogCritical(
+                    "Database initialization failed with {ExceptionType}; the API will not start.",
+                    exception.GetType().Name);
+            }
             throw;
+        }
+    }
+
+    private static async Task VerifyDatabaseEnvironmentBoundaryAsync(
+        MooreHotelsDbContext context,
+        string expectedEnvironment,
+        bool allowMissing)
+    {
+        await context.Database.OpenConnectionAsync();
+        try
+        {
+            await using var tableCommand = context.Database.GetDbConnection().CreateCommand();
+            tableCommand.CommandText =
+                "SELECT to_regclass('public.environment_boundaries') IS NOT NULL";
+            var tableExists = (bool)(await tableCommand.ExecuteScalarAsync() ?? false);
+            if (!tableExists)
+            {
+                if (allowMissing) return;
+                throw new InvalidOperationException(
+                    "The database has not been bound to an application environment.");
+            }
+
+            await using var boundaryCommand = context.Database.GetDbConnection().CreateCommand();
+            boundaryCommand.CommandText =
+                "SELECT \"EnvironmentName\" FROM public.environment_boundaries WHERE \"Id\" = 1";
+            var actualEnvironment = await boundaryCommand.ExecuteScalarAsync() as string;
+            if (string.IsNullOrWhiteSpace(actualEnvironment))
+            {
+                if (allowMissing) return;
+                throw new InvalidOperationException(
+                    "The database environment boundary is missing.");
+            }
+            if (!string.Equals(
+                    actualEnvironment,
+                    expectedEnvironment,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"The database is bound to {actualEnvironment}, not {expectedEnvironment}; startup is blocked.");
+            }
+        }
+        finally
+        {
+            await context.Database.CloseConnectionAsync();
+        }
+    }
+
+    private static void VerifyDataProtectionReadiness(IServiceProvider services)
+    {
+        var protector = services.GetRequiredService<IDataProtectionProvider>()
+            .CreateProtector("MooreHotels.ProductionStartupReadiness.v1");
+        var challenge = Guid.NewGuid().ToString("N");
+        var protectedChallenge = protector.Protect(challenge);
+        if (!string.Equals(
+                protector.Unprotect(protectedChallenge),
+                challenge,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The production Data Protection key ring failed its startup round-trip.");
         }
     }
 
@@ -112,6 +201,62 @@ public static class WebApplicationExtensions
                         )
                           AND pg_has_role(current_user, powerful.oid, 'MEMBER')
                     ),
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_roles inherited_role
+                        WHERE inherited_role.oid <> r.oid
+                          AND pg_has_role(current_user, inherited_role.oid, 'USAGE')
+                          AND (
+                              inherited_role.rolsuper OR inherited_role.rolcreaterole OR
+                              inherited_role.rolcreatedb OR inherited_role.rolreplication OR
+                              inherited_role.rolbypassrls OR
+                              EXISTS (
+                                  SELECT 1
+                                  FROM pg_class inherited_object
+                                  JOIN pg_namespace inherited_schema
+                                    ON inherited_schema.oid = inherited_object.relnamespace
+                                  WHERE inherited_schema.nspname = 'public'
+                                    AND inherited_object.relowner = inherited_role.oid
+                              ) OR
+                              EXISTS (
+                                  SELECT 1
+                                  FROM pg_proc inherited_function
+                                  JOIN pg_namespace inherited_schema
+                                    ON inherited_schema.oid = inherited_function.pronamespace
+                                  WHERE inherited_schema.nspname = 'public'
+                                    AND inherited_function.proowner = inherited_role.oid
+                              )
+                          )
+                    ),
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_proc owned_function
+                        JOIN pg_namespace owned_schema ON owned_schema.oid = owned_function.pronamespace
+                        WHERE owned_schema.nspname = 'public'
+                          AND owned_function.proowner = r.oid
+                    ),
+                    to_regclass('public."__EFMigrationsHistory"') IS NULL OR
+                        has_table_privilege(current_user, 'public."__EFMigrationsHistory"', 'SELECT') OR
+                        has_table_privilege(current_user, 'public."__EFMigrationsHistory"', 'INSERT') OR
+                        has_table_privilege(current_user, 'public."__EFMigrationsHistory"', 'UPDATE') OR
+                        has_table_privilege(current_user, 'public."__EFMigrationsHistory"', 'DELETE'),
+                    to_regclass('public.bookings') IS NULL OR
+                        has_table_privilege(current_user, 'public.bookings', 'DELETE'),
+                    to_regclass('public.audit_logs') IS NULL OR
+                        has_table_privilege(current_user, 'public.audit_logs', 'UPDATE') OR
+                        has_table_privilege(current_user, 'public.audit_logs', 'DELETE'),
+                    to_regclass('public.environment_boundaries') IS NULL OR
+                        NOT has_table_privilege(current_user, 'public.environment_boundaries', 'SELECT') OR
+                        has_table_privilege(current_user, 'public.environment_boundaries', 'INSERT') OR
+                        has_table_privilege(current_user, 'public.environment_boundaries', 'UPDATE') OR
+                        has_table_privilege(current_user, 'public.environment_boundaries', 'DELETE') OR
+                        has_table_privilege(current_user, 'public.environment_boundaries', 'TRUNCATE') OR
+                        has_table_privilege(current_user, 'public.environment_boundaries', 'REFERENCES') OR
+                        has_table_privilege(current_user, 'public.environment_boundaries', 'TRIGGER') OR
+                        (pg_get_serial_sequence('public.environment_boundaries', 'Id') IS NOT NULL AND
+                         (has_sequence_privilege(current_user, pg_get_serial_sequence('public.environment_boundaries', 'Id'), 'USAGE') OR
+                          has_sequence_privilege(current_user, pg_get_serial_sequence('public.environment_boundaries', 'Id'), 'SELECT') OR
+                          has_sequence_privilege(current_user, pg_get_serial_sequence('public.environment_boundaries', 'Id'), 'UPDATE'))),
                     current_user
                 FROM pg_roles r
                 WHERE r.rolname = current_user
@@ -120,9 +265,9 @@ public static class WebApplicationExtensions
             if (!await reader.ReadAsync())
                 throw new InvalidOperationException("The runtime PostgreSQL role could not be inspected.");
 
-            var hasDangerousPrivilege = Enumerable.Range(0, 9)
+            var hasDangerousPrivilege = Enumerable.Range(0, 15)
                 .Any(index => reader.GetBoolean(index));
-            var actualRuntimeRole = reader.GetString(9);
+            var actualRuntimeRole = reader.GetString(15);
             if (!string.Equals(
                     actualRuntimeRole,
                     expectedRuntimeRole,
@@ -134,7 +279,7 @@ public static class WebApplicationExtensions
             if (hasDangerousPrivilege)
             {
                 throw new InvalidOperationException(
-                    "The production runtime PostgreSQL role must not own application objects or have superuser, role-management, database-creation, replication, BYPASSRLS, database CREATE, or public-schema CREATE privileges.");
+                    "The production runtime PostgreSQL role has ownership, inherited administration, schema-change, migration-history, retained-record deletion, or audit-mutation access.");
             }
         }
         finally

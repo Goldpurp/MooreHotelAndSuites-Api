@@ -9,7 +9,6 @@ namespace MooreHotels.WebAPI.Controllers;
 
 [ApiController]
 [Route("api/folios")]
-[Authorize(Policy = HotelAuthorization.FolioManage)]
 public sealed class FoliosController : ControllerBase
 {
     private readonly IFolioService _folios;
@@ -17,12 +16,14 @@ public sealed class FoliosController : ControllerBase
     public FoliosController(IFolioService folios) => _folios = folios;
 
     [HttpGet("{bookingCode}")]
+    [Authorize(Policy = HotelAuthorization.FolioRead)]
     public async Task<ActionResult<FolioDto>> Get(
         string bookingCode,
         CancellationToken cancellationToken) =>
         Ok(await _folios.GetByBookingCodeAsync(bookingCode, cancellationToken));
 
     [HttpPost("{bookingCode}/charges")]
+    [Authorize(Policy = HotelAuthorization.FolioCharge)]
     public async Task<ActionResult<FolioDto>> PostCharge(
         string bookingCode,
         [FromBody] PostFolioChargeRequest request,
@@ -31,6 +32,7 @@ public sealed class FoliosController : ControllerBase
             bookingCode, request, GetActorId(), cancellationToken));
 
     [HttpPost("{bookingCode}/payments")]
+    [Authorize(Policy = HotelAuthorization.FolioPayment)]
     public async Task<ActionResult<FolioDto>> PostPayment(
         string bookingCode,
         [FromBody] PostFolioPaymentRequest request,
@@ -39,6 +41,7 @@ public sealed class FoliosController : ControllerBase
             bookingCode, request, GetActorId(), cancellationToken));
 
     [HttpPost("{bookingCode}/credits")]
+    [Authorize(Policy = HotelAuthorization.FolioAdjust)]
     public async Task<ActionResult<FolioDto>> PostCredit(
         string bookingCode,
         [FromBody] PostFolioCreditRequest request,
@@ -47,6 +50,7 @@ public sealed class FoliosController : ControllerBase
             bookingCode, request, GetActorId(), cancellationToken));
 
     [HttpPost("{bookingCode}/entries/{entryId:guid}/void")]
+    [Authorize(Policy = HotelAuthorization.FolioAdjust)]
     public async Task<ActionResult<FolioDto>> VoidEntry(
         string bookingCode,
         Guid entryId,
@@ -56,6 +60,7 @@ public sealed class FoliosController : ControllerBase
             bookingCode, entryId, request, GetActorId(), cancellationToken));
 
     [HttpPost("{bookingCode}/close")]
+    [Authorize(Policy = HotelAuthorization.FolioClose)]
     public async Task<ActionResult<FolioDto>> Close(
         string bookingCode,
         CancellationToken cancellationToken) =>

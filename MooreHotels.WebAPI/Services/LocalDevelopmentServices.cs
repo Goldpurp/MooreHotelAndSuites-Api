@@ -73,6 +73,12 @@ public sealed class LocalEmailService : IEmailService
     public Task SendAccountActivatedAsync(string email, string name) => Accepted("AccountActivated", email);
     public Task SendRefundCompletionNoticeAsync(string email, string guestName, string bookingCode, string roomName, decimal amount, string reference) => Accepted("RefundCompleted", email);
     public Task SendAdminRefundAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, decimal amount) => Accepted("AdminRefund", adminEmail);
+    public Task SendBookingAmendmentConfirmationAsync(string email, BookingAmendmentConfirmationEmail payload) =>
+        string.IsNullOrWhiteSpace(payload.ManageBookingUrl)
+            ? Accepted("BookingAmendmentConfirmation", email)
+            : AcceptedWithLink("BookingAmendmentConfirmation", email, payload.ManageBookingUrl);
+    public Task SendFolioReceiptAsync(string email, FolioReceiptEmail payload) =>
+        Accepted("FolioReceipt", email);
 }
 
 public sealed class UnavailableMonnifyService : IMonnifyService

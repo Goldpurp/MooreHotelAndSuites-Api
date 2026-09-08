@@ -22,53 +22,64 @@ public class UserStatusMiddleware
         if (context.User.Identity?.IsAuthenticated == true)
         {
             var userIdStr = context.User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (Guid.TryParse(userIdStr, out var userId))
+            if (!Guid.TryParse(userIdStr, out _))
             {
-                var user = await userManager.FindByIdAsync(userIdStr);
+                await RejectSessionAsync(
+                    context,
+                    "SESSION_REVOKED",
+                    "This session is no longer valid. Please sign in again.");
+                return;
+            }
 
-                var tokenStamp = context.User.FindFirstValue("security_stamp");
-                var hasValidSecurityStamp = user is not null &&
-                    !string.IsNullOrEmpty(tokenStamp) &&
-                    string.Equals(tokenStamp, user.SecurityStamp, StringComparison.Ordinal);
+            var user = await userManager.FindByIdAsync(userIdStr!);
+            var tokenStamp = context.User.FindFirstValue("security_stamp");
+            var hasValidSecurityStamp = user is not null &&
+                !string.IsNullOrEmpty(tokenStamp) &&
+                string.Equals(tokenStamp, user.SecurityStamp, StringComparison.Ordinal);
 
-                if (user == null || user.Status == ProfileStatus.Suspended || !hasValidSecurityStamp)
-                {
-                    var errorCode = user?.Status == ProfileStatus.Suspended
+            if (user == null || user.Status == ProfileStatus.Suspended || !hasValidSecurityStamp)
+            {
+                await RejectSessionAsync(
+                    context,
+                    user?.Status == ProfileStatus.Suspended
                         ? "ACCOUNT_SUSPENDED"
-                        : "SESSION_REVOKED";
-                    var message = user?.Status == ProfileStatus.Suspended
+                        : "SESSION_REVOKED",
+                    user?.Status == ProfileStatus.Suspended
                         ? "This account is suspended. Contact an administrator."
-                        : "This session is no longer valid. Please sign in again.";
-                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new
-                    {
-                        Message = message,
-                        ErrorCode = errorCode
-                    });
-                    return;
-                }
+                        : "This session is no longer valid. Please sign in again.");
+                return;
+            }
 
-                var isStaff = user.Role is UserRole.Admin or UserRole.Manager or UserRole.Staff;
-                var mfaSetupRoute = context.Request.Path.StartsWithSegments("/api/mfa");
-                if (configuration.GetValue<bool>("Security:RequireStaffMfa") &&
-                    isStaff &&
-                    !user.TwoFactorEnabled &&
-                    !mfaSetupRoute)
-                {
-                    context.Response.StatusCode = StatusCodes.Status403Forbidden;
-                    context.Response.ContentType = "application/json";
-                    await context.Response.WriteAsJsonAsync(new
-                    {
-                        Message = "Two-factor authentication setup is required.",
-                        ErrorCode = "MFA_SETUP_REQUIRED"
-                    });
-                    return;
-                }
+            var isStaff = user.Role is UserRole.Admin or UserRole.Manager or UserRole.Staff;
+            var mfaSetupRoute = context.Request.Path.StartsWithSegments("/api/mfa");
+            if (configuration.GetValue<bool>("Security:RequireStaffMfa") &&
+                isStaff &&
+                !user.TwoFactorEnabled &&
+                !mfaSetupRoute)
+            {
+                await RejectSessionAsync(
+                    context,
+                    "MFA_SETUP_REQUIRED",
+                    "Two-factor authentication setup is required.");
+                return;
             }
         }
 
         await _next(context);
+    }
+
+    private static async Task RejectSessionAsync(
+        HttpContext context,
+        string errorCode,
+        string message)
+    {
+        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+        context.Response.ContentType = "application/json";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            Message = message,
+            ErrorCode = errorCode
+        });
     }
 }
 

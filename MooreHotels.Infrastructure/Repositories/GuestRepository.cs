@@ -22,6 +22,7 @@ public class GuestRepository : IGuestRepository
 
     public async Task<IEnumerable<Guest>> GetAllAsync() => await _db.Guests
         .AsNoTracking()
+        .Where(guest => guest.MergedIntoGuestId == null)
         .OrderByDescending(guest => guest.CreatedAt)
         .Take(1000)
         .ToListAsync();
@@ -33,11 +34,12 @@ public class GuestRepository : IGuestRepository
         var t = term.Trim();
         return await _db.Guests
             .AsNoTracking()
-            .Where(g => EF.Functions.ILike(g.Id, $"%{t}%") ||
+            .Where(g => g.MergedIntoGuestId == null &&
+                        (EF.Functions.ILike(g.Id, $"%{t}%") ||
                         EF.Functions.ILike(g.FirstName, $"%{t}%") ||
                         EF.Functions.ILike(g.LastName, $"%{t}%") ||
                         EF.Functions.ILike(g.Email, $"%{t}%") ||
-                        g.Phone.Contains(t))
+                        g.Phone.Contains(t)))
             .OrderByDescending(guest => guest.CreatedAt)
             .Take(200)
             .ToListAsync();
@@ -49,10 +51,11 @@ public class GuestRepository : IGuestRepository
         string? search = null,
         CancellationToken cancellationToken = default)
     {
-        var normalizedPage = Math.Max(1, pageNumber);
+        var normalizedPage = Math.Clamp(pageNumber, 1, 1_000_000);
         var normalizedSize = Math.Clamp(pageSize, 1, 100);
 
-        var query = _db.Guests.AsNoTracking().AsQueryable();
+        var query = _db.Guests.AsNoTracking()
+            .Where(guest => guest.MergedIntoGuestId == null).AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(search))
         {

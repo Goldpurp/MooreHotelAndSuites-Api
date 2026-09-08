@@ -20,6 +20,7 @@ public interface IRoomRepository
         string? amenity);
     Task AddAsync(Room room);
     Task UpdateAsync(Room room);
+    void RemoveInventoryPeriod(RoomInventoryPeriod period);
     Task DeleteAsync(Room room);
     Task<Room?> GetByIdWithImagesAsync(Guid id);
     Task<AssetStatusDistribution> GetAssetStatusDistributionAsync(CancellationToken cancellationToken = default);

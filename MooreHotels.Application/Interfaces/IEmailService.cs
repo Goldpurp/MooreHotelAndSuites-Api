@@ -1,3 +1,5 @@
+using MooreHotels.Application.DTOs;
+
 namespace MooreHotels.Application.Interfaces;
 
 public interface IEmailService
@@ -18,4 +20,6 @@ public interface IEmailService
     Task SendAccountActivatedAsync(string email, string name);
     Task SendRefundCompletionNoticeAsync(string email, string guestName, string bookingCode, string roomName, decimal amount, string reference);
     Task SendAdminRefundAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, decimal amount);
+    Task SendBookingAmendmentConfirmationAsync(string email, BookingAmendmentConfirmationEmail payload);
+    Task SendFolioReceiptAsync(string email, FolioReceiptEmail payload);
 }

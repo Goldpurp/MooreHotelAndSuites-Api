@@ -89,9 +89,16 @@ public sealed class ClientGuestReconciliationService : IClientGuestReconciliatio
         string requestId,
         CancellationToken cancellationToken = default)
     {
-        var evidenceType = request.EvidenceType.Trim();
-        var guestId = request.GuestId.Trim().ToUpperInvariant();
-        var reason = request.Reason.Trim();
+        if (userId == Guid.Empty) throw new NotFoundException("Client account not found.");
+        if (actingUserId == Guid.Empty)
+            throw new UnauthorizedAccessException("The authenticated actor is invalid.");
+        var evidenceType = RequireText(request.EvidenceType, "Evidence type", 30);
+        if (evidenceType is not ("VerifiedEmail" or "VerifiedPhone" or "GovernmentId" or "InPersonIdentityCheck"))
+            throw new BadRequestException("Identity evidence type is invalid.");
+        var guestId = RequireText(request.GuestId, "Guest identifier", 20).ToUpperInvariant();
+        var reason = RequireText(request.Reason, "Reconciliation reason", 500, 10);
+        if (string.IsNullOrWhiteSpace(requestId) || requestId.Length > 160 || requestId.Any(char.IsControl))
+            throw new BadRequestException("The request identifier is invalid.");
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -214,5 +221,17 @@ public sealed class ClientGuestReconciliationService : IClientGuestReconciliatio
                    normalizedUserPhone,
                    normalizedGuestPhone,
                    StringComparison.Ordinal);
+    }
+
+    private static string RequireText(
+        string? value,
+        string field,
+        int maximumLength,
+        int minimumLength = 1)
+    {
+        var cleaned = value?.Trim() ?? string.Empty;
+        if (cleaned.Length < minimumLength || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
     }
 }

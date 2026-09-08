@@ -6,4 +6,5 @@ public record UpdateProfileRequest(
     [StringLength(160, MinimumLength = 1)] string? FullName = null,
     [EmailAddress, StringLength(254)] string? Email = null,
     [Phone, StringLength(30)] string? Phone = null,
-    [Url, StringLength(2048)] string? AvatarUrl = null);
+    [Url, StringLength(2048)] string? AvatarUrl = null,
+    [StringLength(128, MinimumLength = 1)] string? CurrentPassword = null);

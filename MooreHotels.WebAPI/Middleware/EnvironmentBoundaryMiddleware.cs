@@ -33,7 +33,7 @@ public sealed class EnvironmentBoundaryMiddleware
             {
                 Status = StatusCodes.Status409Conflict,
                 Title = "Environment mismatch",
-                Detail = $"The {_environment} API cannot accept a request marked for {requestedEnvironment}.",
+                Detail = $"The request environment does not match the {_environment} API.",
                 Instance = context.Request.Path,
                 Extensions = { ["traceId"] = context.TraceIdentifier }
             });

@@ -1,8 +1,12 @@
 using System.Data;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Exceptions;
+using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Common;
 using MooreHotels.Domain.Entities;
@@ -15,11 +19,19 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
 {
     private readonly MooreHotelsDbContext _db;
     private readonly IHotelTimeService _hotelTime;
+    private readonly IEmailOutbox _emailOutbox;
+    private readonly IConfiguration _config;
 
-    public ReservationAmendmentService(MooreHotelsDbContext db, IHotelTimeService hotelTime)
+    public ReservationAmendmentService(
+        MooreHotelsDbContext db,
+        IHotelTimeService hotelTime,
+        IEmailOutbox emailOutbox,
+        IConfiguration config)
     {
         _db = db;
         _hotelTime = hotelTime;
+        _emailOutbox = emailOutbox;
+        _config = config;
     }
 
     public async Task<ReservationAmendmentDto> AmendAsync(
@@ -28,7 +40,10 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (bookingId == Guid.Empty) throw new NotFoundException("Booking not found.");
+        await RequireActorAsync(actorId, cancellationToken);
         ValidateRequest(request);
+        var reason = request.Reason.Trim();
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -60,6 +75,8 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
             var now = DateTime.UtcNow;
             if (quote.ConsumedAtUtc.HasValue || quote.ExpiresAtUtc <= now)
                 throw new BadRequestException("The amendment quote is expired or already used. Request a new quote.");
+            if (quote.AmendmentBookingId != booking.Id)
+                throw new BadRequestException("The amendment quote was not issued for this reservation.");
             if (quote.RoomId != request.RoomId || quote.RoomTypeId != request.RoomTypeId ||
                 quote.RoomQuantity != request.RoomQuantity ||
                 quote.CheckInDate != DateOnly.FromDateTime(request.CheckIn) ||
@@ -148,7 +165,7 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
                 CheckOut = checkOut,
                 AdultCount = request.AdultCount,
                 ChildCount = request.ChildCount,
-                Reason = request.Reason.Trim(),
+                Reason = reason,
                 AmendedAtUtc = now,
                 AmendedByUserId = actorId
             };
@@ -204,6 +221,54 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
                 NewDataJson = amendment.NewStateJson,
                 CreatedAt = now
             });
+
+            if (!string.IsNullOrWhiteSpace(booking.GuestId))
+            {
+                var guest = await _db.Guests.AsNoTracking()
+                    .SingleOrDefaultAsync(g => g.Id == booking.GuestId, cancellationToken);
+                if (guest is not null && !string.IsNullOrWhiteSpace(guest.Email))
+                {
+                    var deterministicEmailId = CreateDeterministicId($"amendment:{amendment.Id:N}");
+                    if (!_db.EmailOutboxMessages.Local.Any(m => m.Id == deterministicEmailId) &&
+                        !await _db.EmailOutboxMessages.AnyAsync(m => m.Id == deterministicEmailId, cancellationToken))
+                    {
+                        var nights = Math.Max(1, (int)Math.Ceiling((booking.CheckOut - booking.CheckIn).TotalDays));
+                        var publicAppUrl = (_config["PublicAppUrl"] ??
+                            throw new InvalidOperationException("PublicAppUrl is not configured.")).TrimEnd('/');
+                        var manageBookingUrl = $"{publicAppUrl}/booking-status?code={Uri.EscapeDataString(booking.BookingCode)}";
+                        var guestName = $"{guest.FirstName} {guest.LastName}".Trim();
+                        if (string.IsNullOrWhiteSpace(guestName)) guestName = "Valued Guest";
+                        var folioBalance = FolioAccounting.Calculate(folio.Entries);
+                        var balanceDue = FolioAccounting.Money(Math.Max(0m, folioBalance.Balance));
+
+                        var emailPayload = new BookingAmendmentConfirmationEmail(
+                            guestName,
+                            booking.BookingCode,
+                            roomType.Name,
+                            request.RoomQuantity,
+                            booking.CheckIn,
+                            booking.CheckOut,
+                            nights,
+                            booking.RoomSubtotal,
+                            booking.TaxAmount,
+                            booking.FeeAmount,
+                            booking.Amount,
+                            balanceDue,
+                            amendment.PriceDifference,
+                            manageBookingUrl,
+                            amendment.Reason);
+
+                        var emailMessage = _emailOutbox.Create(
+                            TransactionalEmailTemplates.BookingAmendmentConfirmation,
+                            guest.Email,
+                            emailPayload,
+                            booking.GuestId);
+                        emailMessage.Id = deterministicEmailId;
+                        _db.EmailOutboxMessages.Add(emailMessage);
+                    }
+                }
+            }
+
             await _db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return ToDto(amendment, folio);
@@ -214,6 +279,7 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
         Guid bookingId,
         CancellationToken cancellationToken = default)
     {
+        if (bookingId == Guid.Empty) throw new NotFoundException("Booking not found.");
         if (!await _db.Bookings.AsNoTracking().AnyAsync(item => item.Id == bookingId, cancellationToken))
             throw new NotFoundException("Booking not found.");
         var folio = await _db.Folios.AsNoTracking().Include(item => item.Entries)
@@ -367,16 +433,36 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
 
     private void ValidateRequest(AmendReservationRequest request)
     {
-        if (request.QuoteId == Guid.Empty || string.IsNullOrWhiteSpace(request.QuoteToken))
+        if (request.QuoteId == Guid.Empty || string.IsNullOrWhiteSpace(request.QuoteToken) ||
+            request.QuoteToken.Length is < 40 or > 200 || request.QuoteToken.Any(char.IsControl))
             throw new BadRequestException("A current amendment quote is required.");
-        if (request.RoomQuantity is < 1 or > 10 || request.AdultCount < 1 || request.ChildCount < 0)
+        if (request.RoomTypeId == Guid.Empty || request.RoomId == Guid.Empty)
+            throw new BadRequestException("Room or room-type identifier is invalid.");
+        if (request.RoomQuantity is < 1 or > 10 || request.AdultCount is < 1 or > 20 ||
+            request.ChildCount is < 0 or > 20)
             throw new BadRequestException("Room quantity and occupancy are invalid.");
         if (DateOnly.FromDateTime(request.CheckIn) < _hotelTime.Today ||
             DateOnly.FromDateTime(request.CheckOut) <= DateOnly.FromDateTime(request.CheckIn) ||
-            DateOnly.FromDateTime(request.CheckOut).DayNumber - DateOnly.FromDateTime(request.CheckIn).DayNumber > 90)
+            DateOnly.FromDateTime(request.CheckOut).DayNumber - DateOnly.FromDateTime(request.CheckIn).DayNumber > 90 ||
+            DateOnly.FromDateTime(request.CheckIn) > _hotelTime.Today.AddYears(2))
             throw new BadRequestException("Amended stay dates are invalid.");
-        if (string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Trim().Length is < 10 or > 500)
+        if (string.IsNullOrWhiteSpace(request.Reason) ||
+            request.Reason.Trim().Length is < 10 or > 500 || request.Reason.Any(char.IsControl))
             throw new BadRequestException("An amendment reason of 10 to 500 characters is required.");
+    }
+
+    private async Task RequireActorAsync(Guid actorId, CancellationToken cancellationToken)
+    {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The reservation actor is invalid.");
+        var actor = await _db.Users.AsNoTracking().SingleOrDefaultAsync(user =>
+            user.Id == actorId && user.Status == ProfileStatus.Active,
+            cancellationToken);
+        if (actor is null || actor.Role is UserRole.Client ||
+            actor.Role == UserRole.Staff && actor.Department is not ("Reception" or "FrontDesk"))
+        {
+            throw new UnauthorizedAccessException("The actor cannot amend reservations.");
+        }
     }
 
     private static ReservationAmendmentDto ToDto(BookingAmendment amendment, Folio folio) => new(
@@ -384,4 +470,14 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
         amendment.PriceDifference, amendment.Reason, amendment.AmendedAtUtc, amendment.AmendedByUserId,
         amendment.RoomTypeId, amendment.RoomQuantity, amendment.CheckIn, amendment.CheckOut,
         amendment.AdultCount, amendment.ChildCount, FolioService.ToSummary(folio));
+
+    private static Guid CreateDeterministicId(string key)
+    {
+        // This preserves the established outbox idempotency key format. The hash is
+        // only a stable namespace mapping for server-generated IDs, not a security primitive.
+#pragma warning disable CA5351
+        var hash = MD5.HashData(Encoding.UTF8.GetBytes(key));
+#pragma warning restore CA5351
+        return new Guid(hash);
+    }
 }

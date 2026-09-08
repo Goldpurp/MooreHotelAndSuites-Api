@@ -66,6 +66,12 @@ public class AddOnRepository : IAddOnRepository
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(bookingCode) || bookingCode.Length > 30 ||
+            addOnServiceId == Guid.Empty || actorId == Guid.Empty || quantity is < 1 or > 1000 ||
+            notes?.Length > 500 || notes?.Any(char.IsControl) == true)
+        {
+            throw new BadRequestException("Add-on booking data is invalid or too long.");
+        }
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -109,7 +115,17 @@ public class AddOnRepository : IAddOnRepository
                     "The requested add-on service is invalid or inactive.");
             }
 
-            var totalPrice = service.Price * quantity;
+            decimal totalPrice;
+            try
+            {
+                totalPrice = FolioAccounting.Money(checked(service.Price * quantity));
+            }
+            catch (OverflowException)
+            {
+                throw new BadRequestException("The add-on total is outside the supported monetary range.");
+            }
+            if (totalPrice <= 0 || totalPrice > 9999999999999999m)
+                throw new BadRequestException("The add-on total is outside the supported monetary range.");
             var bookingAddOn = new BookingAddOn
             {
                 Id = Guid.NewGuid(),

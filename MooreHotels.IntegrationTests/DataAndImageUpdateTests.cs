@@ -403,7 +403,7 @@ public sealed class DataAndImageUpdateTests
     }
 
     [Fact]
-    public async Task Password_contract_accepts_eight_and_rejects_seven_characters()
+    public async Task Password_contract_accepts_twelve_and_rejects_eleven_characters()
     {
         var passwordParameter = typeof(RegisterRequest)
             .GetConstructors()
@@ -414,15 +414,15 @@ public sealed class DataAndImageUpdateTests
         var lengthRule = passwordParameter
             .GetCustomAttribute<StringLengthAttribute>();
         Assert.NotNull(lengthRule);
-        Assert.Equal(8, lengthRule.MinimumLength);
-        Assert.True(lengthRule.IsValid("Aa1!bcde"));
-        Assert.False(lengthRule.IsValid("Aa1!bcd"));
+        Assert.Equal(12, lengthRule.MinimumLength);
+        Assert.True(lengthRule.IsValid("Aa1!bcdefghi"));
+        Assert.False(lengthRule.IsValid("Aa1!bcdefgh"));
 
         await using var scope = _fixture.Services.CreateAsyncScope();
         var options = scope.ServiceProvider
             .GetRequiredService<IOptions<IdentityOptions>>()
             .Value;
-        Assert.Equal(8, options.Password.RequiredLength);
+        Assert.Equal(12, options.Password.RequiredLength);
 
         var userManager =
             scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
@@ -437,12 +437,12 @@ public sealed class DataAndImageUpdateTests
             validator => validator.ValidateAsync(
                 userManager,
                 candidate,
-                "Aa1!bcde")));
+                "Aa1!bcdefghi")));
         var rejected = await Task.WhenAll(userManager.PasswordValidators.Select(
             validator => validator.ValidateAsync(
                 userManager,
                 candidate,
-                "Aa1!bcd")));
+                "Aa1!bcdefgh")));
 
         Assert.All(accepted, result => Assert.True(result.Succeeded));
         Assert.Contains(rejected, result => !result.Succeeded);

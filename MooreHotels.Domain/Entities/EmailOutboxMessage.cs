@@ -9,6 +9,7 @@ public sealed class EmailOutboxMessage
     public Guid Id { get; set; }
     public string Template { get; set; } = string.Empty;
     public string Recipient { get; set; } = string.Empty;
+    public string? DataSubjectGuestId { get; set; }
     public string ProtectedPayload { get; set; } = string.Empty;
     public int AttemptCount { get; set; }
     public DateTime NextAttemptAtUtc { get; set; }
@@ -16,4 +17,6 @@ public sealed class EmailOutboxMessage
     public DateTime? LockedUntilUtc { get; set; }
     public string? LastErrorCode { get; set; }
     public DateTime CreatedAtUtc { get; set; }
+    public DateTime? QuarantinedAtUtc { get; set; }
+    public string? DeliveryFailureMetadataJson { get; set; }
 }

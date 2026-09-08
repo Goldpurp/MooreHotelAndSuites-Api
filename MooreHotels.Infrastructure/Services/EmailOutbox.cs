@@ -22,7 +22,11 @@ public sealed class EmailOutbox : IEmailOutbox
             "MooreHotels.EmailOutbox.Payload.v1");
     }
 
-    public EmailOutboxMessage Create(string emailTemplate, string recipient, object payload)
+    public EmailOutboxMessage Create(
+        string emailTemplate,
+        string recipient,
+        object payload,
+        string? dataSubjectGuestId = null)
     {
         if (string.IsNullOrWhiteSpace(emailTemplate) || emailTemplate.Length > 50 ||
             !MailAddress.TryCreate(recipient, out var address))
@@ -40,6 +44,9 @@ public sealed class EmailOutbox : IEmailOutbox
             Id = Guid.NewGuid(),
             Template = emailTemplate,
             Recipient = address.Address,
+            DataSubjectGuestId = string.IsNullOrWhiteSpace(dataSubjectGuestId)
+                ? null
+                : dataSubjectGuestId.Trim(),
             ProtectedPayload = _protector.Protect(payloadJson),
             AttemptCount = 0,
             NextAttemptAtUtc = now,
@@ -58,9 +65,14 @@ public sealed class EmailOutbox : IEmailOutbox
         string emailTemplate,
         string recipient,
         object payload,
+        string? dataSubjectGuestId = null,
         CancellationToken cancellationToken = default)
     {
-        _db.EmailOutboxMessages.Add(Create(emailTemplate, recipient, payload));
+        _db.EmailOutboxMessages.Add(Create(
+            emailTemplate,
+            recipient,
+            payload,
+            dataSubjectGuestId));
         await _db.SaveChangesAsync(cancellationToken);
     }
 }

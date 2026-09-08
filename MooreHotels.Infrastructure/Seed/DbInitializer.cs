@@ -58,7 +58,8 @@ public static class DbInitializer
                 Status = ProfileStatus.Active,
                 EmailConfirmed = true,
                 LockoutEnabled = true,
-                CreatedAt = DateTime.UtcNow
+                CreatedAt = DateTime.UtcNow,
+                StatusChangedAtUtc = DateTime.UtcNow
             };
 
             EnsureSucceeded(
@@ -71,6 +72,7 @@ public static class DbInitializer
         {
             admin.Role = UserRole.Admin;
             admin.Status = ProfileStatus.Active;
+            admin.StatusChangedAtUtc = DateTime.UtcNow;
             admin.EmailConfirmed = true;
             EnsureSucceeded(await userManager.UpdateAsync(admin), "repair the initial super administrator");
         }

@@ -23,4 +23,5 @@ public class Room
     public ICollection<ReservationRoom> Assignments { get; set; } = new List<ReservationRoom>();
     public ICollection<HousekeepingTask> HousekeepingTasks { get; set; } = new List<HousekeepingTask>();
     public ICollection<MaintenanceWorkOrder> MaintenanceWorkOrders { get; set; } = new List<MaintenanceWorkOrder>();
+    public ICollection<RoomInventoryPeriod> InventoryPeriods { get; set; } = new List<RoomInventoryPeriod>();
 }

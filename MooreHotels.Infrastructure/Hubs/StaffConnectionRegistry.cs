@@ -124,9 +124,9 @@ public sealed class StaffConnectionRegistry : IStaffSessionRevocationService
             catch (Exception exception)
             {
                 _logger.LogWarning(
-                    exception,
-                    "Could not notify every SignalR connection that access was revoked for user {UserId}.",
-                    userId);
+                    "Could not notify every SignalR connection that access was revoked for user {UserId}; {ExceptionType} occurred.",
+                    userId,
+                    exception.GetType().Name);
             }
 
             foreach (var connectionId in connectionIds)
@@ -141,10 +141,10 @@ public sealed class StaffConnectionRegistry : IStaffSessionRevocationService
                 catch (Exception exception)
                 {
                     _logger.LogWarning(
-                        exception,
-                        "Could not remove SignalR connection {ConnectionId} for revoked user {UserId}.",
+                        "Could not remove SignalR connection {ConnectionId} for revoked user {UserId}; {ExceptionType} occurred.",
                         connectionId,
-                        userId);
+                        userId,
+                        exception.GetType().Name);
                 }
             }
         }

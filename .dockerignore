@@ -1,5 +1,6 @@
 .git
 .gitignore
+.github
 .env
 .env.*
 !.env.*.example
@@ -10,6 +11,11 @@
 **/bin
 **/obj
 **/TestResults
+MooreHotels.UnitTests
+MooreHotels.IntegrationTests
 publish
 *.log
 docs
+README.md
+PRODUCTION_DEPLOYMENT.md
+render.yaml

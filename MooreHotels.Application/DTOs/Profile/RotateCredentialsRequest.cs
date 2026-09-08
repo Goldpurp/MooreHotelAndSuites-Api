@@ -7,7 +7,7 @@ public sealed class RotateCredentialsRequest
     [Required, StringLength(128)]
     public string OldPassword { get; init; } = string.Empty;
 
-    [Required, StringLength(128, MinimumLength = 8)]
+    [Required, StringLength(128, MinimumLength = 12)]
     public string NewPassword { get; init; } = string.Empty;
 
     [Required, Compare(nameof(NewPassword))]

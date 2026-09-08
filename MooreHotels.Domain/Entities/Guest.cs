@@ -18,6 +18,12 @@ public class Guest
     public string? AvatarUrl { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? AnonymizedAtUtc { get; set; }
+    public DateTime? ProcessingRestrictedAtUtc { get; set; }
+    public DateTime? MarketingObjectedAtUtc { get; set; }
+    public bool IsUnderLegalHold { get; set; }
+    public DateTime? LegalHoldPlacedAtUtc { get; set; }
+    public string? LegalHoldReason { get; set; }
+    public Guid? LegalHoldPlacedByUserId { get; set; }
 
     // Relationships
     public ICollection<Booking> Bookings { get; set; } = new List<Booking>();

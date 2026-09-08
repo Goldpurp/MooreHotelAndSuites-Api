@@ -153,8 +153,8 @@ public sealed class FirstFiveProductionFixTests
             .SingleAsync());
         var unknownWeakEmail = $"weak-{Guid.NewGuid():N}@example.test";
 
-        using var weakExisting = await RegisterAsync(existingEmail, "aaaaaaaa");
-        using var weakUnknown = await RegisterAsync(unknownWeakEmail, "aaaaaaaa");
+        using var weakExisting = await RegisterAsync(existingEmail, "aaaaaaaaaaaa");
+        using var weakUnknown = await RegisterAsync(unknownWeakEmail, "aaaaaaaaaaaa");
         Assert.Equal(HttpStatusCode.BadRequest, weakExisting.StatusCode);
         Assert.Equal(weakExisting.StatusCode, weakUnknown.StatusCode);
         Assert.Contains("uppercase", await weakExisting.Content.ReadAsStringAsync(), StringComparison.OrdinalIgnoreCase);

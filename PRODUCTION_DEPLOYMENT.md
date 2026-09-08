@@ -2,21 +2,26 @@
 
 This is the required release procedure for the API. Do not add a production
 `.env` file to the repository. Render environment variables, secret files and
-the attached PostgreSQL database are the production source of truth.
+the Supabase PostgreSQL project are the production source of truth.
 
 ## 1. Infrastructure
 
-- Use a paid Render PostgreSQL database in the Frankfurt region.
+- Use a Supabase PostgreSQL project in the intended production region. Enable
+  the required backup/PITR plan before accepting guest data.
 - Use a paid Starter-or-higher API web service in the same region.
 - Attach the persistent disk defined in `render.yaml` at `/var/data`.
-- Keep the database and API in the same Render project/environment.
+- Keep the Supabase project and Render environment under production-owned
+  organization accounts with MFA and separate administrator access.
 - Configure the API health check as `/health/ready`.
 - Keep automatic deploy set to **After CI checks pass**.
 
 The Docker image contains a reviewed EF Core migration bundle and PostgreSQL
-client. Render runs `scripts/predeploy-production.sh`, which validates existing
-data, applies the bundle with `MIGRATION_CONNECTION_STRING`, and refreshes
-runtime DML grants for `DATABASE_RUNTIME_ROLE` before starting the new version.
+client. Render runs `scripts/predeploy-production.sh`, which first rejects a
+Local/test/restore database target and any existing non-Production environment
+stamp, closes the Supabase Data API surface, validates existing data, applies
+the bundle with `MIGRATION_CONNECTION_STRING`, binds the database to
+`production`, revalidates and re-hardens the schema, and then refreshes runtime
+DML grants for `DATABASE_RUNTIME_ROLE` before starting the new version.
 The running API uses the separate least-privileged
 `ConnectionStrings__DefaultConnection`; startup removes the migration variable
 from its process before configuration is built, does not apply schema changes,
@@ -29,36 +34,53 @@ sync when updating this pin.
 
 Keep this release at one API instance. Live SignalR connection revocation uses
 the same process-local connection registry as the current SignalR broadcast
-setup. Before scaling to multiple instances, add and test a shared SignalR
-backplane plus a cross-instance revocation channel.
+setup, and its one-minute handshake tickets are process-local and single-use.
+Before scaling to multiple instances, add and test a shared SignalR backplane,
+ticket store, and cross-instance revocation channel.
 
 ## 2. Database
 
 Before the first deployment:
 
-1. Create or upgrade the paid PostgreSQL database.
-2. Create two separate database logins with an administrative database
-   credential: a migration owner and a runtime login. The migration login must
-   own the database's `public` schema; the runtime login must not own the
-   database, schema, tables, sequences, or migrations history. Set
-   `DATABASE_RUNTIME_ROLE` to the runtime role name. The checked-in pre-deploy
-   script refuses to continue if it cannot remove schema creation from that
-   role.
-3. Keep the API and database in the same Render account and Frankfurt region,
-   then copy the database's **internal** host, port, database, username and
-   password into `ConnectionStrings__DefaultConnection` using Npgsql key/value
-   syntax:
+1. Create a new Supabase project; do not reuse the expired Render database or
+   copy its credentials. Record the IPv4 **session pooler** connection shown by
+   Supabase under **Connect**. Render must use port 5432, not the transaction
+   pooler on port 6543.
+2. Generate a unique runtime password in a password manager, then create (or
+   rotate) the dedicated runtime role with the Supabase `postgres` owner
+   connection:
 
-   ```text
-   Host=...;Port=5432;Database=...;Username=...;Password=...;Maximum Pool Size=80;Timeout=10;Command Timeout=30
+   ```bash
+   MIGRATION_CONNECTION_STRING='...' \
+   DATABASE_RUNTIME_ROLE='moore_runtime' \
+   DATABASE_RUNTIME_PASSWORD='...' \
+   ./scripts/create-supabase-runtime-role.sh
    ```
 
-   Render internal connections stay on its private network and do not use the
-   public database allowlist. If the API and database are not in the same
-   account and region, stop and correct that instead of using the slower
-   external URL for production.
-4. Configure `MIGRATION_CONNECTION_STRING` with the database/schema owner. Use
-   that credential only for Render's pre-deploy command and migration rehearsal.
+   Remove `DATABASE_RUNTIME_PASSWORD` immediately afterward; it is not a
+   Render runtime setting. The runtime role cannot own database objects or
+   receive role-management, database-creation, replication, superuser, or
+   `BYPASSRLS` privileges.
+3. Put the dedicated runtime connection in
+   `ConnectionStrings__DefaultConnection` using Npgsql key/value syntax:
+
+   ```text
+   Host=<region>.pooler.supabase.com;Port=5432;Database=postgres;Username=moore_runtime.<project-ref>;Password=...;Maximum Pool Size=20;Timeout=10;Command Timeout=30;SSL Mode=VerifyFull
+   ```
+
+   `Maximum Pool Size` is per API instance and is fail-closed above 32. Keep
+   the sum across all instances within the Supabase project/pooler connection
+   budget. Npgsql multiplexing is not permitted with this session-pooler setup.
+4. Configure `MIGRATION_CONNECTION_STRING` with the Supabase `postgres` owner
+   through the same session pooler and `SSL Mode=VerifyFull`, using the same
+   semicolon-separated Npgsql key/value syntax shown above rather than a URI.
+   Use it only for Render's pre-deploy command and migration rehearsal. The
+   application clears this variable before building runtime configuration.
+   `scripts/bind-production-database.sh` additionally requires the production
+   Supabase session-pooler host, port 5432 and `VerifyFull`; it rejects database
+   names marked local, development, test, restore, drill, or rehearsal. Its
+   `MOORE_PRODUCTION_REHEARSAL=true` escape hatch is CI-only and itself requires
+   an explicitly named test/rehearsal database.
 5. Run the grant script once during setup and verify the runtime credential:
 
    ```bash
@@ -71,9 +93,19 @@ Before the first deployment:
    ```
 
    The same provisioning runs after every production migration so new tables
-   do not accidentally become inaccessible or over-privileged.
-6. Disable public/external database access unless an approved administration or
-   backup system genuinely requires it.
+   do not accidentally become inaccessible or over-privileged. Pre-deploy also
+   removes all `public` schema, table, sequence, and function access from
+   Supabase's `anon`, `authenticated`, `service_role`, and `authenticator`
+   roles. The browser applications must never contain a Supabase URL, anon key,
+   service key, or direct database credential; they call this API only.
+   The runtime role receives `SELECT` only on `environment_boundaries`; it
+   cannot insert, update, delete, truncate, reference, trigger, or use the
+   marker's sequence. Production startup requires the singleton marker to be
+   exactly `production` before it serves requests.
+6. Keep network restrictions, organization MFA, database alerts, managed
+   backups, and PITR configured in Supabase. Use a direct IPv6 connection for
+   administration only when the runner supports it; Render uses the IPv4
+   session pooler.
 7. Take a backup of an existing database before every migration.
 8. Rehearse the migration against a restored copy before the production deploy.
 9. Run `MIGRATION_CONNECTION_STRING='...' ./scripts/validate-production-database.sh`
@@ -115,6 +147,7 @@ credentials must be rotated. Enter the new values only in Render:
 - `Privacy__PrivacyPolicyUrl`
 - `Privacy__BookingTermsUrl`
 - `Privacy__GuestRetentionDays`
+- `Privacy__InactiveAccountRetentionDays`
 - `DataProtection__CertificateBase64`
 - `DataProtection__CertificatePassword`
 
@@ -154,6 +187,14 @@ Encode the PFX as a single-line base64 value and enter it in Render as
 `base64 -w0 moorehotels-data-protection.pfx`. Enter its export password in
 `DataProtection__CertificatePassword`. Store an encrypted offline backup of the
 PFX and password. Never commit the PFX or encoded value.
+
+The image pre-creates `/var/data/moorehotels-keys` as mode `0700` owned by the
+non-root `app` user. Keep the Render disk mounted at `/var/data`; changing the
+mount or key path can make it unwritable. Production startup performs an
+encrypted protect/unprotect round-trip and refuses to serve traffic if the
+persistent path, certificate or password is unusable. After the first staging
+start, restart the service and confirm `/health/ready` remains 200 and the same
+key file remains on the disk.
 
 ## 5. Monnify
 
@@ -201,9 +242,19 @@ For a brand-new empty database only:
 1. Temporarily set `SeedAdmin=true`.
 2. Set `AdminSeed__Email`, `AdminSeed__Password` and `AdminSeed__Name` in
    Render using a new one-time password.
-3. Deploy once and sign in.
-4. Set `SeedAdmin=false`, remove the seed password, redeploy and change the
-   administrator password.
+3. Deploy, sign in, change the password and enroll MFA.
+4. Repeat steps 2–3 with a separately controlled second administrator. The
+   emergency access workflow requires another active, email-confirmed,
+   MFA-enabled Admin and forbids self-suspension.
+5. Set `SeedAdmin=false`, remove every seed password, and redeploy.
+
+Ordinary account-status endpoints intentionally reject Admin targets. For a
+confirmed compromise, another Admin uses the dedicated emergency
+suspend/reactivate endpoint with their current password, current TOTP code,
+target-email confirmation and an incident reference as the reason. Concurrent
+actions are serialized, the last operational Admin is preserved, sessions are
+revoked, and both suspension and reactivation are audited. Test this workflow
+with non-production accounts before launch.
 
 Do not reuse a password previously shared in chat.
 
@@ -259,7 +310,11 @@ Do not deploy the dashboard or guest website until all checks pass:
   event ledger is not itself a public OTA webhook.
 - Registration and booking require the current policy versions, client data
   export works, privacy requests are audited through closure, and a rehearsed
-  retention sweep anonymizes only expired unlinked guest records.
+  retention sweep anonymizes expired unlinked guests and linked Client accounts
+  only after both the guest-stay and account-inactivity periods expire. Confirm
+  recent clients, staff-linked guests, active requests and legal holds remain
+  protected; confirm eligible accounts lose passwords, MFA data, external
+  logins, claims, tokens and queued PII-bearing email.
 - Room create/update/delete and image replacement work.
 - Direct-transfer booking, exact `ACCEPT` confirmation and audit logging work.
 - Anonymous booking requires a valid, single-use email-verification token;

@@ -36,6 +36,8 @@ public sealed class ChannelManagementService : IChannelManagementService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequireManagementActorAsync(actorId, cancellationToken);
+        if (id == Guid.Empty) throw new NotFoundException("Distribution channel not found.");
         var code = NormalizeCode(request.Code);
         var name = RequireText(request.Name, "Channel name", 120);
         if (await _db.DistributionChannels.AnyAsync(item => item.Code == code && item.Id != id, cancellationToken))
@@ -65,6 +67,11 @@ public sealed class ChannelManagementService : IChannelManagementService
         var payload = ValidateJson(request.PayloadJson);
         var key = RequireText(request.IdempotencyKey, "Idempotency key", 160);
         var eventType = RequireText(request.EventType, "Event type", 80);
+        var externalReservationId = CleanBounded(request.ExternalReservationId,
+            "External reservation ID", 160);
+        if (request.OccurredAtUtc.HasValue &&
+            EnsureUtc(request.OccurredAtUtc.Value) > DateTime.UtcNow.AddMinutes(5))
+            throw new BadRequestException("Channel event time cannot be in the future.");
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
@@ -81,7 +88,7 @@ public sealed class ChannelManagementService : IChannelManagementService
             if (existing is not null)
             {
                 if (existing.EventType != eventType || !JsonEquivalent(existing.PayloadJson, payload) ||
-                    existing.ExternalReservationId != Clean(request.ExternalReservationId))
+                    existing.ExternalReservationId != externalReservationId)
                     throw new ConflictException("The channel idempotency key is already used for different event data.");
                 await transaction.CommitAsync(cancellationToken);
                 existing.Channel = channel;
@@ -96,7 +103,7 @@ public sealed class ChannelManagementService : IChannelManagementService
                 Status = ChannelEventStatus.Pending,
                 EventType = eventType,
                 IdempotencyKey = key,
-                ExternalReservationId = Clean(request.ExternalReservationId),
+                ExternalReservationId = externalReservationId,
                 PayloadJson = payload,
                 OccurredAtUtc = request.OccurredAtUtc.HasValue
                     ? EnsureUtc(request.OccurredAtUtc.Value) : now,
@@ -116,48 +123,73 @@ public sealed class ChannelManagementService : IChannelManagementService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequireManagementActorAsync(actorId, cancellationToken);
+        if (channelId == Guid.Empty || request.RoomTypeId == Guid.Empty)
+            throw new BadRequestException("Channel or room type identifier is invalid.");
         if (request.ToDate < request.FromDate || request.ToDate.DayNumber - request.FromDate.DayNumber > 365)
             throw new BadRequestException("Inventory export dates must be ordered and cannot exceed 366 days.");
-        var channel = await RequireActiveChannelAsync(channelId, cancellationToken);
-        var availability = await _inventory.GetAvailabilityAsync(
-            request.RoomTypeId, request.FromDate, request.ToDate.AddDays(1), 1, cancellationToken);
         var key = RequireText(request.IdempotencyKey, "Idempotency key", 160);
-        var existing = await _db.ChannelEvents.Include(item => item.Channel).SingleOrDefaultAsync(item =>
-            item.ChannelId == channelId && item.IdempotencyKey == key, cancellationToken);
-        var payload = JsonSerializer.Serialize(new
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            SchemaVersion = "inventory.v1",
-            availability.RoomTypeId,
-            availability.RoomTypeCode,
-            FromDate = request.FromDate,
-            ToDate = request.ToDate,
-            Days = availability.Days.Select(day => new { day.StayDate, day.AvailableUnits })
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+            var channel = await _db.DistributionChannels
+                .FromSqlInterpolated($"SELECT * FROM distribution_channels WHERE \"Id\" = {channelId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken)
+                ?? throw new NotFoundException("Distribution channel not found.");
+            if (!channel.IsActive)
+                throw new BadRequestException("The distribution channel is disabled.");
+
+            var existing = await _db.ChannelEvents.SingleOrDefaultAsync(item =>
+                item.ChannelId == channelId && item.IdempotencyKey == key, cancellationToken);
+            if (existing is not null)
+            {
+                if (existing.Direction != ChannelEventDirection.Outbound ||
+                    !InventoryRequestMatches(existing.PayloadJson, request))
+                {
+                    throw new ConflictException("The channel idempotency key is already used for different event data.");
+                }
+
+                await transaction.CommitAsync(cancellationToken);
+                existing.Channel = channel;
+                return ToDto(existing);
+            }
+
+            var availability = await _inventory.GetAvailabilityAsync(
+                request.RoomTypeId, request.FromDate, request.ToDate.AddDays(1), 1, cancellationToken);
+            var payload = JsonSerializer.Serialize(new
+            {
+                SchemaVersion = "inventory.v1",
+                availability.RoomTypeId,
+                availability.RoomTypeCode,
+                FromDate = request.FromDate,
+                ToDate = request.ToDate,
+                Days = availability.Days.Select(day => new { day.StayDate, day.AvailableUnits })
+            });
+            var now = DateTime.UtcNow;
+            var channelEvent = new ChannelEvent
+            {
+                Id = Guid.NewGuid(),
+                ChannelId = channel.Id,
+                Channel = channel,
+                Direction = ChannelEventDirection.Outbound,
+                Status = ChannelEventStatus.Pending,
+                EventType = "INVENTORY_UPDATE",
+                IdempotencyKey = key,
+                PayloadJson = payload,
+                OccurredAtUtc = now,
+                CreatedAtUtc = now
+            };
+            _db.ChannelEvents.Add(channelEvent);
+            AddAudit(actorId, "CHANNEL_INVENTORY_QUEUED", "ChannelEvent", channelEvent.Id,
+                new { channel.Id, channel.Code, request.RoomTypeId, request.FromDate, request.ToDate });
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return ToDto(channelEvent);
         });
-        if (existing is not null)
-        {
-            if (existing.Direction != ChannelEventDirection.Outbound || !JsonEquivalent(existing.PayloadJson, payload))
-                throw new ConflictException("The channel idempotency key is already used for different event data.");
-            return ToDto(existing);
-        }
-        var now = DateTime.UtcNow;
-        var channelEvent = new ChannelEvent
-        {
-            Id = Guid.NewGuid(),
-            ChannelId = channel.Id,
-            Channel = channel,
-            Direction = ChannelEventDirection.Outbound,
-            Status = ChannelEventStatus.Pending,
-            EventType = "INVENTORY_UPDATE",
-            IdempotencyKey = key,
-            PayloadJson = payload,
-            OccurredAtUtc = now,
-            CreatedAtUtc = now
-        };
-        _db.ChannelEvents.Add(channelEvent);
-        AddAudit(actorId, "CHANNEL_INVENTORY_QUEUED", "ChannelEvent", channelEvent.Id,
-            new { channel.Id, channel.Code, request.RoomTypeId, request.FromDate, request.ToDate });
-        await _db.SaveChangesAsync(cancellationToken);
-        return ToDto(channelEvent);
     }
 
     public async Task<ChannelEventDto> UpdateEventAsync(
@@ -166,21 +198,42 @@ public sealed class ChannelManagementService : IChannelManagementService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
-        var channelEvent = await _db.ChannelEvents.Include(item => item.Channel)
-            .SingleOrDefaultAsync(item => item.Id == eventId, cancellationToken)
-            ?? throw new NotFoundException("Channel event not found.");
-        if (channelEvent.Status == request.Status) return ToDto(channelEvent);
-        ValidateTransition(channelEvent.Status, request.Status);
-        var previous = channelEvent.Status;
-        channelEvent.Status = request.Status;
-        channelEvent.AttemptCount++;
-        channelEvent.LastError = request.Status is ChannelEventStatus.Failed or ChannelEventStatus.DeadLetter
-            ? RequireText(request.Error, "Failure reason", 1000) : null;
-        channelEvent.ProcessedAtUtc = request.Status == ChannelEventStatus.Processed ? DateTime.UtcNow : null;
-        AddAudit(actorId, "CHANNEL_EVENT_UPDATED", "ChannelEvent", channelEvent.Id,
-            new { PreviousStatus = previous, channelEvent.Status, channelEvent.AttemptCount, channelEvent.LastError });
-        await _db.SaveChangesAsync(cancellationToken);
-        return ToDto(channelEvent);
+        await RequireManagementActorAsync(actorId, cancellationToken);
+        if (eventId == Guid.Empty) throw new NotFoundException("Channel event not found.");
+        if (!Enum.IsDefined(request.Status))
+            throw new BadRequestException("Channel event status is invalid.");
+        var error = request.Status is ChannelEventStatus.Failed or ChannelEventStatus.DeadLetter
+            ? RequireText(request.Error, "Failure reason", 1000)
+            : null;
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+            var channelEvent = await _db.ChannelEvents
+                .FromSqlInterpolated($"SELECT * FROM channel_events WHERE \"Id\" = {eventId} FOR UPDATE")
+                .Include(item => item.Channel)
+                .SingleOrDefaultAsync(cancellationToken)
+                ?? throw new NotFoundException("Channel event not found.");
+            if (channelEvent.Status == request.Status)
+            {
+                await transaction.CommitAsync(cancellationToken);
+                return ToDto(channelEvent);
+            }
+            ValidateTransition(channelEvent.Status, request.Status);
+            var previous = channelEvent.Status;
+            channelEvent.Status = request.Status;
+            channelEvent.AttemptCount++;
+            channelEvent.LastError = error;
+            channelEvent.ProcessedAtUtc = request.Status == ChannelEventStatus.Processed ? DateTime.UtcNow : null;
+            AddAudit(actorId, "CHANNEL_EVENT_UPDATED", "ChannelEvent", channelEvent.Id,
+                new { PreviousStatus = previous, channelEvent.Status, channelEvent.AttemptCount, channelEvent.LastError });
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return ToDto(channelEvent);
+        });
     }
 
     public async Task<ChannelReservationMappingDto> LinkReservationAsync(
@@ -189,43 +242,64 @@ public sealed class ChannelManagementService : IChannelManagementService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
-        var channel = await RequireActiveChannelAsync(channelId, cancellationToken);
+        await RequireManagementActorAsync(actorId, cancellationToken);
+        if (channelId == Guid.Empty || request.BookingId == Guid.Empty)
+            throw new BadRequestException("Channel or booking identifier is invalid.");
         var externalId = RequireText(request.ExternalReservationId, "External reservation ID", 160);
-        var booking = await _db.Bookings.AsNoTracking().SingleOrDefaultAsync(
-            item => item.Id == request.BookingId, cancellationToken)
-            ?? throw new NotFoundException("Booking not found.");
-        var existing = await _db.ChannelReservationMappings.Include(item => item.Channel)
-            .Include(item => item.Booking).SingleOrDefaultAsync(item =>
-                item.ChannelId == channelId &&
-                (item.ExternalReservationId == externalId || item.BookingId == booking.Id), cancellationToken);
-        if (existing is not null)
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            if (existing.ExternalReservationId != externalId || existing.BookingId != booking.Id)
-                throw new ConflictException("The channel reservation or booking is already linked differently.");
-            return ToDto(existing);
-        }
-        var mapping = new ChannelReservationMapping
-        {
-            Id = Guid.NewGuid(),
-            ChannelId = channel.Id,
-            Channel = channel,
-            ExternalReservationId = externalId,
-            BookingId = booking.Id,
-            Booking = booking,
-            LinkedAtUtc = DateTime.UtcNow,
-            LinkedByUserId = actorId
-        };
-        _db.ChannelReservationMappings.Add(mapping);
-        AddAudit(actorId, "CHANNEL_RESERVATION_LINKED", "ChannelReservationMapping", mapping.Id,
-            new { channel.Code, mapping.ExternalReservationId, booking.BookingCode });
-        await _db.SaveChangesAsync(cancellationToken);
-        return ToDto(mapping);
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+            var channel = await _db.DistributionChannels
+                .FromSqlInterpolated($"SELECT * FROM distribution_channels WHERE \"Id\" = {channelId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken)
+                ?? throw new NotFoundException("Distribution channel not found.");
+            if (!channel.IsActive)
+                throw new BadRequestException("The distribution channel is disabled.");
+            var booking = await _db.Bookings.AsNoTracking().SingleOrDefaultAsync(
+                item => item.Id == request.BookingId, cancellationToken)
+                ?? throw new NotFoundException("Booking not found.");
+            var existing = await _db.ChannelReservationMappings
+                .Include(item => item.Booking)
+                .SingleOrDefaultAsync(item =>
+                    item.ChannelId == channelId &&
+                    (item.ExternalReservationId == externalId || item.BookingId == booking.Id), cancellationToken);
+            if (existing is not null)
+            {
+                if (existing.ExternalReservationId != externalId || existing.BookingId != booking.Id)
+                    throw new ConflictException("The channel reservation or booking is already linked differently.");
+                await transaction.CommitAsync(cancellationToken);
+                existing.Channel = channel;
+                return ToDto(existing);
+            }
+            var mapping = new ChannelReservationMapping
+            {
+                Id = Guid.NewGuid(),
+                ChannelId = channel.Id,
+                Channel = channel,
+                ExternalReservationId = externalId,
+                BookingId = booking.Id,
+                Booking = booking,
+                LinkedAtUtc = DateTime.UtcNow,
+                LinkedByUserId = actorId
+            };
+            _db.ChannelReservationMappings.Add(mapping);
+            AddAudit(actorId, "CHANNEL_RESERVATION_LINKED", "ChannelReservationMapping", mapping.Id,
+                new { channel.Code, mapping.ExternalReservationId, booking.BookingCode });
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return ToDto(mapping);
+        });
     }
 
     public async Task<ChannelReconciliationDto> GetReconciliationAsync(
         Guid channelId,
         CancellationToken cancellationToken = default)
     {
+        if (channelId == Guid.Empty) throw new NotFoundException("Distribution channel not found.");
         var channel = await _db.DistributionChannels.AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == channelId, cancellationToken)
             ?? throw new NotFoundException("Distribution channel not found.");
@@ -251,6 +325,17 @@ public sealed class ChannelManagementService : IChannelManagementService
             ?? throw new NotFoundException("Distribution channel not found.");
         if (!channel.IsActive) throw new BadRequestException("The distribution channel is disabled.");
         return channel;
+    }
+
+    private async Task RequireManagementActorAsync(Guid actorId, CancellationToken cancellationToken)
+    {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The authenticated actor is invalid.");
+        var valid = await _db.Users.AsNoTracking().AnyAsync(user =>
+            user.Id == actorId && user.Status == ProfileStatus.Active &&
+            (user.Role == UserRole.Admin || user.Role == UserRole.Manager), cancellationToken);
+        if (!valid)
+            throw new UnauthorizedAccessException("An active administrator or manager is required.");
     }
 
     private static void ValidateTransition(ChannelEventStatus current, ChannelEventStatus requested)
@@ -294,6 +379,33 @@ public sealed class ChannelManagementService : IChannelManagementService
         }
     }
 
+    private static bool InventoryRequestMatches(
+        string payloadJson,
+        QueueChannelInventoryRequest request)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payloadJson);
+            var root = document.RootElement;
+            return root.TryGetProperty("SchemaVersion", out var schema) &&
+                   schema.GetString() == "inventory.v1" &&
+                   root.TryGetProperty("RoomTypeId", out var roomTypeId) &&
+                   roomTypeId.TryGetGuid(out var parsedRoomTypeId) &&
+                   parsedRoomTypeId == request.RoomTypeId &&
+                   root.TryGetProperty("FromDate", out var fromDate) &&
+                   DateOnly.TryParse(fromDate.GetString(), out var parsedFromDate) &&
+                   parsedFromDate == request.FromDate &&
+                   root.TryGetProperty("ToDate", out var toDate) &&
+                   DateOnly.TryParse(toDate.GetString(), out var parsedToDate) &&
+                   parsedToDate == request.ToDate;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
     private void AddAudit(Guid actorId, string action, string entityType, Guid id, object data) =>
         _db.AuditLogs.Add(new AuditLog
         {
@@ -319,11 +431,19 @@ public sealed class ChannelManagementService : IChannelManagementService
     private static string RequireText(string? value, string field, int max)
     {
         var cleaned = value?.Trim() ?? string.Empty;
-        if (cleaned.Length == 0 || cleaned.Length > max)
+        if (cleaned.Length == 0 || cleaned.Length > max || cleaned.Any(char.IsControl))
             throw new BadRequestException($"{field} is required and cannot exceed {max} characters.");
         return cleaned;
     }
     private static string? Clean(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? CleanBounded(string? value, string field, int maximumLength)
+    {
+        var cleaned = Clean(value);
+        if (cleaned is not null &&
+            (cleaned.Length > maximumLength || cleaned.Any(char.IsControl)))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
     private static DateTime EnsureUtc(DateTime value) => value.Kind switch
     {
         DateTimeKind.Utc => value,

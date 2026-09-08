@@ -16,4 +16,7 @@ public class ApplicationUser : IdentityUser<Guid>
     public string? PrivacyPolicyVersion { get; set; }
     public DateTime? PrivacyPolicyAcceptedAtUtc { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
+    public DateTime? LastAuthenticatedAtUtc { get; set; }
+    public DateTime? StatusChangedAtUtc { get; set; }
+    public DateTime? AnonymizedAtUtc { get; set; }
 }

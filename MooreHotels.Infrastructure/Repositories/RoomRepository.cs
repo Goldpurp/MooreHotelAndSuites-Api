@@ -32,8 +32,10 @@ public class RoomRepository : IRoomRepository
     public async Task<IEnumerable<Room>> GetAllAsync(bool onlyOnline = true)
     {
         var query = _db.Rooms.Include(r => r.Images).Include(r => r.RoomType).AsNoTracking().AsQueryable();
-        if (onlyOnline) query = query.Where(r => r.IsOnline);
-        return await query.ToListAsync();
+        if (onlyOnline) query = query.Where(r => r.IsOnline && r.RoomType != null &&
+            r.RoomType.IsActive && r.Status != RoomStatus.Maintenance &&
+            r.Status != RoomStatus.OutOfOrder);
+        return await query.OrderBy(room => room.RoomNumber).ToListAsync();
     }
 
     public async Task<IEnumerable<Room>> SearchAsync(
@@ -87,7 +89,8 @@ public class RoomRepository : IRoomRepository
             query = query.Where(r => r.Capacity >= capacity.Value);
 
         query = query.Where(r => r.IsOnline && r.Status != RoomStatus.Maintenance &&
-                                 r.Status != RoomStatus.OutOfOrder);
+                                 r.Status != RoomStatus.OutOfOrder &&
+                                 r.RoomType != null && r.RoomType.IsActive);
 
         var rooms = await query.ToListAsync();
 
@@ -110,6 +113,9 @@ public class RoomRepository : IRoomRepository
         return Task.CompletedTask;
     }
 
+    public void RemoveInventoryPeriod(RoomInventoryPeriod period) =>
+        _db.RoomInventoryPeriods.Remove(period);
+
     public async Task DeleteAsync(Room room)
     {
         _db.Rooms.Remove(room);
@@ -121,6 +127,7 @@ public class RoomRepository : IRoomRepository
         return await _db.Rooms
             .Include(r => r.Images)
             .Include(r => r.RoomType)
+            .Include(r => r.InventoryPeriods)
             .FirstOrDefaultAsync(r => r.Id == id);
     }
 

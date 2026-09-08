@@ -25,7 +25,7 @@ public sealed class GuestCrmController : ControllerBase
         string guestId, CancellationToken ct) => Ok(await _service.FindDuplicatesAsync(guestId, ct));
 
     [HttpPut("{guestId}/preferences")]
-    public async Task<ActionResult<GuestCrmProfileDto>> Preferences(
+    public async Task<ActionResult<GuestPreferencesDto>> Preferences(
         string guestId, [FromBody] UpdateGuestPreferencesRequest request, CancellationToken ct) =>
         Ok(await _service.UpdatePreferencesAsync(guestId, request, ActorId(), ct));
 

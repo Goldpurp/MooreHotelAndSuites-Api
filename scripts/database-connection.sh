@@ -3,12 +3,13 @@
 configure_psql_connection() {
   local connection_string="$1"
   local variable_name="$2"
-  PSQL_CONNECTION_ARGUMENT=""
 
   unset PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD PGSSLMODE PGSSLROOTCERT PGCONNECT_TIMEOUT PGOPTIONS
-  if [[ "$connection_string" == *"="* &&
-        "$connection_string" != postgresql://* &&
-        "$connection_string" != postgres://* ]]; then
+  if [[ "$connection_string" == postgresql://* || "$connection_string" == postgres://* ]]; then
+    echo "$variable_name must use semicolon-separated key/value syntax; URI credentials are not accepted because psql would expose them in its process arguments." >&2
+    return 2
+  fi
+  if [[ "$connection_string" == *"="* ]]; then
     local fields=()
     local field=""
     local quote=""
@@ -66,14 +67,11 @@ configure_psql_connection() {
       esac
     done
   else
-    PSQL_CONNECTION_ARGUMENT="$connection_string"
+    echo "$variable_name must use semicolon-separated key/value syntax." >&2
+    return 2
   fi
 }
 
 run_psql() {
-  if [[ -n "$PSQL_CONNECTION_ARGUMENT" ]]; then
-    psql "$PSQL_CONNECTION_ARGUMENT" --no-psqlrc --set ON_ERROR_STOP=1 "$@"
-  else
-    psql --no-psqlrc --set ON_ERROR_STOP=1 "$@"
-  fi
+  psql --no-psqlrc --set ON_ERROR_STOP=1 "$@"
 }

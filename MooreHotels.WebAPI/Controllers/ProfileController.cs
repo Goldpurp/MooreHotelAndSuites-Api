@@ -175,6 +175,7 @@ public class ProfileController : ControllerBase
     }
 
     [HttpPost("rotate-security")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> RotateCredentials([FromBody] RotateCredentialsRequest request)
     {
         var userId = GetUserId();

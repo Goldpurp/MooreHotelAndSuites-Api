@@ -38,8 +38,10 @@ SELECT format('GRANT CONNECT ON DATABASE %I TO %I', current_database(), :'runtim
 SELECT format('GRANT USAGE ON SCHEMA public TO %I', :'runtime_role') \gexec
 SELECT format('GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO %I', :'runtime_role') \gexec
 SELECT format('GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO %I', :'runtime_role') \gexec
-SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO %I', :'runtime_role') \gexec
-SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO %I', :'runtime_role') \gexec
+-- Fail closed for objects created by future migrations. The post-migration
+-- provisioning pass below grants access only after the complete schema exists.
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON TABLES FROM %I', :'runtime_role') \gexec
+SELECT format('ALTER DEFAULT PRIVILEGES IN SCHEMA public REVOKE ALL ON SEQUENCES FROM %I', :'runtime_role') \gexec
 
 SELECT format('REVOKE ALL ON TABLE public.%I FROM %I', '__EFMigrationsHistory', :'runtime_role')
 WHERE to_regclass('public."__EFMigrationsHistory"') IS NOT NULL
@@ -56,9 +58,7 @@ FROM (VALUES
     ('booking_amendments'),
     ('folio_entries'),
     ('guest_merges'),
-    ('night_audits'),
-    ('visit_records'),
-    ('notifications')
+    ('night_audits')
 ) AS append_only(table_name)
 WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
 \gexec
@@ -68,11 +68,38 @@ FROM (VALUES
     ('booking_amendments'),
     ('folio_entries'),
     ('guest_merges'),
-    ('night_audits'),
-    ('visit_records'),
-    ('notifications')
+    ('night_audits')
 ) AS append_only(table_name)
 WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
+\gexec
+
+-- The environment marker is owner-managed and immutable to the API role.
+SELECT format('REVOKE ALL ON TABLE public.environment_boundaries FROM %I', :'runtime_role')
+WHERE to_regclass('public.environment_boundaries') IS NOT NULL
+\gexec
+SELECT format('GRANT SELECT ON TABLE public.environment_boundaries TO %I', :'runtime_role')
+WHERE to_regclass('public.environment_boundaries') IS NOT NULL
+\gexec
+SELECT format('REVOKE ALL ON SEQUENCE %s FROM %I', sequence_name, :'runtime_role')
+FROM (
+    SELECT pg_get_serial_sequence('public.environment_boundaries', 'Id') AS sequence_name
+) AS boundary_sequence
+WHERE sequence_name IS NOT NULL
+\gexec
+
+-- Operational activity stays append-only, but privacy fulfillment is allowed
+-- to redact only the columns that can contain guest-facing text.
+SELECT format('REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.visit_records FROM %I', :'runtime_role')
+WHERE to_regclass('public.visit_records') IS NOT NULL
+\gexec
+SELECT format('GRANT UPDATE ("GuestName") ON TABLE public.visit_records TO %I', :'runtime_role')
+WHERE to_regclass('public.visit_records') IS NOT NULL
+\gexec
+SELECT format('REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.notifications FROM %I', :'runtime_role')
+WHERE to_regclass('public.notifications') IS NOT NULL
+\gexec
+SELECT format('GRANT UPDATE ("Title", "Message") ON TABLE public.notifications TO %I', :'runtime_role')
+WHERE to_regclass('public.notifications') IS NOT NULL
 \gexec
 SELECT format('REVOKE DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.%I FROM %I', table_name, :'runtime_role')
 FROM (VALUES
@@ -105,7 +132,7 @@ SELECT has_schema_privilege(:'runtime_role', 'public', 'CREATE') AS runtime_has_
 \if :runtime_has_schema_create
   DO $$
   BEGIN
-    RAISE EXCEPTION 'The migration credential cannot remove public-schema CREATE from the runtime role. Make the migration role the public schema owner, then rerun.';
+    RAISE EXCEPTION 'Public-schema CREATE remains granted to the runtime role. Make the migration role the public schema owner, then rerun.';
   END
   $$;
 \endif

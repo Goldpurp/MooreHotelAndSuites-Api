@@ -11,6 +11,8 @@ using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Persistence;
 using Microsoft.AspNetCore.RateLimiting;
 using MooreHotels.WebAPI.Extensions;
+using MooreHotels.Application.Common;
+using System.Security.Claims;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -41,34 +43,32 @@ public class RoomsController : ControllerBase
     [HttpGet]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
-    public async Task<IActionResult> GetRooms([FromQuery] RoomCategory? category)
+    public async Task<ActionResult<IEnumerable<PublicRoomDto>>> GetRooms(
+        [FromQuery] RoomCategory? category)
     {
-        var includeOffline = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
-        var rooms = await _roomService.GetAllRoomsAsync(category, includeOffline);
-        return Ok(includeOffline ? rooms : rooms.Select(ToPublicRoom));
+        var rooms = await _roomService.GetAllRoomsAsync(category, includeOffline: false);
+        return Ok(rooms.Select(ToPublicRoom));
     }
 
     [HttpGet("search")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
-    public async Task<ActionResult<IEnumerable<RoomDto>>> SearchRooms(
+    public async Task<ActionResult<IEnumerable<PublicRoomDto>>> SearchRooms(
         [FromQuery] DateTime? checkIn,
         [FromQuery] DateTime? checkOut,
         [FromQuery] RoomCategory? category,
         [FromQuery] int guest = 1,
-        [FromQuery] string? roomNumber = null,
         [FromQuery] string? amenity = null)
     {
-        var canViewInternalFields = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
         var request = new RoomSearchRequest(
             checkIn,
             checkOut,
             category,
             guest,
-            canViewInternalFields ? roomNumber : null,
+            null,
             amenity);
         var result = await _roomService.SearchRoomsAsync(request);
-        return Ok(canViewInternalFields ? result : result.Select(ToPublicRoom));
+        return Ok(result.Select(ToPublicRoom));
     }
 
     [HttpGet("{id:guid}")]
@@ -76,11 +76,11 @@ public class RoomsController : ControllerBase
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetRoom(Guid id)
     {
-        var room = await _roomService.GetRoomByIdAsync(id);
-        var canViewOffline = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
-        return room == null || (!room.IsOnline && !canViewOffline)
+        var room = (await _roomService.GetAllRoomsAsync(includeOffline: false))
+            .SingleOrDefault(item => item.Id == id);
+        return room is null
             ? NotFound(new { message = "Room not found." })
-            : Ok(canViewOffline ? room : ToPublicRoom(room));
+            : Ok(ToPublicRoom(room));
     }
 
     [HttpGet("{id:guid}/availability")]
@@ -89,11 +89,44 @@ public class RoomsController : ControllerBase
     public async Task<IActionResult> GetAvailability(Guid id, [FromQuery] DateTime checkIn, [FromQuery] DateTime checkOut)
     {
         if (checkIn >= checkOut) return BadRequest("Check-out must be after check-in.");
-        var exists = await _roomService.GetRoomByIdAsync(id);
-        if (exists == null) return NotFound(new { message = "Room not found." });
+        var exists = (await _roomService.GetAllRoomsAsync(includeOffline: false))
+            .Any(item => item.Id == id);
+        if (!exists)
+            return NotFound(new { message = "Room not found." });
 
         var result = await _roomService.CheckAvailabilityAsync(id, checkIn, checkOut);
         return Ok(result);
+    }
+
+    [HttpGet("management")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    public async Task<ActionResult<IEnumerable<RoomDto>>> GetManagedRooms(
+        [FromQuery] RoomCategory? category) =>
+        Ok(await _roomService.GetAllRoomsAsync(category, includeOffline: true));
+
+    [HttpGet("management/search")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    public async Task<ActionResult<IEnumerable<RoomDto>>> SearchManagedRooms(
+        [FromQuery] DateTime? checkIn,
+        [FromQuery] DateTime? checkOut,
+        [FromQuery] RoomCategory? category,
+        [FromQuery] int guest = 1,
+        [FromQuery] string? roomNumber = null,
+        [FromQuery] string? amenity = null) =>
+        Ok(await _roomService.SearchRoomsAsync(new RoomSearchRequest(
+            checkIn,
+            checkOut,
+            category,
+            guest,
+            roomNumber,
+            amenity)));
+
+    [HttpGet("management/{id:guid}")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    public async Task<ActionResult<RoomDto>> GetManagedRoom(Guid id)
+    {
+        var room = await _roomService.GetRoomByIdAsync(id);
+        return room is null ? NotFound(new { message = "Room not found." }) : Ok(room);
     }
 
 
@@ -115,7 +148,7 @@ public class RoomsController : ControllerBase
             {
                 _context.ChangeTracker.Clear();
                 await using var transaction = await _context.Database.BeginTransactionAsync();
-                var roomDto = await _roomService.CreateRoomAsync(request);
+                var roomDto = await _roomService.CreateRoomAsync(request, GetActorId());
                 foreach (var result in uploadResults)
                 {
                     _context.RoomImages.Add(new RoomImage
@@ -307,7 +340,7 @@ public class RoomsController : ControllerBase
                         "A room gallery cannot contain more than 30 images.");
                 }
 
-                await _roomService.UpdateRoomAsync(id, request);
+                await _roomService.UpdateRoomAsync(id, request, GetActorId());
 
                 // ReplaceImages disambiguates "replace everything with new uploads"
                 // from "the client did not send image changes".
@@ -404,7 +437,7 @@ public class RoomsController : ControllerBase
         {
             _context.ChangeTracker.Clear();
             await using var transaction = await _context.Database.BeginTransactionAsync();
-            var deletedPublicIds = await _roomService.DeleteRoomAsync(id);
+            var deletedPublicIds = await _roomService.DeleteRoomAsync(id, GetActorId());
             foreach (var publicId in deletedPublicIds
                          .Where(value => !string.IsNullOrWhiteSpace(value))
                          .Distinct(StringComparer.Ordinal))
@@ -439,6 +472,11 @@ public class RoomsController : ControllerBase
         room.RoomTypeId,
         room.RoomTypeCode,
         room.RoomTypeName);
+
+    private Guid GetActorId() =>
+        Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId)
+            ? actorId
+            : throw new UnauthorizedAccessException("The authenticated actor is invalid.");
 
 
 

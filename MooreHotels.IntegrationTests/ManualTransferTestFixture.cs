@@ -65,14 +65,16 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         SetEnvironment("ASPNETCORE_ENVIRONMENT", "Local");
         SetEnvironment("ConnectionStrings__DefaultConnection", target.ConnectionString);
         SetEnvironment("Jwt__Key", "MANUAL_TRANSFER_INTEGRATION_TEST_KEY_64_BYTES_LONG_0123456789ABCDEF");
-        SetEnvironment("Jwt__Issuer", "MooreHotels.IntegrationTests");
-        SetEnvironment("Jwt__Audience", "MooreHotels.IntegrationTests.Clients");
+        SetEnvironment("Jwt__Issuer", "MooreHotels.Local");
+        SetEnvironment("Jwt__Audience", "MooreHotels.LocalClients");
         SetEnvironment("Database__CreateIfMissing", "false");
         SetEnvironment("Database__ApplyMigrationsOnStartup", "true");
+        SetEnvironment("Database__AllowLocalContainerHost", "true");
         // Keep retries enabled in tests so explicit transactions are exercised
         // with the same execution-strategy constraint used in Production.
         SetEnvironment("Database__MaxRetryCount", "2");
         SetEnvironment("Runtime__EnableExternalServices", "false");
+        SetEnvironment("Runtime__AllowLocalProviderTestDoubles", "true");
         SetEnvironment("Runtime__EnableSwagger", "true");
         SetEnvironment("Runtime__EnableBookingExpiration", "false");
         SetEnvironment("Runtime__EnableRateLimiting", "false");
@@ -193,6 +195,13 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
             Description = "Manual transfer integration test room.",
             Amenities = ["Wi-Fi"]
         };
+        room.InventoryPeriods.Add(new RoomInventoryPeriod
+        {
+            Id = Guid.NewGuid(),
+            RoomId = room.Id,
+            StartDate = DateOnly.FromDateTime(checkInUtc ?? room.CreatedAt),
+            RecordedAtUtc = room.CreatedAt
+        });
         var guest = new Guest
         {
             Id = $"GS-{unique[..16]}",
@@ -343,6 +352,13 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
             Description = "Room update integration test.",
             Amenities = ["Wi-Fi", "Breakfast"]
         };
+        room.InventoryPeriods.Add(new RoomInventoryPeriod
+        {
+            Id = Guid.NewGuid(),
+            RoomId = room.Id,
+            StartDate = DateOnly.FromDateTime(room.CreatedAt),
+            RecordedAtUtc = room.CreatedAt
+        });
 
         db.RoomTypes.Add(roomType);
         db.Rooms.Add(room);

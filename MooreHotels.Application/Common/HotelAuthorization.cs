@@ -9,7 +9,12 @@ public static class HotelAuthorization
     public const string ReservationsRead = "Reservations.Read";
     public const string ReservationsManage = "Reservations.Manage";
     public const string GuestPiiRead = "Guests.Pii.Read";
-    public const string FolioManage = "Folios.Manage";
+    public const string FolioRead = "Folios.Read";
+    public const string FolioCharge = "Folios.Charge";
+    public const string FolioPayment = "Folios.Payment";
+    public const string FolioAdjust = "Folios.Adjust";
+    public const string FolioClose = "Folios.Close";
+    public const string FolioIncidentals = "Folios.Incidentals";
     public const string OperationsRead = "Operations.Read";
     public const string HousekeepingManage = "Housekeeping.Manage";
     public const string MaintenanceManage = "Maintenance.Manage";

@@ -12,6 +12,11 @@ public interface IStaffService
     Task UpdateUserAsync(Guid userId, UpdateStaffRequest request, Guid actingUserId);
     // Task ToggleUserStatusAsync(Guid userId, Guid actingUserId);
     Task ChangeUserStatusAsync(Guid userId, ProfileStatus newStatus, Guid actingUserId);
+    Task ChangeAdministratorStatusAsync(
+        Guid userId,
+        ProfileStatus newStatus,
+        EmergencyAdminStatusRequest request,
+        Guid actingUserId);
 
     // Task ActivateUserAsync(Guid userId); 
     // Task DeactivateUserAsync(Guid userId); 

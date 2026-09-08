@@ -9,4 +9,5 @@ public sealed class PrivacySettings
     public string BookingTermsUrl { get; init; } = string.Empty;
     public bool EnableRetentionWorker { get; init; }
     public int GuestRetentionDays { get; init; } = 2555;
+    public int InactiveAccountRetentionDays { get; init; } = 2555;
 }

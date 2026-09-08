@@ -20,21 +20,34 @@ public sealed class InventoryController : ControllerBase
     [HttpGet("room-types")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
-    public async Task<ActionResult<IReadOnlyList<RoomTypeDto>>> GetPublicRoomTypes(
-        CancellationToken cancellationToken) =>
-        Ok(await _inventory.GetRoomTypesAsync(false, cancellationToken));
+    public async Task<ActionResult<IReadOnlyList<PublicRoomTypeDto>>> GetPublicRoomTypes(
+        CancellationToken cancellationToken)
+    {
+        var roomTypes = await _inventory.GetRoomTypesAsync(false, cancellationToken);
+        return Ok(roomTypes.Select(ToPublicRoomType).ToArray());
+    }
 
     [HttpGet("room-types/{roomTypeId:guid}/availability")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
-    public async Task<ActionResult<RoomTypeAvailabilityDto>> GetAvailability(
+    public async Task<ActionResult<PublicRoomTypeAvailabilityDto>> GetAvailability(
         Guid roomTypeId,
         [FromQuery] DateOnly checkIn,
         [FromQuery] DateOnly checkOut,
         [FromQuery] int units = 1,
-        CancellationToken cancellationToken = default) =>
-        Ok(await _inventory.GetAvailabilityAsync(
-            roomTypeId, checkIn, checkOut, units, cancellationToken));
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _inventory.GetAvailabilityAsync(
+            roomTypeId, checkIn, checkOut, units, cancellationToken);
+        return Ok(new PublicRoomTypeAvailabilityDto(
+            result.RoomTypeId,
+            result.RoomTypeCode,
+            result.RoomTypeName,
+            result.CheckInDate,
+            result.CheckOutDate,
+            result.RequestedUnits,
+            result.Available));
+    }
 
     [HttpGet("management/room-types")]
     [Authorize(Roles = "Admin,Manager")]
@@ -42,6 +55,17 @@ public sealed class InventoryController : ControllerBase
         [FromQuery] bool includeInactive = true,
         CancellationToken cancellationToken = default) =>
         Ok(await _inventory.GetRoomTypesAsync(includeInactive, cancellationToken));
+
+    [HttpGet("management/room-types/{roomTypeId:guid}/availability")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<ActionResult<RoomTypeAvailabilityDto>> GetManagedAvailability(
+        Guid roomTypeId,
+        [FromQuery] DateOnly checkIn,
+        [FromQuery] DateOnly checkOut,
+        [FromQuery] int units = 1,
+        CancellationToken cancellationToken = default) =>
+        Ok(await _inventory.GetAvailabilityAsync(
+            roomTypeId, checkIn, checkOut, units, cancellationToken));
 
     [HttpPost("room-types")]
     [Authorize(Roles = "Admin,Manager")]
@@ -100,4 +124,15 @@ public sealed class InventoryController : ControllerBase
         Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId)
             ? actorId
             : throw new UnauthorizedAccessException("The authenticated actor is invalid.");
+
+    private static PublicRoomTypeDto ToPublicRoomType(RoomTypeDto roomType) => new(
+        roomType.Id,
+        roomType.Code,
+        roomType.Name,
+        roomType.Category,
+        roomType.BaseOccupancy,
+        roomType.MaxOccupancy,
+        roomType.BasePricePerNight,
+        roomType.Description,
+        roomType.Amenities);
 }

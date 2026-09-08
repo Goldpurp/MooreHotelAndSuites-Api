@@ -10,15 +10,15 @@ permissions:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: postgres
+          POSTGRES_DB: moore_production_rehearsal
         ports:
           - 5432:5432
         options: >-
@@ -27,16 +27,23 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     env:
-      MOORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=postgres;Username=postgres;Password=postgres;SSL Mode=Disable
+      MOORE_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=postgres;Password=postgres;SSL Mode=Disable
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: 10.0.400
           cache: true
           cache-dependency-path: '**/packages.lock.json'
       - name: Restore
         run: dotnet restore MooreHotels.sln --locked-mode
+      - name: Verify shell scripts
+        run: |
+          for script in scripts/*.sh; do
+            bash -n "$script"
+          done
       - name: Verify formatting
         run: dotnet format MooreHotels.sln --no-restore --verify-no-changes
       - name: Build Release
@@ -53,28 +60,75 @@ jobs:
         run: dotnet tool restore
       - name: Validate EF model
         run: dotnet tool run dotnet-ef migrations has-pending-model-changes --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
-      - name: Build migration bundle
-        run: dotnet tool run dotnet-ef migrations bundle --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build --output /tmp/moore-hotels-migrate
+      - name: Rehearse migrations up, down, and up
+        env:
+          ConnectionStrings__DefaultConnection: ${{ env.MOORE_TEST_POSTGRES }}
+        run: |
+          dotnet tool run dotnet-ef database update --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
+          dotnet tool run dotnet-ef database update 0 --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
+          dotnet tool run dotnet-ef database update --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
+      - name: Rehearse Supabase data and runtime boundaries
+        env:
+          MIGRATION_CONNECTION_STRING: Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=postgres;Password=postgres;SSL Mode=Disable
+          DATABASE_RUNTIME_ROLE: moore_runtime_ci
+          DATABASE_RUNTIME_PASSWORD: ci-runtime-password-not-for-production
+          Database__Provider: Supabase
+          MOORE_PRODUCTION_REHEARSAL: true
+        run: |
+          PGPASSWORD=postgres psql --host 127.0.0.1 --port 5432 --username postgres --dbname postgres --no-psqlrc --set ON_ERROR_STOP=1 --command "CREATE ROLE anon NOLOGIN; CREATE ROLE authenticated NOLOGIN; CREATE ROLE service_role NOLOGIN; CREATE ROLE authenticator NOLOGIN;"
+          ./scripts/create-supabase-runtime-role.sh
+          ./scripts/bind-production-database.sh bind
+          ./scripts/harden-supabase-data-api.sh
+          ./scripts/validate-production-database.sh
+          ./scripts/provision-runtime-database-role.sh
+          RUNTIME_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=moore_runtime_ci;Password=ci-runtime-password-not-for-production;SSL Mode=Disable' ./scripts/validate-runtime-database-role.sh
       - name: Publish API
         run: dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --configuration Release --no-build --output /tmp/moore-hotels-api
       - name: Build production container
         run: docker build --tag moore-hotels-api:ci .
+      - name: Scan repository for committed secrets
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          version: v0.74.0
+          skip-dirs: '**/bin,**/obj,.git'
+          format: table
+          exit-code: '1'
+      - name: Scan production container
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: moore-hotels-api:ci
+          scanners: vuln
+          version: v0.74.0
+          format: table
+          exit-code: '1'
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      # `dotnet-ef migrations bundle` adds RID-specific targets to project lockfiles.
+      # Keep it last so the subsequent locked Docker restore sees the committed locks.
+      - name: Build migration bundle
+        run: dotnet tool run dotnet-ef migrations bundle --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build --output /tmp/moore-hotels-migrate
 
   codeql:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@v7
-      - uses: github/codeql-action/init@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@fddeee1a7ece751b577e409a89057319e3172939 # v4
         with:
           languages: csharp
           build-mode: manual
-      - uses: actions/setup-dotnet@v6
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
           dotnet-version: 10.0.400
       - run: dotnet restore MooreHotels.sln --locked-mode
       - run: dotnet build MooreHotels.sln --configuration Release --no-restore
-      - uses: github/codeql-action/analyze@v4
+      - uses: github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939 # v4

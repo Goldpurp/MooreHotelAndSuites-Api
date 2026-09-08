@@ -75,10 +75,11 @@ public sealed class BookingEmailLifecycleTests
     {
         var booking = await _fixture.CreateBookingAsync();
         _fixture.Email.Reset();
-        using var request = AuthorizedRequest(
+        using var request = AuthorizedJson(
             HttpMethod.Post,
-            $"/api/bookings/{booking.Id}/cancel?reason=Hotel%20maintenance",
-            _fixture.Staff);
+            $"/api/bookings/{booking.Id}/cancel",
+            _fixture.Staff,
+            new { reason = "Hotel maintenance" });
 
         using var response = await _fixture.Client.SendAsync(request);
 
@@ -180,6 +181,17 @@ public sealed class BookingEmailLifecycleTests
         request.Headers.Authorization =
             new AuthenticationHeaderValue("Bearer", actor.Token);
         AddEnvironmentHeader(request);
+        return request;
+    }
+
+    private static HttpRequestMessage AuthorizedJson(
+        HttpMethod method,
+        string uri,
+        TestUser actor,
+        object body)
+    {
+        var request = AuthorizedRequest(method, uri, actor);
+        request.Content = JsonContent.Create(body);
         return request;
     }
 

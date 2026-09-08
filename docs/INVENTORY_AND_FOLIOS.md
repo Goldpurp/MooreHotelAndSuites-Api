@@ -52,8 +52,16 @@ Authorized folio endpoints:
 
 Every write requires a client-generated idempotency key. Payment and refund
 external references are unique. Payments can be split; a reservation becomes
-confirmed only when a payment request asks for confirmation and the balance is
-fully settled. A new charge after payment changes the status to `partiallyPaid`.
+confirmed only when a payment request asks for confirmation and the net payment
+meets the booking's snapshotted deposit requirement. A new charge after payment
+changes the status to `partiallyPaid` when a balance remains.
+
+Folio access follows separation of duties: Reception/FrontDesk can read folios
+and post itemized add-on charges; Finance/Cashier can read folios, record manual
+bank/cash/other payments and close settled folios; only Admin/Manager can post
+credits, non-add-on adjustments, or void entries. Concierge can add an approved
+booking incidental but cannot read the financial folio. Provider-originated
+Monnify payments are never accepted through the manual staff-payment endpoint.
 
 Cancellation posts a credit for the billed stay without erasing historical
 charges. Any net guest credit changes payment status to `refundPending`; partial

@@ -709,6 +709,7 @@ namespace MooreHotels.Infrastructure.Migrations
                 """
                 DROP TRIGGER IF EXISTS "TR_folio_entries_immutable" ON folio_entries;
                 DROP FUNCTION IF EXISTS prevent_folio_entry_mutation();
+                DROP TRIGGER IF EXISTS "TR_bookings_room_capacity" ON bookings;
                 """);
 
             migrationBuilder.DropForeignKey(

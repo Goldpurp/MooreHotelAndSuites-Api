@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using MooreHotels.Application.Common;
 using MooreHotels.Domain.Entities;
 using System.Text.Json;
 
@@ -16,6 +17,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<RoomType> RoomTypes => Set<RoomType>();
     public DbSet<ReservationRoom> ReservationRooms => Set<ReservationRoom>();
     public DbSet<RoomInventoryClosure> RoomInventoryClosures => Set<RoomInventoryClosure>();
+    public DbSet<RoomInventoryPeriod> RoomInventoryPeriods => Set<RoomInventoryPeriod>();
     public DbSet<RoomImage> RoomImages => Set<RoomImage>();
     public DbSet<Guest> Guests => Set<Guest>();
     public DbSet<Booking> Bookings => Set<Booking>();
@@ -49,10 +51,12 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     public DbSet<DistributionChannel> DistributionChannels => Set<DistributionChannel>();
     public DbSet<ChannelEvent> ChannelEvents => Set<ChannelEvent>();
     public DbSet<ChannelReservationMapping> ChannelReservationMappings => Set<ChannelReservationMapping>();
+    public DbSet<DatabaseEnvironmentBoundary> DatabaseEnvironmentBoundaries =>
+        Set<DatabaseEnvironmentBoundary>();
 
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
-        EnforceImmutableFolioEntries();
+        PrepareChanges();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
@@ -60,12 +64,29 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
         bool acceptAllChangesOnSuccess,
         CancellationToken cancellationToken = default)
     {
-        EnforceImmutableFolioEntries();
+        PrepareChanges();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    private void PrepareChanges()
+    {
+        EnforceImmutableFolioEntries();
+        foreach (var entry in ChangeTracker.Entries<AuditLog>()
+                     .Where(entry => entry.State == EntityState.Added))
+        {
+            entry.Entity.OldDataJson = AuditDataSanitizer.SanitizeJson(entry.Entity.OldDataJson);
+            entry.Entity.NewDataJson = AuditDataSanitizer.SanitizeJson(entry.Entity.NewDataJson);
+        }
     }
 
     private void EnforceImmutableFolioEntries()
     {
+        if (ChangeTracker.Entries<DatabaseEnvironmentBoundary>().Any(entry =>
+                entry.State is EntityState.Modified or EntityState.Deleted))
+        {
+            throw new InvalidOperationException(
+                "The database environment boundary is immutable.");
+        }
         if (ChangeTracker.Entries<FolioEntry>().Any(entry =>
                 entry.State is EntityState.Modified or EntityState.Deleted))
         {
@@ -97,11 +118,34 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             value => value.Aggregate(0, (hash, item) => HashCode.Combine(hash, item.GetHashCode())),
             value => value.ToList());
 
+        builder.Entity<DatabaseEnvironmentBoundary>(entity =>
+        {
+            entity.ToTable("environment_boundaries", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_environment_boundaries_singleton",
+                    "\"Id\" = 1");
+                table.HasCheckConstraint(
+                    "CK_environment_boundaries_environment",
+                    "\"EnvironmentName\" IN ('local', 'production')");
+            });
+            entity.HasKey(boundary => boundary.Id);
+            entity.Property(boundary => boundary.EnvironmentName)
+                .HasMaxLength(16)
+                .IsRequired();
+        });
+
         builder.Entity<ApplicationUser>(entity =>
         {
-            entity.ToTable("users", table => table.HasCheckConstraint(
-                "CK_users_privacy_acceptance_consistent",
-                "(\"PrivacyPolicyVersion\" IS NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NULL) OR (\"PrivacyPolicyVersion\" IS NOT NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NOT NULL)"));
+            entity.ToTable("users", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_users_privacy_acceptance_consistent",
+                    "(\"PrivacyPolicyVersion\" IS NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NULL) OR (\"PrivacyPolicyVersion\" IS NOT NULL AND \"PrivacyPolicyAcceptedAtUtc\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_users_anonymized_accounts_suspended",
+                    "\"AnonymizedAtUtc\" IS NULL OR \"Status\" = 'Suspended'");
+            });
             entity.Property(user => user.Name).HasMaxLength(160).IsRequired();
             entity.Property(user => user.AvatarUrl).HasMaxLength(2048);
             entity.Property(user => user.AvatarPublicId).HasMaxLength(512);
@@ -111,6 +155,13 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(user => user.Role).HasConversion<string>().HasMaxLength(30);
             entity.Property(user => user.Status).HasConversion<string>().HasMaxLength(30);
             entity.HasIndex(user => new { user.Status, user.Role });
+            entity.HasIndex(user => new
+            {
+                user.Role,
+                user.AnonymizedAtUtc,
+                user.LastAuthenticatedAtUtc,
+                user.StatusChangedAtUtc
+            });
             entity.HasIndex(user => user.GuestId).IsUnique()
                 .HasFilter("\"GuestId\" IS NOT NULL");
             entity.HasOne(user => user.GuestProfile)
@@ -185,6 +236,21 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.HasIndex(image => image.PublicId).IsUnique();
         });
 
+        builder.Entity<RoomInventoryPeriod>(entity =>
+        {
+            entity.ToTable("room_inventory_periods", table => table.HasCheckConstraint(
+                "CK_room_inventory_periods_dates",
+                "\"EndDate\" IS NULL OR \"EndDate\" > \"StartDate\""));
+            entity.HasKey(period => period.Id);
+            entity.HasIndex(period => new { period.RoomId, period.StartDate, period.EndDate });
+            entity.HasIndex(period => period.RoomId).IsUnique()
+                .HasFilter("\"EndDate\" IS NULL");
+            entity.HasOne(period => period.Room)
+                .WithMany(room => room.InventoryPeriods)
+                .HasForeignKey(period => period.RoomId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
         builder.Entity<MediaAsset>(entity =>
         {
             entity.ToTable("media_assets");
@@ -236,11 +302,13 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(guest => guest.NormalizedPhone).HasMaxLength(30).IsRequired();
             entity.Property(guest => guest.PreferencesJson).HasColumnType("jsonb");
             entity.Property(guest => guest.AvatarUrl).HasMaxLength(2048);
+            entity.Property(guest => guest.LegalHoldReason).HasMaxLength(500);
             entity.HasIndex(guest => guest.Email);
             entity.HasIndex(guest => new { guest.Email, guest.FirstName, guest.LastName });
             entity.HasIndex(guest => new { guest.NormalizedEmail, guest.MergedIntoGuestId });
             entity.HasIndex(guest => new { guest.NormalizedPhone, guest.MergedIntoGuestId });
             entity.HasIndex(guest => guest.AnonymizedAtUtc);
+            entity.HasIndex(guest => guest.IsUnderLegalHold);
             entity.HasOne(guest => guest.MergedIntoGuest)
                 .WithMany()
                 .HasForeignKey(guest => guest.MergedIntoGuestId)
@@ -574,7 +642,10 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(quote => quote.TotalAmount).HasPrecision(18, 2);
             entity.HasIndex(quote => quote.AccessTokenHash).IsUnique();
             entity.HasIndex(quote => new { quote.ExpiresAtUtc, quote.ConsumedAtUtc });
+            entity.HasIndex(quote => quote.AmendmentBookingId);
             entity.HasOne(quote => quote.Room).WithMany().HasForeignKey(quote => quote.RoomId).OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne(quote => quote.AmendmentBooking).WithMany()
+                .HasForeignKey(quote => quote.AmendmentBookingId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(quote => quote.RoomType).WithMany().HasForeignKey(quote => quote.RoomTypeId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(quote => quote.RatePlan).WithMany().HasForeignKey(quote => quote.RatePlanId).OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(quote => quote.Promotion).WithMany().HasForeignKey(quote => quote.PromotionId).OnDelete(DeleteBehavior.Restrict);
@@ -820,7 +891,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.Property(merge => merge.PrimaryGuestId).HasMaxLength(20);
             entity.Property(merge => merge.DuplicateGuestId).HasMaxLength(20);
             entity.Property(merge => merge.EvidenceType).HasMaxLength(50).IsRequired();
-            entity.Property(merge => merge.Reason).HasMaxLength(500).IsRequired();
+            entity.Property(merge => merge.Reason).HasMaxLength(160).IsRequired();
             entity.HasIndex(merge => merge.DuplicateGuestId).IsUnique();
             entity.HasIndex(merge => new { merge.PrimaryGuestId, merge.MergedAtUtc });
             entity.HasOne(merge => merge.PrimaryGuest)
@@ -892,17 +963,35 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
 
         builder.Entity<PrivacyRequest>(entity =>
         {
-            entity.ToTable("privacy_requests", table => table.HasCheckConstraint(
-                "CK_privacy_requests_resolution_consistent",
-                "(\"Status\" IN ('Completed', 'Rejected') AND \"ResolvedAtUtc\" IS NOT NULL AND \"ResolvedByUserId\" IS NOT NULL) OR (\"Status\" IN ('Pending', 'InProgress') AND \"ResolvedAtUtc\" IS NULL AND \"ResolvedByUserId\" IS NULL)"));
+            entity.ToTable("privacy_requests", table =>
+            {
+                table.HasCheckConstraint(
+                    "CK_privacy_requests_resolution_consistent",
+                    "(\"Status\" IN ('Completed', 'Rejected') AND \"ResolvedAtUtc\" IS NOT NULL AND \"ResolvedByUserId\" IS NOT NULL) OR (\"Status\" IN ('Pending', 'InProgress') AND \"ResolvedAtUtc\" IS NULL AND \"ResolvedByUserId\" IS NULL)");
+                table.HasCheckConstraint(
+                    "CK_privacy_requests_identity_consistent",
+                    "(\"IdentityVerifiedAtUtc\" IS NULL AND \"IdentityVerifiedByUserId\" IS NULL AND \"IdentityVerificationReference\" IS NULL) OR (\"IdentityVerifiedAtUtc\" IS NOT NULL AND \"IdentityVerifiedByUserId\" IS NOT NULL AND \"IdentityVerificationReference\" IS NOT NULL)");
+                table.HasCheckConstraint(
+                    "CK_privacy_requests_fulfillment_consistent",
+                    "(\"Status\" = 'Completed' AND \"FulfilledAtUtc\" IS NOT NULL AND \"FulfillmentEvidenceReference\" IS NOT NULL AND \"FulfillmentDigest\" IS NOT NULL) OR (\"Status\" <> 'Completed' AND \"FulfilledAtUtc\" IS NULL AND \"FulfillmentEvidenceReference\" IS NULL AND \"FulfillmentDigest\" IS NULL AND \"ExportGeneratedAtUtc\" IS NULL)");
+                table.HasCheckConstraint(
+                    "CK_privacy_requests_due_date",
+                    "\"DueAtUtc\" >= \"RequestedAtUtc\"");
+            });
             entity.HasKey(request => request.Id);
             entity.Property(request => request.GuestId).HasMaxLength(20).IsRequired();
             entity.Property(request => request.Type).HasConversion<string>().HasMaxLength(40);
             entity.Property(request => request.Status).HasConversion<string>().HasMaxLength(40);
             entity.Property(request => request.Details).HasMaxLength(2000);
             entity.Property(request => request.ResolutionNotes).HasMaxLength(2000);
+            entity.Property(request => request.IdentityVerificationReference).HasMaxLength(160);
+            entity.Property(request => request.FulfillmentEvidenceReference).HasMaxLength(500);
+            entity.Property(request => request.FulfillmentDigest).HasMaxLength(64);
             entity.HasIndex(request => new { request.GuestId, request.RequestedAtUtc });
             entity.HasIndex(request => new { request.Status, request.RequestedAtUtc });
+            entity.HasIndex(request => new { request.Status, request.DueAtUtc });
+            entity.HasIndex(request => new { request.GuestId, request.Type }).IsUnique()
+                .HasFilter("\"Status\" IN ('Pending', 'InProgress')");
             entity.HasOne(request => request.Guest)
                 .WithMany()
                 .HasForeignKey(request => request.GuestId)
@@ -911,6 +1000,10 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 .WithMany()
                 .HasForeignKey(request => request.RequestedByUserId)
                 .OnDelete(DeleteBehavior.SetNull);
+            entity.HasOne(request => request.IdentityVerifiedByUser)
+                .WithMany()
+                .HasForeignKey(request => request.IdentityVerifiedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
             entity.HasOne(request => request.ResolvedByUser)
                 .WithMany()
                 .HasForeignKey(request => request.ResolvedByUserId)
@@ -1031,8 +1124,10 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.HasKey(message => message.Id);
             entity.Property(message => message.Template).HasMaxLength(50).IsRequired();
             entity.Property(message => message.Recipient).HasMaxLength(254).IsRequired();
+            entity.Property(message => message.DataSubjectGuestId).HasMaxLength(20);
             entity.Property(message => message.ProtectedPayload).HasColumnType("text").IsRequired();
             entity.Property(message => message.LastErrorCode).HasMaxLength(80);
+            entity.Property(message => message.DeliveryFailureMetadataJson).HasColumnType("jsonb");
             entity.HasIndex(message => new
             {
                 message.NextAttemptAtUtc,
@@ -1040,6 +1135,12 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 message.AttemptCount
             });
             entity.HasIndex(message => message.CreatedAtUtc);
+            entity.HasIndex(message => message.QuarantinedAtUtc);
+            entity.HasIndex(message => message.DataSubjectGuestId);
+            entity.HasOne<Guest>()
+                .WithMany()
+                .HasForeignKey(message => message.DataSubjectGuestId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
 
         builder.Entity<AddOnService>(entity =>

@@ -37,7 +37,10 @@ public class VisitRecordService : IVisitRecordService
 
     public async Task CreateRecordAsync(string bookingCode, string action, string authorizedBy)
     {
-        var booking = await _bookingRepo.GetByCodeAsync(bookingCode);
+        var normalizedCode = RequireText(bookingCode, "Booking code", 30).ToUpperInvariant();
+        var normalizedAction = RequireText(action, "Visit action", 40);
+        var normalizedAuthorizer = RequireText(authorizedBy, "Authorizer", 160);
+        var booking = await _bookingRepo.GetByCodeAsync(normalizedCode);
         if (booking == null) throw new NotFoundException("Invalid booking code.");
         var assignedUnit = booking.ReservationRooms
             .OrderBy(item => item.Sequence)
@@ -49,16 +52,24 @@ public class VisitRecordService : IVisitRecordService
         var record = new VisitRecord
         {
             Id = Guid.NewGuid(),
-            BookingCode = bookingCode,
+            BookingCode = normalizedCode,
             GuestId = booking.GuestId,
             GuestName = $"{booking.Guest?.FirstName} {booking.Guest?.LastName}",
             RoomId = roomId.Value,
             RoomNumber = assignedUnit?.AssignedRoom?.RoomNumber ?? booking.Room?.RoomNumber ?? "N/A",
-            Action = action,
+            Action = normalizedAction,
             Timestamp = DateTime.UtcNow,
-            AuthorizedBy = authorizedBy
+            AuthorizedBy = normalizedAuthorizer
         };
 
         await _visitRepo.AddAsync(record);
+    }
+
+    private static string RequireText(string? value, string field, int maximumLength)
+    {
+        var cleaned = value?.Trim() ?? string.Empty;
+        if (cleaned.Length == 0 || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
     }
 }

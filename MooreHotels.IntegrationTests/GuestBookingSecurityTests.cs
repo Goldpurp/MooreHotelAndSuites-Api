@@ -28,13 +28,21 @@ public sealed class GuestBookingSecurityTests
         Assert.NotEqual(created.AccessToken, stored.GuestAccessTokenHash);
         Assert.True(BookingGuestAccess.Verify(created.AccessToken, stored.GuestAccessTokenHash));
 
-        using var emailOnly = PublicRequest(
+        using var legacyQuery = PublicRequest(
             HttpMethod.Get,
             $"/api/bookings/lookup?code={created.BookingCode}&email={Uri.EscapeDataString(created.Email)}");
-        using var emailOnlyResponse = await _fixture.Client.SendAsync(emailOnly);
-        Assert.Equal(HttpStatusCode.NotFound, emailOnlyResponse.StatusCode);
+        using var legacyQueryResponse = await _fixture.Client.SendAsync(legacyQuery);
+        Assert.Equal(HttpStatusCode.Unauthorized, legacyQueryResponse.StatusCode);
 
-        using var secure = PublicRequest(HttpMethod.Get, $"/api/bookings/lookup?code={created.BookingCode}");
+        using var emailOnly = PublicJsonRequest(
+            "/api/bookings/lookup",
+            new { code = created.BookingCode, email = created.Email });
+        using var emailOnlyResponse = await _fixture.Client.SendAsync(emailOnly);
+        Assert.Equal(HttpStatusCode.BadRequest, emailOnlyResponse.StatusCode);
+
+        using var secure = PublicJsonRequest(
+            "/api/bookings/lookup",
+            new { code = created.BookingCode });
         secure.Headers.Add("X-Booking-Access-Token", created.AccessToken);
         using var secureResponse = await _fixture.Client.SendAsync(secure);
         Assert.Equal(HttpStatusCode.OK, secureResponse.StatusCode);
@@ -120,9 +128,9 @@ public sealed class GuestBookingSecurityTests
             return true;
         });
 
-        using var lookup = PublicRequest(
-            HttpMethod.Get,
-            $"/api/bookings/lookup?code={created.BookingCode}");
+        using var lookup = PublicJsonRequest(
+            "/api/bookings/lookup",
+            new { code = created.BookingCode });
         lookup.Headers.Add("X-Booking-Access-Token", created.AccessToken);
         using var response = await _fixture.Client.SendAsync(lookup);
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
@@ -148,11 +156,15 @@ public sealed class GuestBookingSecurityTests
         var replacementToken = Uri.UnescapeDataString(
             accessEmail.Link!.Split("#accessToken=", StringSplitOptions.None)[1]);
         Assert.NotEqual(created.AccessToken, replacementToken);
-        using var originalLink = PublicRequest(HttpMethod.Get, $"/api/bookings/lookup?code={created.BookingCode}");
+        using var originalLink = PublicJsonRequest(
+            "/api/bookings/lookup",
+            new { code = created.BookingCode });
         originalLink.Headers.Add("X-Booking-Access-Token", created.AccessToken);
         using var originalLinkResponse = await _fixture.Client.SendAsync(originalLink);
         Assert.Equal(HttpStatusCode.NotFound, originalLinkResponse.StatusCode);
-        using var replacementLink = PublicRequest(HttpMethod.Get, $"/api/bookings/lookup?code={created.BookingCode}");
+        using var replacementLink = PublicJsonRequest(
+            "/api/bookings/lookup",
+            new { code = created.BookingCode });
         replacementLink.Headers.Add("X-Booking-Access-Token", replacementToken);
         using var replacementLinkResponse = await _fixture.Client.SendAsync(replacementLink);
         Assert.Equal(HttpStatusCode.OK, replacementLinkResponse.StatusCode);
@@ -207,7 +219,6 @@ public sealed class GuestBookingSecurityTests
             new
             {
                 bookingCode = created.BookingCode,
-                email = created.Email,
                 guestAccessToken = BookingGuestAccess.GenerateToken(),
                 reason = "Plans changed"
             });
@@ -282,7 +293,8 @@ public sealed class GuestBookingSecurityTests
         Assert.True(
             stored.Status == BookingStatus.Confirmed && stored.PaymentStatus == PaymentStatus.Paid ||
             stored.Status == BookingStatus.Cancelled &&
-            stored.PaymentStatus is PaymentStatus.AwaitingVerification or PaymentStatus.RefundPending);
+            stored.PaymentStatus is PaymentStatus.Unpaid or PaymentStatus.AwaitingVerification or PaymentStatus.RefundPending,
+            $"Unexpected concurrent state: Status={stored.Status}, PaymentStatus={stored.PaymentStatus}.");
     }
 
     [Fact]

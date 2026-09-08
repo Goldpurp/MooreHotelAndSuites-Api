@@ -18,6 +18,7 @@ namespace MooreHotels.Application.Services;
 public class ProfileService : IProfileService
 {
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly IAuditService _auditService;
     private readonly IBookingRepository _bookingRepo;
     private readonly IGuestRepository _guestRepo;
@@ -28,6 +29,7 @@ public class ProfileService : IProfileService
 
     public ProfileService(
         UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
         IAuditService auditService,
         IBookingRepository bookingRepo,
         IGuestRepository guestRepo,
@@ -37,6 +39,7 @@ public class ProfileService : IProfileService
         IConfiguration configuration)
     {
         _userManager = userManager;
+        _signInManager = signInManager;
         _auditService = auditService;
         _bookingRepo = bookingRepo;
         _guestRepo = guestRepo;
@@ -72,6 +75,8 @@ public class ProfileService : IProfileService
 
     public async Task UpdateProfileAsync(Guid userId, UpdateProfileRequest request)
     {
+        if (userId == Guid.Empty)
+            throw new UnauthorizedAccessException("The authenticated user is invalid.");
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (user == null) throw new NotFoundException("User account not found.");
 
@@ -81,7 +86,7 @@ public class ProfileService : IProfileService
 
         if (!string.IsNullOrWhiteSpace(request.FullName))
         {
-            user.Name = request.FullName.Trim();
+            user.Name = RequireText(request.FullName, "Full name", 160);
             isChanged = true;
             updatedFields.Add("name");
         }
@@ -89,8 +94,19 @@ public class ProfileService : IProfileService
         if (!string.IsNullOrWhiteSpace(request.Email))
         {
             var normalizedEmail = request.Email.Trim().ToLowerInvariant();
+            if (normalizedEmail.Length > 254 ||
+                !new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(normalizedEmail))
+            {
+                throw new BadRequestException("Email address is invalid.");
+            }
             if (!string.Equals(normalizedEmail, user.Email, StringComparison.OrdinalIgnoreCase))
             {
+                if (string.IsNullOrWhiteSpace(request.CurrentPassword) ||
+                    !await HasValidPasswordAsync(user, request.CurrentPassword))
+                {
+                    throw new UnauthorizedAccessException(
+                        "Current password verification is required to change the sign-in email.");
+                }
                 var existing = await _userManager.FindByEmailAsync(normalizedEmail);
                 if (existing != null && existing.Id != userId)
                     throw new BadRequestException("Email address is already associated with another account.");
@@ -106,20 +122,23 @@ public class ProfileService : IProfileService
 
         if (request.Phone != null)
         {
-            user.PhoneNumber = request.Phone;
+            var phone = request.Phone.Trim();
+            if (phone.Length > 30 ||
+                phone.Any(char.IsControl) ||
+                (phone.Length > 0 &&
+                 !new System.ComponentModel.DataAnnotations.PhoneAttribute().IsValid(phone)))
+            {
+                throw new BadRequestException("Phone number is invalid.");
+            }
+            user.PhoneNumber = phone;
             isChanged = true;
             updatedFields.Add("phone");
         }
 
         if (request.AvatarUrl != null)
         {
-            if (!IsTrustedAvatarUrl(request.AvatarUrl))
-            {
-                throw new BadRequestException("Avatar images must be uploaded through the Moore Hotels image service.");
-            }
-            user.AvatarUrl = request.AvatarUrl;
-            isChanged = true;
-            updatedFields.Add("avatar");
+            throw new BadRequestException(
+                "Avatar images must be changed through the dedicated profile avatar endpoint.");
         }
 
         if (isChanged)
@@ -162,15 +181,13 @@ public class ProfileService : IProfileService
                     }
                     if (request.Phone != null)
                     {
-                        guest.Phone = request.Phone.Trim();
+                        guest.Phone = user.PhoneNumber ?? string.Empty;
                         var digits = new string(guest.Phone.Where(char.IsDigit).ToArray());
                         guest.NormalizedPhone = guest.Phone.TrimStart().StartsWith('+') && digits.Length > 0
                             ? $"+{digits}"
                             : digits;
                         guest.PhoneVerifiedAtUtc = null;
                     }
-                    if (request.AvatarUrl != null) guest.AvatarUrl = request.AvatarUrl;
-
                     await _guestRepo.UpdateAsync(guest);
                 }
 
@@ -198,7 +215,8 @@ public class ProfileService : IProfileService
                     await _emailOutbox.EnqueueAsync(
                         TransactionalEmailTemplates.EmailVerification,
                         user.Email!,
-                        new EmailVerificationEmail(user.Name, verificationUrl));
+                        new EmailVerificationEmail(user.Name, verificationUrl),
+                        dataSubjectGuestId: user.GuestId);
                 }
             });
 
@@ -209,23 +227,23 @@ public class ProfileService : IProfileService
         }
     }
 
-    public async Task<IEnumerable<BookingDto>> GetBookingHistoryAsync(Guid userId)
+    public async Task<IEnumerable<PublicBookingDto>> GetBookingHistoryAsync(Guid userId)
     {
         var user = await _userManager.FindByIdAsync(userId.ToString());
-        if (user == null) return Enumerable.Empty<BookingDto>();
+        if (user == null) return Enumerable.Empty<PublicBookingDto>();
 
         if (string.IsNullOrWhiteSpace(user.GuestId))
         {
-            return Enumerable.Empty<BookingDto>();
+            return Enumerable.Empty<PublicBookingDto>();
         }
 
         var bookings = await _bookingRepo.GetByGuestIdAsync(user.GuestId);
         return bookings
-            .Select(b => new BookingDto(
-                b.Id, b.BookingCode, b.RoomId, b.GuestId,
-                b.Guest?.FirstName ?? "", b.Guest?.LastName ?? "", b.Guest?.Email ?? "", b.Guest?.Phone ?? "",
+            .Select(b => new PublicBookingDto(
+                b.Id, b.BookingCode,
+                b.Guest?.FirstName ?? "", b.Guest?.LastName ?? "", b.Guest?.Email ?? "",
                 b.CheckIn, b.CheckOut,
-                b.Status, b.Amount, b.PaymentStatus, b.PaymentMethod, b.TransactionReference, b.Notes, b.CreatedAt,
+                b.Status, b.Amount, b.PaymentStatus, b.PaymentMethod, b.CreatedAt,
                 PaymentUrl:
                     b.PaymentMethod == PaymentMethod.Monnify &&
                     b.Status == BookingStatus.Pending &&
@@ -240,9 +258,6 @@ public class ProfileService : IProfileService
                         : null,
                 AdultCount: b.AdultCount,
                 ChildCount: b.ChildCount,
-                PrivacyPolicyVersion: b.PrivacyPolicyVersion,
-                BookingTermsVersion: b.BookingTermsVersion,
-                PoliciesAcceptedAtUtc: b.PoliciesAcceptedAtUtc,
                 QuoteId: b.QuoteId,
                 Currency: b.Currency,
                 RoomSubtotal: b.RoomSubtotal,
@@ -268,11 +283,9 @@ public class ProfileService : IProfileService
                 RoomTypeName: b.RoomType?.Name,
                 RoomQuantity: b.RoomQuantity,
                 Rooms: b.ReservationRooms.OrderBy(item => item.Sequence)
-                    .Select(item => new ReservationRoomDto(
+                    .Select(item => new PublicReservationRoomDto(
                         item.Id, item.Sequence, item.RoomTypeId,
-                        item.RoomTypeCode, item.RoomTypeName,
-                        item.AssignedRoomId, item.AssignedRoom?.RoomNumber,
-                        item.AssignedAtUtc, item.AssignedByUserId))
+                        item.RoomTypeCode, item.RoomTypeName))
                     .ToArray(),
                 Folio: b.Folio is null ? null : ToFolioSummary(b.Folio),
                 ReservationPolicy: new ReservationPolicySnapshotDto(
@@ -305,6 +318,8 @@ public class ProfileService : IProfileService
 
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (user == null) throw new NotFoundException("User not found.");
+        if (!await HasValidPasswordAsync(user, request.OldPassword))
+            throw new UnauthorizedAccessException("Current password verification failed.");
 
         await _transaction.ExecuteWithUserLockAsync(userId, async () =>
         {
@@ -339,6 +354,7 @@ public class ProfileService : IProfileService
         await _transaction.ExecuteWithUserLockAsync(userId, async () =>
         {
             user.Status = ProfileStatus.Suspended;
+            user.StatusChangedAtUtc = DateTime.UtcNow;
             var update = await _userManager.UpdateSecurityStampAsync(user);
             if (!update.Succeeded)
             {
@@ -363,6 +379,7 @@ public class ProfileService : IProfileService
         await _transaction.ExecuteWithUserLockAsync(userId, async () =>
         {
             user.Status = ProfileStatus.Active;
+            user.StatusChangedAtUtc = DateTime.UtcNow;
             var update = await _userManager.UpdateAsync(user);
             if (!update.Succeeded)
             {
@@ -378,25 +395,22 @@ public class ProfileService : IProfileService
         });
     }
 
-    private bool IsTrustedAvatarUrl(string value)
+    private async Task<bool> HasValidPasswordAsync(
+        ApplicationUser user,
+        string currentPassword)
     {
-        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)) return false;
-        if (uri.Scheme == Uri.UriSchemeHttps &&
-            uri.Host.Equals("res.cloudinary.com", StringComparison.OrdinalIgnoreCase))
-        {
-            var cloudName = _configuration["CloudinarySettings:CloudName"];
-            return !string.IsNullOrWhiteSpace(cloudName) &&
-                   uri.AbsolutePath.StartsWith(
-                       $"/{cloudName}/image/upload/",
-                       StringComparison.Ordinal);
-        }
-
-        var apiBaseUrl = _configuration["Api:PublicBaseUrl"];
-        return Uri.TryCreate(apiBaseUrl, UriKind.Absolute, out var apiUri) &&
-               uri.Scheme == apiUri.Scheme &&
-               uri.Host.Equals(apiUri.Host, StringComparison.OrdinalIgnoreCase) &&
-               uri.Port == apiUri.Port &&
-               uri.AbsolutePath.StartsWith("/uploads/avatars/", StringComparison.Ordinal);
+        var result = await _signInManager.CheckPasswordSignInAsync(
+            user,
+            currentPassword,
+            lockoutOnFailure: true);
+        return result.Succeeded || result.RequiresTwoFactor;
     }
 
+    private static string RequireText(string? value, string field, int maximumLength)
+    {
+        var cleaned = value?.Trim() ?? string.Empty;
+        if (cleaned.Length == 0 || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
 }

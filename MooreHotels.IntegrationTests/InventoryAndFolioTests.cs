@@ -9,6 +9,7 @@ using MooreHotels.Domain.Enums;
 using MooreHotels.Domain.Common;
 using MooreHotels.Infrastructure.Persistence;
 using Npgsql;
+using System.Text.Json;
 
 namespace MooreHotels.IntegrationTests;
 
@@ -256,6 +257,89 @@ public sealed class InventoryAndFolioTests
         var results = await Task.WhenAll(TryBookAsync(1), TryBookAsync(2));
         Assert.Single(results, result => result);
         Assert.Single(results, result => !result);
+    }
+
+    [Fact]
+    public async Task Concurrent_inventory_closures_cannot_collectively_oversell_inventory()
+    {
+        var (roomType, _) = await CreateInventoryAsync(2, 60000m);
+        var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(70));
+        var end = start.AddDays(3);
+
+        async Task<bool> TryCloseAsync(int number)
+        {
+            await using var scope = _fixture.Services.CreateAsyncScope();
+            var inventory = scope.ServiceProvider.GetRequiredService<IInventoryService>();
+            try
+            {
+                await inventory.CreateClosureAsync(
+                    new CreateInventoryClosureRequest(
+                        roomType.Id,
+                        null,
+                        start,
+                        end,
+                        2,
+                        $"Concurrent capacity closure {number}."),
+                    _fixture.Admin.Id);
+                return true;
+            }
+            catch (ConflictException)
+            {
+                return false;
+            }
+        }
+
+        var results = await Task.WhenAll(TryCloseAsync(1), TryCloseAsync(2));
+        Assert.Single(results, result => result);
+        Assert.Single(results, result => !result);
+    }
+
+    [Fact]
+    public async Task Inventory_export_idempotency_replays_original_snapshot_after_inventory_changes()
+    {
+        var (roomType, _) = await CreateInventoryAsync(2, 60000m);
+        var start = DateOnly.FromDateTime(DateTime.UtcNow.Date.AddDays(75));
+        var end = start.AddDays(2);
+        await using var scope = _fixture.Services.CreateAsyncScope();
+        var channels = scope.ServiceProvider.GetRequiredService<IChannelManagementService>();
+        var inventory = scope.ServiceProvider.GetRequiredService<IInventoryService>();
+        var channel = await channels.SaveChannelAsync(
+            null,
+            new SaveDistributionChannelRequest(
+                $"INV-{Guid.NewGuid():N}"[..20],
+                "Inventory replay channel",
+                true),
+            _fixture.Admin.Id);
+        var request = new QueueChannelInventoryRequest(
+            roomType.Id,
+            start,
+            end,
+            $"inventory-{Guid.NewGuid():N}");
+
+        var original = await channels.QueueInventoryAsync(
+            channel.Id,
+            request,
+            _fixture.Admin.Id);
+        await inventory.CreateClosureAsync(
+            new CreateInventoryClosureRequest(
+                roomType.Id,
+                null,
+                start,
+                end.AddDays(1),
+                1,
+                "Change availability after the original export."),
+            _fixture.Admin.Id);
+        var replay = await channels.QueueInventoryAsync(
+            channel.Id,
+            request,
+            _fixture.Admin.Id);
+
+        Assert.Equal(original.Id, replay.Id);
+        using var originalJson = JsonDocument.Parse(original.PayloadJson);
+        using var replayJson = JsonDocument.Parse(replay.PayloadJson);
+        Assert.True(JsonElement.DeepEquals(
+            originalJson.RootElement,
+            replayJson.RootElement));
     }
 
     private async Task<(RoomType RoomType, Room[] Rooms)> CreateInventoryAsync(

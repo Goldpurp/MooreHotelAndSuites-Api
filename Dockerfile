@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/dotnet/sdk:10.0.400 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0.400@sha256:e1ffd2a92ae84c1291bc1b6887501f8af98e6331e7af6d4c8d37168c5e87a64c AS build
 WORKDIR /src
 
 COPY *.sln global.json Directory.Build.props ./
@@ -14,7 +14,9 @@ RUN dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj \
     --configuration Release \
     --no-restore \
     --output /app/publish \
-    /p:UseAppHost=false
+    /p:UseAppHost=false \
+    /p:DebugType=None \
+    /p:DebugSymbols=false
 RUN dotnet tool run dotnet-ef migrations bundle \
     --project MooreHotels.Infrastructure/MooreHotels.Infrastructure.csproj \
     --startup-project MooreHotels.Infrastructure/MooreHotels.Infrastructure.csproj \
@@ -22,10 +24,11 @@ RUN dotnet tool run dotnet-ef migrations bundle \
     --no-build \
     --output /app/migrate
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.11 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.11@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94 AS runtime
 WORKDIR /app
 
 RUN apt-get update \
+    && apt-get upgrade --yes \
     && apt-get install --yes --no-install-recommends postgresql-client \
     && rm -rf /var/lib/apt/lists/*
 
@@ -36,7 +39,16 @@ ENV ASPNETCORE_HTTP_PORTS=8080 \
 
 COPY --from=build --chown=app:app /app/publish .
 COPY --from=build --chown=app:app /app/migrate ./migrate
-COPY --from=build --chown=app:app /src/scripts ./scripts
+COPY --from=build --chown=app:app \
+    /src/scripts/bind-production-database.sh \
+    /src/scripts/database-connection.sh \
+    /src/scripts/harden-supabase-data-api.sh \
+    /src/scripts/predeploy-production.sh \
+    /src/scripts/provision-runtime-database-role.sh \
+    /src/scripts/validate-production-database.sh \
+    /src/scripts/validate-runtime-database-role.sh \
+    ./scripts/
+RUN install -d --owner=app --group=app --mode=0700 /var/data/moorehotels-keys
 
 USER app
 EXPOSE 8080

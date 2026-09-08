@@ -20,7 +20,10 @@ public sealed class SecurityHeadersMiddleware
         headers["X-Frame-Options"] = "DENY";
         headers["Referrer-Policy"] = "no-referrer";
         headers["X-Robots-Tag"] = "noindex, nofollow, noarchive";
+        headers["X-Permitted-Cross-Domain-Policies"] = "none";
         headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()";
+        headers["Cross-Origin-Opener-Policy"] = "same-origin";
+        headers["Cross-Origin-Resource-Policy"] = "same-site";
         headers["Content-Security-Policy"] = _environment.IsDeployed()
             ? "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
             : "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; " +
@@ -34,11 +37,10 @@ public sealed class SecurityHeadersMiddleware
             headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains";
         }
 
-        if (context.Request.Path.StartsWithSegments("/api/auth") ||
-            context.Request.Path.StartsWithSegments("/api/profile") ||
-            context.Request.Path.StartsWithSegments("/api/bookings"))
+        if (context.Request.Path.StartsWithSegments("/api") ||
+            context.Request.Path.StartsWithSegments("/hubs"))
         {
-            headers["Cache-Control"] = "no-store";
+            headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0";
             headers["Pragma"] = "no-cache";
         }
 

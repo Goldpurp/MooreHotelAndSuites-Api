@@ -42,13 +42,16 @@ public sealed class PricingService : IPricingService
     public Task<PricingQuoteDto> CreateQuoteAsync(
         CreatePricingQuoteRequest request,
         CancellationToken cancellationToken = default) =>
-        CreateQuoteCoreAsync(request, null, cancellationToken);
+        CreateQuoteCoreAsync(request, null, null, cancellationToken);
 
     public async Task<PricingQuoteDto> CreateAmendmentQuoteAsync(
         Guid bookingId,
         CreatePricingQuoteRequest request,
+        Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequireReservationActorAsync(actorId, cancellationToken);
+        if (bookingId == Guid.Empty) throw new NotFoundException("Booking not found.");
         var booking = await _db.Bookings.AsNoTracking()
             .SingleOrDefaultAsync(item => item.Id == bookingId, cancellationToken)
             ?? throw new NotFoundException("Booking not found.");
@@ -57,17 +60,20 @@ public sealed class PricingService : IPricingService
         if (DateTime.UtcNow >= booking.CheckIn)
             throw new BadRequestException("A reservation cannot be repriced after its check-in time.");
 
-        return await CreateQuoteCoreAsync(request, bookingId, cancellationToken);
+        return await CreateQuoteCoreAsync(request, bookingId, actorId, cancellationToken);
     }
 
     private async Task<PricingQuoteDto> CreateQuoteCoreAsync(
         CreatePricingQuoteRequest request,
         Guid? excludedBookingId,
+        Guid? actorId,
         CancellationToken cancellationToken)
     {
         var checkInDate = DateOnly.FromDateTime(request.CheckIn);
         var checkOutDate = DateOnly.FromDateTime(request.CheckOut);
         ValidateStay(checkInDate, checkOutDate, request.AdultCount, request.ChildCount);
+        if (request.RoomId == Guid.Empty || request.RoomTypeId == Guid.Empty)
+            throw new BadRequestException("Room or room-type identifier is invalid.");
 
         if (request.RoomId.HasValue == request.RoomTypeId.HasValue)
             throw new BadRequestException("Select exactly one inventory scope: a room type or a legacy physical room.");
@@ -87,6 +93,8 @@ public sealed class PricingService : IPricingService
                 throw new BadRequestException("This room is currently unavailable.");
             roomType = room.RoomType
                 ?? throw new InvalidOperationException("The room has no configured room type.");
+            if (!roomType.IsActive)
+                throw new BadRequestException("This room type is inactive.");
 
             var startUtc = _hotelTime.GetCheckInUtc(request.CheckIn);
             var endUtc = _hotelTime.GetCheckOutUtc(request.CheckOut);
@@ -130,7 +138,7 @@ public sealed class PricingService : IPricingService
             throw new BadRequestException(
                 $"The selected inventory permits a maximum of {maximumOccupancy} guests.");
 
-        var requestedRatePlan = NormalizeOptionalCode(request.RatePlanCode, "rate plan");
+        var requestedRatePlan = NormalizeOptionalCode(request.RatePlanCode, "rate plan", 30);
         var ratePlanQuery = _db.RatePlans.AsNoTracking().Where(plan => plan.IsActive);
         var ratePlan = requestedRatePlan is null
             ? await ratePlanQuery.SingleOrDefaultAsync(plan => plan.IsDefault, cancellationToken)
@@ -197,7 +205,7 @@ public sealed class PricingService : IPricingService
         var roomSubtotal = Money(nightlyAmounts.Values.Sum());
         PromotionEntity? promotion = null;
         var discountAmount = 0m;
-        var promotionCode = NormalizeOptionalCode(request.PromotionCode, "promotion");
+        var promotionCode = NormalizeOptionalCode(request.PromotionCode, "promotion", 40);
         var now = DateTime.UtcNow;
         if (promotionCode is not null)
         {
@@ -313,6 +321,7 @@ public sealed class PricingService : IPricingService
         {
             Id = quoteId,
             AccessTokenHash = BookingGuestAccess.Hash(quoteToken),
+            AmendmentBookingId = excludedBookingId,
             RoomId = room?.Id,
             RoomTypeId = roomType.Id,
             RoomQuantity = request.RoomQuantity,
@@ -334,6 +343,20 @@ public sealed class PricingService : IPricingService
             Lines = quoteLines
         };
         _db.BookingQuotes.Add(quote);
+        if (actorId.HasValue)
+        {
+            AddAudit(actorId.Value, "AMENDMENT_QUOTE_CREATED", "BookingQuote", quote.Id, null,
+                new
+                {
+                    BookingId = excludedBookingId,
+                    quote.RoomTypeId,
+                    quote.RoomQuantity,
+                    quote.CheckInDate,
+                    quote.CheckOutDate,
+                    quote.TotalAmount,
+                    quote.ExpiresAtUtc
+                });
+        }
         await _db.SaveChangesAsync(cancellationToken);
 
         return new PricingQuoteDto(
@@ -371,6 +394,8 @@ public sealed class PricingService : IPricingService
     {
         if (quoteId == Guid.Empty || string.IsNullOrWhiteSpace(quoteToken))
             throw new BadRequestException("A valid pricing quote is required.");
+        if (quoteToken.Length is < 40 or > 128 || quoteToken.Any(char.IsControl))
+            throw new BadRequestException("A valid pricing quote is required.");
 
         var tokenHash = BookingGuestAccess.Hash(quoteToken.Trim());
         var quote = await _db.BookingQuotes.AsNoTracking()
@@ -383,6 +408,8 @@ public sealed class PricingService : IPricingService
             throw new BadRequestException("The pricing quote has already been used.");
         if (quote.ExpiresAtUtc <= now)
             throw new BadRequestException("The pricing quote has expired. Request a new quote.");
+        if (quote.AmendmentBookingId.HasValue)
+            throw new BadRequestException("An amendment quote cannot create a new reservation.");
         if (quote.RoomId != booking.RoomId ||
             quote.RoomTypeId != (booking.RoomTypeId ?? quote.RoomTypeId) ||
             quote.RoomQuantity != booking.RoomQuantity ||
@@ -453,13 +480,19 @@ public sealed class PricingService : IPricingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequirePricingActorAsync(actorId, cancellationToken);
+        if (id == Guid.Empty) throw new NotFoundException("Rate plan not found.");
         var code = NormalizeRequiredCode(request.Code, "rate plan");
         var currency = NormalizeCurrency(request.Currency);
-        if (request.MinimumNights > request.MaximumNights)
+        if (!Enum.IsDefined(request.BaseAdjustmentType))
+            throw new BadRequestException("Rate-plan adjustment type is invalid.");
+        if (request.MinimumNights is < 1 or > 90 || request.MaximumNights is < 1 or > 90 ||
+            request.MinimumNights > request.MaximumNights)
             throw new BadRequestException("Minimum nights cannot exceed maximum nights.");
         if (request.SellFromDate.HasValue && request.SellUntilDate < request.SellFromDate)
             throw new BadRequestException("Rate-plan sell dates are invalid.");
         if (request.BaseAdjustmentValue < 0 ||
+            request.BaseAdjustmentValue > 9999999999999999m ||
             request.BaseAdjustmentType == RateAdjustmentType.Percentage &&
             request.BaseAdjustmentValue > 1000 ||
             request.BaseAdjustmentType == RateAdjustmentType.None &&
@@ -494,7 +527,7 @@ public sealed class PricingService : IPricingService
 
         entity.Code = code;
         entity.Name = RequireText(request.Name, "Rate-plan name", 120);
-        entity.Description = CleanOptional(request.Description);
+        entity.Description = CleanOptional(request.Description, "Rate-plan description", 1000);
         entity.Currency = currency;
         entity.BaseAdjustmentType = request.BaseAdjustmentType;
         entity.BaseAdjustmentValue = request.BaseAdjustmentValue;
@@ -517,12 +550,21 @@ public sealed class PricingService : IPricingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequirePricingActorAsync(actorId, cancellationToken);
+        if (id == Guid.Empty) throw new NotFoundException("Daily rate not found.");
+        if (request.RatePlanId == Guid.Empty || request.RoomId == Guid.Empty || request.RoomTypeId == Guid.Empty)
+            throw new BadRequestException("A daily-rate scope identifier is invalid.");
+        if (request.RoomCategory.HasValue && !Enum.IsDefined(request.RoomCategory.Value))
+            throw new BadRequestException("Room category is invalid.");
         if ((request.RoomId.HasValue ? 1 : 0) +
             (request.RoomTypeId.HasValue ? 1 : 0) +
             (request.RoomCategory.HasValue ? 1 : 0) != 1)
             throw new BadRequestException("Select exactly one daily-rate scope: room, room type, or room category.");
-        if (request.Amount <= 0)
-            throw new BadRequestException("Daily rate amount must be greater than zero.");
+        if (request.Amount is <= 0 or > 9999999999999999m)
+            throw new BadRequestException("Daily rate amount is outside the supported range.");
+        if (request.StayDate < _hotelTime.Today.AddDays(-31) ||
+            request.StayDate > _hotelTime.Today.AddYears(2))
+            throw new BadRequestException("Daily rate date is outside the supported window.");
         if (!await _db.RatePlans.AnyAsync(plan => plan.Id == request.RatePlanId, cancellationToken))
             throw new NotFoundException("Rate plan not found.");
         if (request.RoomId.HasValue &&
@@ -555,6 +597,8 @@ public sealed class PricingService : IPricingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequirePricingActorAsync(actorId, cancellationToken);
+        if (id == Guid.Empty) throw new NotFoundException("Daily rate not found.");
         var entity = await _db.DailyRoomRates.SingleOrDefaultAsync(rate => rate.Id == id, cancellationToken)
                      ?? throw new NotFoundException("Daily rate not found.");
         var oldData = JsonSerializer.Serialize(ToDailyRateDto(entity));
@@ -569,9 +613,13 @@ public sealed class PricingService : IPricingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequirePricingActorAsync(actorId, cancellationToken);
+        if (id == Guid.Empty) throw new NotFoundException("Pricing rule not found.");
         var code = NormalizeRequiredCode(request.Code, "pricing rule");
         var currency = NormalizeCurrency(request.Currency);
-        if (request.Value <= 0 ||
+        if (!Enum.IsDefined(request.Kind) || !Enum.IsDefined(request.Calculation))
+            throw new BadRequestException("Pricing-rule kind or calculation is invalid.");
+        if (request.Value <= 0 || request.Value > 9999999999999999m ||
             request.Calculation == PricingRuleCalculation.Percentage && request.Value > 1000)
             throw new BadRequestException("Pricing-rule value is outside the supported range.");
         if (request.IsInclusive &&
@@ -580,6 +628,8 @@ public sealed class PricingService : IPricingService
             throw new BadRequestException("Only percentage taxes can be included in room prices.");
         if (request.EffectiveFromDate.HasValue && request.EffectiveUntilDate < request.EffectiveFromDate)
             throw new BadRequestException("Pricing-rule effective dates are invalid.");
+        if (request.SortOrder is < -10000 or > 10000)
+            throw new BadRequestException("Pricing-rule sort order is outside the supported range.");
 
         var entity = id.HasValue
             ? await _db.PricingRules.SingleOrDefaultAsync(rule => rule.Id == id, cancellationToken)
@@ -610,17 +660,27 @@ public sealed class PricingService : IPricingService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        await RequirePricingActorAsync(actorId, cancellationToken);
+        if (id == Guid.Empty) throw new NotFoundException("Promotion not found.");
         var code = NormalizeRequiredCode(request.Code, "promotion");
         var currency = NormalizeCurrency(request.Currency);
-        if (request.Value <= 0 ||
+        if (!Enum.IsDefined(request.DiscountType))
+            throw new BadRequestException("Promotion discount type is invalid.");
+        if (request.Value <= 0 || request.Value > 9999999999999999m ||
             request.DiscountType == DiscountType.Percentage && request.Value > 100)
             throw new BadRequestException("Promotion value is outside the supported range.");
-        if (request.MaximumDiscountAmount.HasValue && request.MaximumDiscountAmount <= 0)
+        if (request.MaximumDiscountAmount is <= 0 or > 9999999999999999m)
             throw new BadRequestException("Maximum discount must be greater than zero when supplied.");
-        if (request.ValidUntilUtc <= request.ValidFromUtc)
+        var validFromUtc = EnsureUtc(request.ValidFromUtc);
+        var validUntilUtc = EnsureUtc(request.ValidUntilUtc);
+        if (validUntilUtc <= validFromUtc || validUntilUtc > DateTime.UtcNow.AddYears(5))
             throw new BadRequestException("Promotion validity window is invalid.");
-        if (request.RedemptionLimit.HasValue && request.RedemptionLimit <= 0)
+        if (request.MinimumNights is < 1 or > 90)
+            throw new BadRequestException("Promotion minimum nights is invalid.");
+        if (request.RedemptionLimit is <= 0 or > 100000000)
             throw new BadRequestException("Redemption limit must be greater than zero when supplied.");
+        if (request.RatePlanId == Guid.Empty)
+            throw new BadRequestException("Rate plan identifier is invalid.");
         if (request.RatePlanId.HasValue &&
             !await _db.RatePlans.AnyAsync(plan => plan.Id == request.RatePlanId, cancellationToken))
             throw new NotFoundException("Rate plan not found.");
@@ -642,8 +702,8 @@ public sealed class PricingService : IPricingService
         entity.Currency = currency;
         entity.MinimumNights = request.MinimumNights;
         entity.RatePlanId = request.RatePlanId;
-        entity.ValidFromUtc = DateTime.SpecifyKind(request.ValidFromUtc, DateTimeKind.Utc);
-        entity.ValidUntilUtc = DateTime.SpecifyKind(request.ValidUntilUtc, DateTimeKind.Utc);
+        entity.ValidFromUtc = validFromUtc;
+        entity.ValidUntilUtc = validUntilUtc;
         entity.RedemptionLimit = request.RedemptionLimit;
         entity.IsActive = request.IsActive;
         entity.UpdatedAtUtc = DateTime.UtcNow;
@@ -683,8 +743,8 @@ public sealed class PricingService : IPricingService
         int adultCount,
         int childCount)
     {
-        if (adultCount < 1 || childCount < 0)
-            throw new BadRequestException("A quote requires at least one adult and non-negative guest counts.");
+        if (adultCount is < 1 or > 20 || childCount is < 0 or > 20)
+            throw new BadRequestException("A quote requires 1-20 adults and 0-20 children.");
         if (checkInDate < _hotelTime.Today)
             throw new BadRequestException("Check-in cannot be in the past.");
         var nights = checkOutDate.DayNumber - checkInDate.DayNumber;
@@ -714,6 +774,32 @@ public sealed class PricingService : IPricingService
         {
             throw new ConflictException(
                 "The pricing configuration conflicts with an existing code or daily rate.");
+        }
+    }
+
+    private async Task RequirePricingActorAsync(Guid actorId, CancellationToken cancellationToken)
+    {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The pricing actor is invalid.");
+        var allowed = await _db.Users.AsNoTracking().AnyAsync(user =>
+            user.Id == actorId && user.Status == ProfileStatus.Active &&
+            (user.Role == UserRole.Admin || user.Role == UserRole.Manager),
+            cancellationToken);
+        if (!allowed)
+            throw new UnauthorizedAccessException("An active administrator or manager is required.");
+    }
+
+    private async Task RequireReservationActorAsync(Guid actorId, CancellationToken cancellationToken)
+    {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The reservation actor is invalid.");
+        var actor = await _db.Users.AsNoTracking().SingleOrDefaultAsync(user =>
+            user.Id == actorId && user.Status == ProfileStatus.Active,
+            cancellationToken);
+        if (actor is null || actor.Role == UserRole.Client ||
+            actor.Role == UserRole.Staff && actor.Department is not ("Reception" or "FrontDesk"))
+        {
+            throw new UnauthorizedAccessException("The actor cannot create amendment quotes.");
         }
     }
 
@@ -768,14 +854,14 @@ public sealed class PricingService : IPricingService
         promotion.RedemptionCount, promotion.IsActive, promotion.UpdatedAtUtc);
 
     private static string NormalizeRequiredCode(string value, string field) =>
-        NormalizeOptionalCode(value, field)
+        NormalizeOptionalCode(value, field, field == "promotion" ? 40 : 30)
         ?? throw new BadRequestException($"A {field} code is required.");
 
-    private static string? NormalizeOptionalCode(string? value, string field)
+    private static string? NormalizeOptionalCode(string? value, string field, int maximumLength)
     {
         if (string.IsNullOrWhiteSpace(value)) return null;
         var normalized = value.Trim().ToUpperInvariant();
-        if (normalized.Any(character =>
+        if (normalized.Length > maximumLength || normalized.Any(character =>
                 !char.IsAsciiLetterOrDigit(character) &&
                 character is not ('-' or '_')))
             throw new BadRequestException($"The {field} code contains unsupported characters.");
@@ -793,14 +879,32 @@ public sealed class PricingService : IPricingService
     private static string RequireText(string value, string field, int maximumLength)
     {
         var cleaned = value?.Trim() ?? string.Empty;
-        if (cleaned.Length == 0 || cleaned.Length > maximumLength)
+        if (cleaned.Length == 0 || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
             throw new BadRequestException($"{field} is required and cannot exceed {maximumLength} characters.");
         return cleaned;
     }
 
-    private static string? CleanOptional(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? CleanOptional(string? value, string field, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var cleaned = value.Trim();
+        if (cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
 
-    private static decimal Money(decimal amount) =>
-        decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+    private static DateTime EnsureUtc(DateTime value) => value.Kind switch
+    {
+        DateTimeKind.Utc => value,
+        DateTimeKind.Local => value.ToUniversalTime(),
+        _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+    };
+
+    private static decimal Money(decimal amount)
+    {
+        var rounded = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
+        if (rounded is < -9999999999999999m or > 9999999999999999m)
+            throw new BadRequestException("Calculated pricing is outside the supported monetary range.");
+        return rounded;
+    }
 }

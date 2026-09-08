@@ -16,16 +16,22 @@ namespace MooreHotels.Application.Services;
 public class StaffService : IStaffService
 {
     private readonly UserManager<ApplicationUser> _userManager;
+    private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly IAuditService _auditService;
     private readonly IEmailOutbox _emailOutbox;
     private readonly IApplicationTransaction _transaction;
     private readonly IStaffSessionRevocationService _sessionRevocation;
     private readonly IConfiguration _configuration;
 
-    private static readonly string[] AllowedDepartments = { "Housekeeping", "Reception", "FrontDesk", "Concierge" };
+    private static readonly string[] AllowedDepartments =
+    {
+        "Housekeeping", "Maintenance", "Engineering", "Reception", "FrontDesk",
+        "Concierge", "Finance", "Cashier"
+    };
 
     public StaffService(
         UserManager<ApplicationUser> userManager,
+        SignInManager<ApplicationUser> signInManager,
         IAuditService auditService,
         IEmailOutbox emailOutbox,
         IApplicationTransaction transaction,
@@ -33,6 +39,7 @@ public class StaffService : IStaffService
         IConfiguration configuration)
     {
         _userManager = userManager;
+        _signInManager = signInManager;
         _auditService = auditService;
         _emailOutbox = emailOutbox;
         _transaction = transaction;
@@ -92,8 +99,15 @@ public class StaffService : IStaffService
 
     public async Task OnboardUserAsync(OnboardUserRequest request, Guid actingUserId)
     {
+        RequireActor(actingUserId);
         var actingUser = await _userManager.FindByIdAsync(actingUserId.ToString());
-        if (actingUser == null) throw new UnauthorizedAccessException("Identity Fault: Acting user context not found.");
+        if (actingUser == null || actingUser.Status != ProfileStatus.Active)
+            throw new UnauthorizedAccessException("Identity Fault: Acting user context not found.");
+
+        if (!Enum.IsDefined(request.AssignedRole) || !Enum.IsDefined(request.Status))
+            throw new BadRequestException("The requested account role or status is invalid.");
+        if (request.Status != ProfileStatus.Active)
+            throw new BadRequestException("New staff accounts must be onboarded as active.");
 
         if (request.AssignedRole is UserRole.Admin or UserRole.Client)
             throw new UnauthorizedAccessException("Only Manager and Staff accounts can be provisioned through staff management.");
@@ -106,13 +120,16 @@ public class StaffService : IStaffService
             throw new UnauthorizedAccessException("Permission Denied: Insufficient clearance.");
 
         // Validation: Departments
-        if ((request.AssignedRole == UserRole.Staff || request.AssignedRole == UserRole.Manager) && !string.IsNullOrEmpty(request.Department))
+        var fullName = RequireText(request.FullName, "Full name", 160);
+        var normalizedEmail = RequireEmail(request.Email);
+        var phone = NormalizePhone(request.Phone);
+        var department = NormalizeDepartment(request.Department);
+        if ((request.AssignedRole == UserRole.Staff || request.AssignedRole == UserRole.Manager) && department is not null)
         {
-            if (!AllowedDepartments.Contains(request.Department))
+            if (!AllowedDepartments.Contains(department, StringComparer.Ordinal))
                 throw new BadRequestException("The selected department is not recognized.");
         }
 
-        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
         var existing = await _userManager.FindByEmailAsync(normalizedEmail);
         if (existing != null) throw new BadRequestException("Email address is already assigned.");
 
@@ -121,13 +138,14 @@ public class StaffService : IStaffService
             Id = Guid.NewGuid(),
             UserName = normalizedEmail,
             Email = normalizedEmail,
-            Name = request.FullName.Trim(),
-            PhoneNumber = request.Phone?.Trim(),
+            Name = fullName,
+            PhoneNumber = phone,
             Role = request.AssignedRole,
             Status = ProfileStatus.Active,
-            Department = (request.AssignedRole == UserRole.Staff || request.AssignedRole == UserRole.Manager) ? request.Department?.Trim() : null,
+            Department = department,
             EmailConfirmed = true,
-            CreatedAt = DateTime.UtcNow
+            CreatedAt = DateTime.UtcNow,
+            StatusChangedAtUtc = DateTime.UtcNow
         };
 
         // The administrator never chooses or transmits the staff member's
@@ -158,7 +176,7 @@ public class StaffService : IStaffService
                 "reset-password",
                 new Dictionary<string, string?>
                 {
-                    ["email"] = user.Email,
+                    ["userId"] = user.Id.ToString(),
                     ["token"] = encodedToken
                 });
             await _emailOutbox.EnqueueAsync(
@@ -181,6 +199,8 @@ public class StaffService : IStaffService
         ProfileStatus newStatus,
         Guid actingUserId)
     {
+        RequireActor(actingUserId);
+        if (userId == Guid.Empty) throw new NotFoundException("Target user profile not found.");
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (user == null)
             throw new NotFoundException("Target user profile not found.");
@@ -208,6 +228,7 @@ public class StaffService : IStaffService
             await _transaction.ExecuteWithUserLockAsync(userId, async () =>
             {
                 user.Status = newStatus;
+                user.StatusChangedAtUtc = DateTime.UtcNow;
                 IdentityResult updateResult;
                 if (newStatus == ProfileStatus.Suspended)
                 {
@@ -230,7 +251,8 @@ public class StaffService : IStaffService
                     await _emailOutbox.EnqueueAsync(
                         template,
                         user.Email,
-                        new AccountStatusEmail(user.Name));
+                        new AccountStatusEmail(user.Name),
+                        dataSubjectGuestId: user.GuestId);
                 }
 
                 await _auditService.LogActionAsync(
@@ -249,8 +271,156 @@ public class StaffService : IStaffService
         }
     }
 
+    public async Task ChangeAdministratorStatusAsync(
+        Guid userId,
+        ProfileStatus newStatus,
+        EmergencyAdminStatusRequest request,
+        Guid actingUserId)
+    {
+        RequireActor(actingUserId);
+        if (userId == Guid.Empty) throw new NotFoundException("Target administrator profile not found.");
+        if (string.IsNullOrWhiteSpace(request.CurrentPassword) || request.CurrentPassword.Length > 128 ||
+            string.IsNullOrWhiteSpace(request.AuthenticatorCode) || request.AuthenticatorCode.Length > 16 ||
+            string.IsNullOrWhiteSpace(request.Confirmation) || request.Confirmation.Length > 320 ||
+            string.IsNullOrWhiteSpace(request.Reason) || request.Reason.Length is < 10 or > 500)
+        {
+            throw new BadRequestException("Emergency administrator confirmation details are invalid.");
+        }
+        if (newStatus is not (ProfileStatus.Active or ProfileStatus.Suspended))
+            throw new BadRequestException("Invalid administrator status value.");
+        if (userId == actingUserId)
+            throw new BadRequestException("Administrators cannot change their own emergency status.");
+
+        var actingUser = await _userManager.FindByIdAsync(actingUserId.ToString());
+        if (actingUser is null ||
+            actingUser.Role != UserRole.Admin ||
+            actingUser.Status != ProfileStatus.Active ||
+            !actingUser.EmailConfirmed ||
+            !actingUser.TwoFactorEnabled)
+        {
+            throw new UnauthorizedAccessException(
+                "An active, verified administrator with MFA is required.");
+        }
+
+        var passwordCheck = await _signInManager.CheckPasswordSignInAsync(
+            actingUser,
+            request.CurrentPassword,
+            lockoutOnFailure: true);
+        if (!passwordCheck.Succeeded && !passwordCheck.RequiresTwoFactor)
+            throw new UnauthorizedAccessException("Step-up authentication failed.");
+
+        var authenticatorCode = request.AuthenticatorCode
+            .Replace(" ", string.Empty, StringComparison.Ordinal)
+            .Replace("-", string.Empty, StringComparison.Ordinal);
+        if (!await _userManager.VerifyTwoFactorTokenAsync(
+                actingUser,
+                TokenOptions.DefaultAuthenticatorProvider,
+                authenticatorCode))
+        {
+            await _userManager.AccessFailedAsync(actingUser);
+            throw new UnauthorizedAccessException("Step-up authentication failed.");
+        }
+        await _userManager.ResetAccessFailedCountAsync(actingUser);
+
+        var reason = request.Reason.Trim();
+        if (reason.Any(char.IsControl))
+            throw new BadRequestException("The reason cannot contain control characters.");
+
+        var statusChanged = false;
+        await _transaction.ExecuteWithAdminStatusLockAsync(async () =>
+        {
+            var currentActor = await _userManager.FindByIdAsync(actingUserId.ToString());
+            var target = await _userManager.FindByIdAsync(userId.ToString());
+            if (currentActor is null ||
+                currentActor.Role != UserRole.Admin ||
+                currentActor.Status != ProfileStatus.Active ||
+                !currentActor.EmailConfirmed ||
+                !currentActor.TwoFactorEnabled)
+            {
+                throw new UnauthorizedAccessException("Acting administrator is no longer authorized.");
+            }
+            if (target is null)
+                throw new NotFoundException("Target administrator profile not found.");
+            if (target.Role != UserRole.Admin)
+                throw new BadRequestException("The emergency workflow is only for administrator accounts.");
+
+            var action = newStatus == ProfileStatus.Suspended ? "SUSPEND" : "REACTIVATE";
+            var expectedConfirmation = $"{action} {target.Email}";
+            if (!string.Equals(
+                    request.Confirmation.Trim(),
+                    expectedConfirmation,
+                    StringComparison.Ordinal))
+            {
+                throw new BadRequestException(
+                    $"Type '{expectedConfirmation}' to confirm this emergency action.");
+            }
+            if (target.Status == newStatus)
+                throw new BadRequestException($"The administrator account is already {newStatus.ToString().ToLowerInvariant()}.");
+
+            var remainingActiveAdministrators = _userManager.Users.Count(user =>
+                user.Id != target.Id &&
+                user.Role == UserRole.Admin &&
+                user.Status == ProfileStatus.Active &&
+                user.EmailConfirmed &&
+                user.TwoFactorEnabled);
+            if (newStatus == ProfileStatus.Suspended && remainingActiveAdministrators < 1)
+            {
+                throw new BadRequestException(
+                    "The last operational administrator cannot be suspended.");
+            }
+
+            var oldStatus = target.Status;
+            target.Status = newStatus;
+            target.StatusChangedAtUtc = DateTime.UtcNow;
+            var update = await _userManager.UpdateSecurityStampAsync(target);
+            if (!update.Succeeded)
+                throw new InvalidOperationException("The administrator status could not be changed.");
+
+            if (!string.IsNullOrWhiteSpace(target.Email))
+            {
+                var template = newStatus == ProfileStatus.Active
+                    ? TransactionalEmailTemplates.AccountActivated
+                    : TransactionalEmailTemplates.AccountSuspended;
+                await _emailOutbox.EnqueueAsync(
+                    template,
+                    target.Email,
+                    new AccountStatusEmail(target.Name),
+                    dataSubjectGuestId: target.GuestId);
+            }
+
+            await _auditService.LogActionAsync(
+                actingUserId,
+                newStatus == ProfileStatus.Suspended
+                    ? "EMERGENCY_ADMIN_SUSPENDED"
+                    : "EMERGENCY_ADMIN_REACTIVATED",
+                "User",
+                target.Id.ToString(),
+                new { Status = oldStatus.ToString() },
+                new
+                {
+                    Status = newStatus.ToString(),
+                    Reason = reason,
+                    StepUpMethod = "PasswordAndTotp",
+                    RemainingOperationalAdministrators = remainingActiveAdministrators,
+                    OccurredAtUtc = DateTime.UtcNow
+                });
+            statusChanged = true;
+        });
+
+        if (statusChanged)
+        {
+            await _sessionRevocation.RevokeAsync(
+                userId,
+                newStatus == ProfileStatus.Suspended
+                    ? "EMERGENCY_ADMIN_SUSPENDED"
+                    : "EMERGENCY_ADMIN_REACTIVATED");
+        }
+    }
+
     public async Task UpdateUserAsync(Guid userId, UpdateStaffRequest request, Guid actingUserId)
     {
+        RequireActor(actingUserId);
+        if (userId == Guid.Empty) throw new NotFoundException("Target staff profile was not found.");
         var actingUser = await _userManager.FindByIdAsync(actingUserId.ToString());
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (actingUser is null || actingUser.Status != ProfileStatus.Active ||
@@ -259,16 +429,19 @@ public class StaffService : IStaffService
         if (user is null) throw new NotFoundException("Target staff profile was not found.");
         if (user.Role == UserRole.Admin)
             throw new UnauthorizedAccessException("Administrator accounts cannot be edited here.");
-        if (request.AssignedRole is UserRole.Admin or UserRole.Client)
+        if (!Enum.IsDefined(request.AssignedRole) || request.AssignedRole is UserRole.Admin or UserRole.Client)
             throw new UnauthorizedAccessException("Only Manager and Staff roles can be assigned here.");
         if (actingUser.Role == UserRole.Manager &&
             (user.Role != UserRole.Staff || request.AssignedRole != UserRole.Staff))
             throw new UnauthorizedAccessException("Managers can only edit Staff accounts.");
-        if (!string.IsNullOrWhiteSpace(request.Department) &&
-            !AllowedDepartments.Contains(request.Department))
+        var fullName = RequireText(request.FullName, "Full name", 160);
+        var normalizedEmail = RequireEmail(request.Email);
+        var phone = NormalizePhone(request.Phone);
+        var department = NormalizeDepartment(request.Department);
+        if (department is not null &&
+            !AllowedDepartments.Contains(department, StringComparer.Ordinal))
             throw new BadRequestException("The selected department is not recognized.");
 
-        var normalizedEmail = request.Email.Trim().ToLowerInvariant();
         var existing = await _userManager.FindByEmailAsync(normalizedEmail);
         if (existing is not null && existing.Id != userId)
             throw new BadRequestException("Email address is already assigned to another account.");
@@ -277,12 +450,12 @@ public class StaffService : IStaffService
         var emailChanged = !string.Equals(user.Email, normalizedEmail, StringComparison.OrdinalIgnoreCase);
         await _transaction.ExecuteWithUserLockAsync(userId, async () =>
         {
-            user.Name = request.FullName.Trim();
+            user.Name = fullName;
             user.Email = normalizedEmail;
             user.UserName = normalizedEmail;
-            user.PhoneNumber = request.Phone?.Trim();
+            user.PhoneNumber = phone;
             user.Role = request.AssignedRole;
-            user.Department = request.Department?.Trim();
+            user.Department = department;
 
             var update = await _userManager.UpdateAsync(user);
             if (!update.Succeeded)
@@ -324,23 +497,95 @@ public class StaffService : IStaffService
 
     public async Task DeleteUserAsync(Guid userId, Guid actingUserId)
     {
+        RequireActor(actingUserId);
+        if (userId == Guid.Empty) throw new NotFoundException("Target staff profile was not found.");
+        if (userId == actingUserId)
+            throw new BadRequestException("Administrators cannot decommission their own account.");
+        var actingUser = await _userManager.FindByIdAsync(actingUserId.ToString());
+        if (actingUser is null || actingUser.Role != UserRole.Admin ||
+            actingUser.Status != ProfileStatus.Active)
+        {
+            throw new UnauthorizedAccessException("An active administrator is required.");
+        }
         var user = await _userManager.FindByIdAsync(userId.ToString());
         if (user == null) return;
         if (user.Role == UserRole.Admin) throw new BadRequestException("Administrator accounts are protected.");
         await _transaction.ExecuteWithUserLockAsync(userId, async () =>
         {
-            var result = await _userManager.DeleteAsync(user);
+            var oldRole = user.Role;
+            var tombstoneEmail = $"decommissioned-{user.Id:N}@invalid.moorehotels.local";
+            user.Name = "Decommissioned staff account";
+            user.Email = tombstoneEmail;
+            user.UserName = tombstoneEmail;
+            user.PhoneNumber = null;
+            user.Department = null;
+            user.EmailConfirmed = false;
+            user.PhoneNumberConfirmed = false;
+            user.TwoFactorEnabled = false;
+            user.Status = ProfileStatus.Suspended;
+            user.StatusChangedAtUtc = DateTime.UtcNow;
+            user.LockoutEnabled = true;
+            user.LockoutEnd = DateTimeOffset.MaxValue;
+            var result = await _userManager.UpdateSecurityStampAsync(user);
             if (!result.Succeeded)
             {
-                throw new InvalidOperationException("The staff account could not be deleted.");
+                throw new InvalidOperationException("The staff account could not be decommissioned.");
             }
             await _auditService.LogActionAsync(
                 actingUserId,
-                "USER_DELETED",
+                "USER_DECOMMISSIONED",
                 "User",
                 userId.ToString(),
-                new { Role = user.Role.ToString() });
+                new { Role = oldRole.ToString() },
+                new { Status = ProfileStatus.Suspended.ToString(), PersonalDataRemoved = true });
         });
-        await _sessionRevocation.RevokeAsync(userId, "ACCOUNT_DELETED");
+        await _sessionRevocation.RevokeAsync(userId, "ACCOUNT_DECOMMISSIONED");
+    }
+
+    private static void RequireActor(Guid actorId)
+    {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The authenticated actor is invalid.");
+    }
+
+    private static string RequireText(string? value, string field, int maximumLength)
+    {
+        var cleaned = value?.Trim() ?? string.Empty;
+        if (cleaned.Length < 2 || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
+
+    private static string RequireEmail(string? value)
+    {
+        var email = value?.Trim().ToLowerInvariant() ?? string.Empty;
+        if (email.Length == 0 || email.Length > 254 || email.Any(char.IsControl) ||
+            !new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(email))
+        {
+            throw new BadRequestException("Email address is invalid.");
+        }
+        return email;
+    }
+
+    private static string? NormalizePhone(string? value)
+    {
+        if (value is null) return null;
+        var phone = value.Trim();
+        if (phone.Length > 30 || phone.Any(char.IsControl) ||
+            (phone.Length > 0 &&
+             !new System.ComponentModel.DataAnnotations.PhoneAttribute().IsValid(phone)))
+        {
+            throw new BadRequestException("Phone number is invalid.");
+        }
+        return phone.Length == 0 ? null : phone;
+    }
+
+    private static string? NormalizeDepartment(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var department = value.Trim();
+        if (department.Length > 80 || department.Any(char.IsControl))
+            throw new BadRequestException("The selected department is invalid.");
+        return department;
     }
 }

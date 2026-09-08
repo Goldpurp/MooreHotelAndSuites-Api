@@ -13,6 +13,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MooreHotels.Domain.Common;
 using System.Security.Claims;
+using System.Diagnostics;
+using System.Security.Cryptography;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -90,9 +92,8 @@ public class BookingsController : ControllerBase
                 accountUserId = parsedUserId;
 
             var accessToken = Request.Headers["X-Booking-Access-Token"].ToString();
-            booking = await _bookingService.GetBookingByCodeAndEmailAsync(
+            booking = await _bookingService.GetBookingWithAccessAsync(
                 code,
-                email: null,
                 accessToken,
                 accountUserId);
         }
@@ -107,30 +108,24 @@ public class BookingsController : ControllerBase
         return File(pdfBytes, "application/pdf", $"Invoice-{code}.pdf");
     }
 
-    [HttpGet("lookup")]
+    [HttpPost("lookup")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.LookupRateLimitPolicy)]
     public async Task<IActionResult> LookupBooking(
-        [FromQuery] string code,
-        [FromQuery] string? email,
+        [FromBody] LookupBookingRequest request,
         [FromHeader(Name = "X-Booking-Access-Token")] string? accessToken)
     {
-        if (string.IsNullOrWhiteSpace(code))
-            return BadRequest(new { Message = "Booking code is required for lookup." });
-
         Guid? accountUserId = null;
         if (Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedUserId))
             accountUserId = parsedUserId;
         if (string.IsNullOrWhiteSpace(accessToken) &&
-            string.IsNullOrWhiteSpace(email) &&
             !accountUserId.HasValue)
         {
             return BadRequest(new { Message = "Use a secure booking link or sign in to view this reservation." });
         }
 
-        var dto = await _bookingService.GetBookingByCodeAndEmailAsync(
-            code,
-            email,
+        var dto = await _bookingService.GetBookingWithAccessAsync(
+            request.Code,
             accessToken,
             accountUserId);
         return dto == null
@@ -176,8 +171,6 @@ public class BookingsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> VerifyMonnify(
         string code,
-        [FromQuery] string? paymentReference,
-        [FromQuery] string? transactionReference,
         CancellationToken cancellationToken)
     {
         if (!_monnifySettings.Enabled)
@@ -186,11 +179,6 @@ public class BookingsController : ControllerBase
                 "Monnify payment verification is not enabled.");
         }
 
-        // Legacy query parameters are accepted only so older dashboards keep
-        // working. They are intentionally ignored: the server-owned reference
-        // persisted during initialization is the sole verification input.
-        _ = paymentReference;
-        _ = transactionReference;
         var booking = await _bookingRepo.GetByCodeAsync(code.Trim().ToUpperInvariant());
         if (booking is null || booking.PaymentMethod != PaymentMethod.Monnify)
         {
@@ -297,7 +285,9 @@ public class BookingsController : ControllerBase
 
     [HttpPost("{id}/cancel")]
     [Authorize(Policy = HotelAuthorization.ReservationsManage)]
-    public async Task<IActionResult> CancelBookingAdmin(Guid id, [FromQuery] string? reason = null)
+    public async Task<IActionResult> CancelBookingAdmin(
+        Guid id,
+        [FromBody] AdminCancelBookingRequest request)
     {
         // 1. Robust User ID Extraction
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -308,7 +298,7 @@ public class BookingsController : ControllerBase
 
         var dto = await ExecuteBookingMutationAsync(
             id,
-            () => _bookingService.CancelBookingAsync(id, userId, reason));
+            () => _bookingService.CancelBookingAsync(id, userId, request.Reason));
         return Ok(new { Message = "Booking cancelled.", Data = dto });
     }
 
@@ -331,7 +321,6 @@ public class BookingsController : ControllerBase
             request.BookingCode,
             () => _bookingService.CancelBookingByGuestAsync(
                 request.BookingCode,
-                request.Email,
                 request.GuestAccessToken,
                 accountUserId,
                 HttpContext.TraceIdentifier,
@@ -346,6 +335,7 @@ public class BookingsController : ControllerBase
     public async Task<IActionResult> RequestAccessLink(
         [FromBody] RequestBookingAccessLinkRequest request)
     {
+        var started = Stopwatch.StartNew();
         if (ModelState.IsValid)
         {
             await ExecuteBookingCodeMutationAsync(
@@ -355,6 +345,10 @@ public class BookingsController : ControllerBase
                     request.Email,
                     HttpContext.TraceIdentifier));
         }
+
+        var targetMilliseconds = RandomNumberGenerator.GetInt32(250, 451);
+        var remaining = targetMilliseconds - (int)started.ElapsedMilliseconds;
+        if (remaining > 0) await Task.Delay(remaining, HttpContext.RequestAborted);
 
         // Deliberately identical for existing and unknown reservations to prevent
         // booking-code or guest-email discovery.
@@ -452,7 +446,6 @@ public class BookingsController : ControllerBase
     private static PublicBookingDto ToPublicBooking(BookingDto booking) => new(
         booking.Id,
         booking.BookingCode,
-        booking.RoomId,
         booking.GuestFirstName,
         booking.GuestLastName,
         booking.GuestEmail,
@@ -483,7 +476,12 @@ public class BookingsController : ControllerBase
         booking.RoomTypeCode,
         booking.RoomTypeName,
         booking.RoomQuantity,
-        booking.Rooms,
+        booking.Rooms?.Select(room => new PublicReservationRoomDto(
+            room.Id,
+            room.Sequence,
+            room.RoomTypeId,
+            room.RoomTypeCode,
+            room.RoomTypeName)).ToArray(),
         booking.Folio,
         booking.ReservationPolicy);
 

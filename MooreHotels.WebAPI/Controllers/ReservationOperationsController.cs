@@ -41,7 +41,8 @@ public sealed class ReservationOperationsController : ControllerBase
         Guid bookingId,
         [FromBody] CreatePricingQuoteRequest request,
         CancellationToken cancellationToken) =>
-        Ok(await _pricing.CreateAmendmentQuoteAsync(bookingId, request, cancellationToken));
+        Ok(await _pricing.CreateAmendmentQuoteAsync(
+            bookingId, request, ActorId(), cancellationToken));
 
     private Guid ActorId() =>
         Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id)

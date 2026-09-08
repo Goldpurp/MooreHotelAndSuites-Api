@@ -18,17 +18,20 @@ public class OperationsController : ControllerBase
     private readonly IBookingRepository _bookingRepo;
     private readonly MooreHotelsDbContext _dbContext;
     private readonly IOperationalReportingService _reporting;
+    private readonly IHotelTimeService _hotelTime;
 
     public OperationsController(
         IOperationService operationService,
         IBookingRepository bookingRepo,
         MooreHotelsDbContext dbContext,
-        IOperationalReportingService reporting)
+        IOperationalReportingService reporting,
+        IHotelTimeService hotelTime)
     {
         _operationService = operationService;
         _bookingRepo = bookingRepo;
         _dbContext = dbContext;
         _reporting = reporting;
+        _hotelTime = hotelTime;
     }
 
     [HttpGet("ledger")]
@@ -57,9 +60,8 @@ public class OperationsController : ControllerBase
     [HttpGet("stats/daily")]
     public async Task<IActionResult> GetDailyStats(CancellationToken cancellationToken)
     {
-        var todayUtc = DateTime.UtcNow.Date;
-        var checkInsToday = await _bookingRepo.GetCheckInsCountAsync(todayUtc, cancellationToken);
-        var checkOutsToday = await _bookingRepo.GetCheckOutsCountAsync(todayUtc, cancellationToken);
+        var today = _hotelTime.Today;
+        var report = await _reporting.GetReportAsync(today, today, cancellationToken);
         var historicalTrace = await _bookingRepo.GetTotalBookingsCountAsync(cancellationToken);
 
         // This metric describes outbound delivery, not audit-log integrity.
@@ -69,8 +71,8 @@ public class OperationsController : ControllerBase
 
         return Ok(new
         {
-            CheckInsToday = checkInsToday,
-            CheckOutsToday = checkOutsToday,
+            CheckInsToday = report.ActualCheckIns,
+            CheckOutsToday = report.ActualCheckOuts,
             HistoricalTrace = historicalTrace,
             EmailDeliveryHealth = unhandledFailures == 0 ? "Operational" : "AttentionRequired",
             ExhaustedEmailCount = unhandledFailures

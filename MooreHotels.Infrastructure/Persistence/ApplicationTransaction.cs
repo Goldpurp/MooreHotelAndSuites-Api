@@ -38,4 +38,19 @@ public sealed class ApplicationTransaction : MooreHotels.Application.Interfaces.
 
             await operation();
         }, cancellationToken);
+
+    public Task ExecuteWithAdminStatusLockAsync(
+        Func<Task> operation,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync(async () =>
+        {
+            // Serializes the rare emergency workflow. Without a shared lock,
+            // two administrators could concurrently suspend one another after
+            // both observed an apparently safe active-admin count.
+            await _db.Database.ExecuteSqlRawAsync(
+                "LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE",
+                cancellationToken);
+            _db.ChangeTracker.Clear();
+            await operation();
+        }, cancellationToken);
 }

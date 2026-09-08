@@ -75,10 +75,7 @@ public class BookingService : IBookingService
         string email,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(email))
-            throw new BadRequestException("A valid guest email is required.");
-
-        var normalizedEmail = email.Trim().ToLowerInvariant();
+        var normalizedEmail = RequireEmail(email);
         var token = BookingGuestAccess.GenerateToken();
         var now = DateTime.UtcNow;
         var publicAppUrl = _config["PublicAppUrl"]
@@ -87,7 +84,6 @@ public class BookingService : IBookingService
             publicAppUrl,
             "/book",
             [
-                new("email", normalizedEmail),
                 new("bookingVerificationToken", token)
             ]);
         var verification = new BookingEmailVerification
@@ -113,13 +109,20 @@ public class BookingService : IBookingService
     public async Task<BookingDto> CreateBookingAsync(CreateBookingRequest request, Guid? accountUserId = null)
     {
         // 1. Validation Logic
-        if (string.IsNullOrWhiteSpace(request.GuestEmail)) throw new BadRequestException("Guest email is required.");
-        if (string.IsNullOrWhiteSpace(request.GuestFirstName)) throw new BadRequestException("Guest first name is required.");
-        if (string.IsNullOrWhiteSpace(request.GuestLastName)) throw new BadRequestException("Guest last name is required.");
-        if (string.IsNullOrWhiteSpace(request.GuestPhone)) throw new BadRequestException("Guest phone number is required.");
-        if (request.AdultCount < 1 || request.ChildCount < 0)
-            throw new BadRequestException("A booking requires at least one adult and cannot contain a negative guest count.");
+        var normalizedEmail = RequireEmail(request.GuestEmail);
+        var firstName = RequireText(request.GuestFirstName, "Guest first name", 80);
+        var lastName = RequireText(request.GuestLastName, "Guest last name", 80);
+        var phone = RequirePhone(request.GuestPhone);
+        var notes = NormalizeOptionalText(request.Notes, "Booking notes", 1000);
+        ValidateOptionalToken(request.EmailVerificationToken, "Email verification token");
+        ValidateOptionalToken(request.QuoteToken, "Quote token");
+        ValidateOptionalText(request.PrivacyPolicyVersion, "Privacy policy version", 80);
+        ValidateOptionalText(request.BookingTermsVersion, "Booking terms version", 80);
+        if (request.AdultCount is < 1 or > 20 || request.ChildCount is < 0 or > 20)
+            throw new BadRequestException("A booking requires 1-20 adults and 0-20 children.");
         if (!request.PaymentMethod.HasValue) throw new BadRequestException("A payment method is required.");
+        if (!Enum.IsDefined(request.PaymentMethod.Value))
+            throw new BadRequestException("The payment method is invalid.");
         if (request.PaymentMethod == PaymentMethod.Paystack)
         {
             throw new BadRequestException(
@@ -153,8 +156,6 @@ public class BookingService : IBookingService
                 "Accept the current privacy policy and booking terms before creating a reservation.");
         }
 
-        var normalizedEmail = request.GuestEmail.Trim().ToLowerInvariant();
-
         // Authenticated client reservations use the guest identity linked to
         // the signed-in account and do not require a second email challenge.
         Guest? guest = null;
@@ -164,12 +165,22 @@ public class BookingService : IBookingService
             var account = await _userManager.FindByIdAsync(accountUserId.Value.ToString());
             if (account?.Role == UserRole.Client)
             {
+                if (account.Status != ProfileStatus.Active || !account.EmailConfirmed)
+                    throw new UnauthorizedAccessException("The client account is not active and verified.");
                 if (string.IsNullOrWhiteSpace(account.GuestId))
                     throw new BadRequestException("This client account requires guest-profile reconciliation before booking.");
 
                 guest = await _guestRepo.GetByIdAsync(account.GuestId);
                 if (guest is null)
                     throw new BadRequestException("This client account requires guest-profile reconciliation before booking.");
+                if (!string.Equals(
+                        normalizedEmail,
+                        guest.NormalizedEmail,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new BadRequestException(
+                        "The booking email must match the verified email on the client account.");
+                }
                 linkedClientBooking = true;
             }
         }
@@ -207,6 +218,8 @@ public class BookingService : IBookingService
                 "Select exactly one inventory scope: a room type or a legacy physical room.");
         if (request.RoomQuantity is < 1 or > 10)
             throw new BadRequestException("Room quantity must be between 1 and 10.");
+        if (request.RoomId == Guid.Empty || request.RoomTypeId == Guid.Empty || request.QuoteId == Guid.Empty)
+            throw new BadRequestException("A supplied booking identifier is invalid.");
 
         Room? room = null;
         RoomType? roomType;
@@ -280,8 +293,8 @@ public class BookingService : IBookingService
         // existing guest only by an exact normalized e-mail and name match.
         guest ??= await _guestRepo.GetByEmailAndNameAsync(
             normalizedEmail,
-            request.GuestFirstName.Trim(),
-            request.GuestLastName.Trim());
+            firstName,
+            lastName);
 
         var newGuest = guest is null;
         if (guest == null)
@@ -289,12 +302,12 @@ public class BookingService : IBookingService
             guest = new Guest
             {
                 Id = $"GS-{Guid.NewGuid():N}"[..19].ToUpperInvariant(),
-                Email = request.GuestEmail.Trim().ToLowerInvariant(),
+                Email = normalizedEmail,
                 NormalizedEmail = normalizedEmail,
-                FirstName = request.GuestFirstName.Trim(),
-                LastName = request.GuestLastName.Trim(),
-                Phone = request.GuestPhone.Trim(),
-                NormalizedPhone = NormalizePhone(request.GuestPhone),
+                FirstName = firstName,
+                LastName = lastName,
+                Phone = phone,
+                NormalizedPhone = NormalizePhone(phone),
                 EmailVerifiedAtUtc = emailVerification?.VerifiedAtUtc
             };
         }
@@ -308,6 +321,8 @@ public class BookingService : IBookingService
         var legacyRoomSubtotal = (room?.PricePerNight ?? roomType.BasePricePerNight) *
                                  nights * request.RoomQuantity;
         var totalAmount = quote?.TotalAmount ?? legacyRoomSubtotal;
+        if (totalAmount <= 0 || totalAmount > 9999999999999999m)
+            throw new BadRequestException("The booking total is outside the supported payment range.");
         var bookingCode = await _bookingRepo.GenerateBookingCodeAsync();
 
         // 4. Build the booking. For Monnify, initialize against a reference
@@ -342,7 +357,7 @@ public class BookingService : IBookingService
             Amount = totalAmount,
             PaymentStatus = request.PaymentMethod == PaymentMethod.DirectTransfer ? PaymentStatus.AwaitingVerification : PaymentStatus.Unpaid,
             PaymentMethod = request.PaymentMethod.Value,
-            Notes = request.Notes,
+            Notes = notes,
             StatusHistoryJson = "[]", // FIX: Initialised as empty JSON array to prevent Deserialization errors
             GuestAccessTokenHash = BookingGuestAccess.Hash(guestAccessToken),
             GuestAccessTokenIssuedAtUtc = guestAccessIssuedAtUtc,
@@ -429,7 +444,8 @@ public class BookingService : IBookingService
                     booking.CheckOut,
                     nights,
                     totalAmount,
-                    manageBookingUrl))
+                    manageBookingUrl),
+                dataSubjectGuestId: guest.Id)
         };
 
         var adminEmail = _config["EmailSettings:AdminNotificationEmail"] ?? _config["EmailSettings:SenderEmail"];
@@ -451,7 +467,8 @@ public class BookingService : IBookingService
                     nights,
                     totalAmount,
                     guest.Email,
-                    guest.Phone)));
+                    guest.Phone),
+                dataSubjectGuestId: guest.Id));
         }
 
         // Guest PII, the room reservation, and its required emails commit as
@@ -474,7 +491,10 @@ public class BookingService : IBookingService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "New-booking notification failed for {Code}.", booking.BookingCode);
+            _logger.LogWarning(
+                "New-booking notification failed for {Code} with {ExceptionType}.",
+                booking.BookingCode,
+                ex.GetType().Name);
         }
 
         string? paymentInstruction = (booking.PaymentMethod == PaymentMethod.DirectTransfer) ? GetTransferInstructions() : null;
@@ -489,18 +509,18 @@ public class BookingService : IBookingService
 
     public async Task<BookingDto?> GetBookingByCodeAsync(string code)
     {
-        var b = await _bookingRepo.GetByCodeAsync(code);
+        var normalizedCode = NormalizeBookingCode(code);
+        var b = await _bookingRepo.GetByCodeAsync(normalizedCode);
         return b != null ? MapToDto(b) : null;
     }
 
-    public async Task<BookingDto?> GetBookingByCodeAndEmailAsync(
+    public async Task<BookingDto?> GetBookingWithAccessAsync(
         string code,
-        string? email,
         string? guestAccessToken = null,
         Guid? accountUserId = null)
     {
-        if (string.IsNullOrWhiteSpace(code)) return null;
-        var b = await _bookingRepo.GetByCodeAsync(code.Trim().ToUpperInvariant());
+        if (!TryNormalizeBookingCode(code, out var normalizedCode)) return null;
+        var b = await _bookingRepo.GetByCodeAsync(normalizedCode);
         if (b is null) return null;
 
         if (await IsAccountOwnerAsync(b, accountUserId) ||
@@ -517,10 +537,12 @@ public class BookingService : IBookingService
         string email,
         string requestId)
     {
-        if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(email)) return;
-        var booking = await _bookingRepo.GetByCodeAsync(code.Trim().ToUpperInvariant());
+        if (!TryNormalizeBookingCode(code, out var normalizedCode) ||
+            !TryNormalizeEmail(email, out var normalizedEmail) ||
+            IsInvalidAuditValue(requestId, 160)) return;
+        var booking = await _bookingRepo.GetByCodeAsync(normalizedCode);
         if (booking?.Guest is null ||
-            !booking.Guest.Email.Equals(email.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            !booking.Guest.Email.Equals(normalizedEmail, StringComparison.OrdinalIgnoreCase) ||
             booking.Status == BookingStatus.Cancelled)
         {
             return;
@@ -566,7 +588,8 @@ public class BookingService : IBookingService
             new BookingAccessLinkEmail(
                 $"{booking.Guest.FirstName} {booking.Guest.LastName}",
                 booking.BookingCode,
-                BuildManageBookingUrl(booking.BookingCode, token)));
+                BuildManageBookingUrl(booking.BookingCode, token)),
+            dataSubjectGuestId: booking.GuestId);
     }
 
     public async Task<IEnumerable<BookingDto>> GetAllBookingsAsync()
@@ -583,6 +606,12 @@ public class BookingService : IBookingService
         string? search = null,
         CancellationToken cancellationToken = default)
     {
+        if (status.HasValue && !Enum.IsDefined(status.Value) ||
+            paymentStatus.HasValue && !Enum.IsDefined(paymentStatus.Value) ||
+            IsInvalidAuditValue(search, 120))
+        {
+            throw new BadRequestException("Booking filters are invalid or too long.");
+        }
         var paged = await _bookingRepo.GetPagedBookingsAsync(
             pageNumber,
             pageSize,
@@ -597,13 +626,15 @@ public class BookingService : IBookingService
 
     public async Task<BookingDto> UpdateStatusAsync(Guid bookingId, BookingStatus status, Guid userId)
     {
+        if (bookingId == Guid.Empty) throw new NotFoundException("Booking not found.");
+        if (!Enum.IsDefined(status)) throw new BadRequestException("Booking status is invalid.");
+        var actingUser = await GetActiveReservationOperatorAsync(userId);
         var booking = await _bookingRepo.GetByIdAsync(bookingId);
         if (booking == null) throw new NotFoundException("Booking not found.");
 
         // FIX: Ensure Guest navigation property is loaded to prevent NullRef in Emails
         if (booking.Guest == null) throw new InvalidOperationException("Booking guest data could not be loaded.");
 
-        var actingUser = await _userManager.FindByIdAsync(userId.ToString());
         var assignedRooms = booking.ReservationRooms
             .Where(item => item.AssignedRoom is not null)
             .OrderBy(item => item.Sequence)
@@ -678,8 +709,7 @@ public class BookingService : IBookingService
 
 
         // FIX: Robust JSON handling logic
-        var rawHistory = string.IsNullOrWhiteSpace(booking.StatusHistoryJson) ? "[]" : booking.StatusHistoryJson;
-        var history = JsonSerializer.Deserialize<List<object>>(rawHistory) ?? new List<object>();
+        var history = ReadStatusHistory(booking.StatusHistoryJson);
 
         history.Add(new { Status = status, Timestamp = DateTime.UtcNow, Actor = actingUser?.Name ?? "System" });
         booking.StatusHistoryJson = JsonSerializer.Serialize(history);
@@ -706,7 +736,8 @@ public class BookingService : IBookingService
                 new CheckOutThankYouEmail(
                     booking.Guest.FirstName,
                     booking.BookingCode,
-                    room?.Name ?? "Reserved Room"));
+                    room?.Name ?? "Reserved Room"),
+                dataSubjectGuestId: booking.GuestId);
         }
         else if (status == BookingStatus.NoShow)
         {
@@ -719,7 +750,8 @@ public class BookingService : IBookingService
                     room?.Name ?? "Reserved Room",
                     room?.Category.ToString() ?? "Standard",
                     booking.CheckIn,
-                    "The reservation was marked as a no-show after the scheduled check-in time."));
+                    "The reservation was marked as a no-show after the scheduled check-in time."),
+                dataSubjectGuestId: booking.GuestId);
         }
 
         return MapToDto(booking);
@@ -732,6 +764,9 @@ public class BookingService : IBookingService
         string requestId,
         CancellationToken cancellationToken = default)
     {
+        var normalizedCode = NormalizeBookingCode(bookingCode);
+        if (IsInvalidAuditValue(requestId, 160))
+            throw new BadRequestException("The request identifier is invalid.");
         if (!string.Equals(
                 request.ConfirmationText,
                 ManualTransferConfirmation.RequiredText,
@@ -742,14 +777,15 @@ public class BookingService : IBookingService
         }
 
         var actingUser = await _userManager.FindByIdAsync(actingUserId.ToString());
-        if (actingUser is null || actingUser.Role is not (UserRole.Admin or UserRole.Manager))
+        if (actingUser is null || actingUser.Status != ProfileStatus.Active ||
+            actingUser.Role is not (UserRole.Admin or UserRole.Manager))
         {
             throw new UnauthorizedAccessException(
                 "Only an authenticated Admin or Manager can confirm a bank transfer.");
         }
 
         return await _bookingRepo.ConfirmManualTransferAsync(
-            bookingCode.Trim().ToUpperInvariant(),
+            normalizedCode,
             new ManualTransferConfirmationActor(
                 actingUser.Id,
                 actingUser.Name,
@@ -760,15 +796,19 @@ public class BookingService : IBookingService
 
     public async Task<BookingDto> CancelBookingAsync(Guid bookingId, Guid userId, string? reason = null)
     {
+        if (bookingId == Guid.Empty) throw new NotFoundException("Booking record not found.");
+        var normalizedReason = NormalizeOptionalText(reason, "Cancellation reason", 500);
+        var actingUser = await GetActiveReservationOperatorAsync(userId);
         var booking = await _bookingRepo.GetByIdAsync(bookingId);
-        if (booking == null) throw new KeyNotFoundException("Booking record not found.");
+        if (booking == null) throw new NotFoundException("Booking record not found.");
+        if (booking.Guest is null)
+            throw new InvalidOperationException("Booking guest data could not be loaded.");
 
         if (booking.Status == BookingStatus.Cancelled) return MapToDto(booking);
 
         if (booking.Status is BookingStatus.CheckedIn or BookingStatus.CheckedOut or BookingStatus.NoShow)
             throw new BadRequestException("Active or completed stays cannot be cancelled.");
 
-        var actingUser = await _userManager.FindByIdAsync(userId.ToString());
         var oldStatus = booking.Status;
         var room = booking.Room;
 
@@ -778,15 +818,15 @@ public class BookingService : IBookingService
         booking.PaymentCheckoutUrl = null;
 
         await _folioService.ApplyCancellationCreditAsync(
-            booking, reason ?? "Cancelled by Admin", userId);
+            booking, normalizedReason ?? "Cancelled by staff", actingUser.Id);
 
-        var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? new();
+        var history = ReadStatusHistory(booking.StatusHistoryJson);
         history.Add(new
         {
             Status = BookingStatus.Cancelled,
             Timestamp = DateTime.UtcNow,
             Actor = actingUser?.UserName ?? "Staff",
-            Reason = reason ?? "Cancelled by Admin",
+            Reason = normalizedReason ?? "Cancelled by staff",
             PaymentShift = booking.PaymentStatus.ToString() // Will show 'RefundPending' if it was 'Paid'
         });
         booking.StatusHistoryJson = JsonSerializer.Serialize(history);
@@ -808,21 +848,22 @@ public class BookingService : IBookingService
             {
                 Status = booking.Status.ToString(),
                 PaymentStatus = booking.PaymentStatus.ToString(),
-                Reason = reason
+                Reason = normalizedReason
             }),
             CreatedAt = DateTime.UtcNow
         });
 
         await _emailOutbox.EnqueueAsync(
             TransactionalEmailTemplates.Cancellation,
-            booking.Guest!.Email,
+            booking.Guest.Email,
             new CancellationEmail(
                 $"{booking.Guest.FirstName} {booking.Guest.LastName}",
                 booking.BookingCode,
                 room?.Name ?? "Reserved Room",
                 room?.Category.ToString() ?? "Standard",
                 booking.CheckIn,
-                reason));
+                normalizedReason),
+            dataSubjectGuestId: booking.GuestId);
 
         if (booking.PaymentStatus == PaymentStatus.RefundPending)
         {
@@ -837,7 +878,8 @@ public class BookingService : IBookingService
                         $"{booking.Guest?.FirstName} {booking.Guest?.LastName}",
                         booking.BookingCode,
                         room?.Name ?? "Reserved Room",
-                        refundableAmount));
+                        refundableAmount),
+                    dataSubjectGuestId: booking.GuestId);
             }
         }
         return MapToDto(booking);
@@ -845,13 +887,19 @@ public class BookingService : IBookingService
 
     public async Task<BookingDto> CancelBookingByGuestAsync(
         string bookingCode,
-        string? email,
         string? guestAccessToken,
         Guid? accountUserId,
         string requestId,
         string? reason = null)
     {
-        var booking = await _bookingRepo.GetByCodeAsync(bookingCode.Trim().ToUpperInvariant());
+        var normalizedCode = NormalizeBookingCode(bookingCode);
+        var normalizedReason = NormalizeOptionalText(reason, "Cancellation reason", 500);
+        if (IsInvalidAuditValue(requestId, 160))
+            throw new BadRequestException("The request identifier is invalid.");
+        ValidateOptionalToken(guestAccessToken, "Guest access token");
+        if (accountUserId == Guid.Empty)
+            throw new UnauthorizedAccessException("Verification failed.");
+        var booking = await _bookingRepo.GetByCodeAsync(normalizedCode);
         if (booking?.Guest is null)
             throw new UnauthorizedAccessException("Verification failed.");
 
@@ -879,14 +927,14 @@ public class BookingService : IBookingService
         booking.PaymentCheckoutUrl = null;
         var cancellationActor = accountUserId ?? BookingPaymentPolicy.SystemActorId;
         await _folioService.ApplyCancellationCreditAsync(
-            booking, reason ?? "Self-service cancellation", cancellationActor);
-        var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? new();
+            booking, normalizedReason ?? "Self-service cancellation", cancellationActor);
+        var history = ReadStatusHistory(booking.StatusHistoryJson);
         history.Add(new
         {
             Status = BookingStatus.Cancelled,
             Timestamp = DateTime.UtcNow,
             Actor = isOwner ? "AuthenticatedGuest" : "SecureGuestLink",
-            Reason = reason ?? "Self-service cancellation",
+            Reason = normalizedReason ?? "Self-service cancellation",
             PaymentShift = booking.PaymentStatus.ToString()
         });
         booking.StatusHistoryJson = JsonSerializer.Serialize(history);
@@ -914,7 +962,7 @@ public class BookingService : IBookingService
                 booking.GuestId,
                 Status = booking.Status.ToString(),
                 PaymentStatus = booking.PaymentStatus.ToString(),
-                Reason = reason,
+                Reason = normalizedReason,
                 RequestId = requestId,
                 TimestampUtc = DateTime.UtcNow
             }),
@@ -929,7 +977,8 @@ public class BookingService : IBookingService
                 room?.Name ?? "Reserved Room",
                 room?.Category.ToString() ?? "Standard",
                 booking.CheckIn,
-                reason));
+                normalizedReason),
+            dataSubjectGuestId: booking.GuestId);
 
         if (booking.PaymentStatus == PaymentStatus.RefundPending)
         {
@@ -943,7 +992,8 @@ public class BookingService : IBookingService
                         $"{booking.Guest.FirstName} {booking.Guest.LastName}",
                         booking.BookingCode,
                         room?.Name ?? "Reserved Room",
-                        refundableAmount));
+                        refundableAmount),
+                    dataSubjectGuestId: booking.GuestId);
             }
         }
 
@@ -955,6 +1005,11 @@ public class BookingService : IBookingService
         ApproveRefundRequest request,
         Guid approvingUserId)
     {
+        if (bookingId == Guid.Empty) throw new NotFoundException("Booking not found.");
+        var reason = RequireText(request.Reason, "Refund approval reason", 500, minimumLength: 10);
+        if (request.Amount is <= 0 or > 9999999999999999m)
+            throw new BadRequestException("The refund approval amount is invalid.");
+        var approvingUser = await GetActiveRefundOperatorAsync(approvingUserId);
         var booking = await _bookingRepo.GetByIdAsync(bookingId);
         if (booking == null) throw new NotFoundException("Booking not found.");
         if (booking.PaymentStatus != PaymentStatus.RefundPending)
@@ -973,7 +1028,6 @@ public class BookingService : IBookingService
         if (approvedAmount < threshold)
             throw new BadRequestException("This refund is below the dual-approval threshold.");
 
-        var approvingUser = await GetActiveRefundOperatorAsync(approvingUserId);
         if (booking.RefundApprovedByUserId.HasValue)
         {
             var priorApprovalWasConsumed = booking.RefundProcessedAtUtc.HasValue &&
@@ -991,7 +1045,7 @@ public class BookingService : IBookingService
         booking.RefundApprovedByUserId = approvingUserId;
         booking.RefundApprovedAtUtc = approvedAtUtc;
         booking.RefundApprovedAmount = approvedAmount;
-        var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? [];
+        var history = ReadStatusHistory(booking.StatusHistoryJson);
         history.Add(new
         {
             Action = "HIGH_VALUE_REFUND_APPROVED",
@@ -1014,7 +1068,7 @@ public class BookingService : IBookingService
                 booking.BookingCode,
                 ApprovedAmount = approvedAmount,
                 Threshold = threshold,
-                Reason = request.Reason.Trim(),
+                Reason = reason,
                 ApprovedAtUtc = approvedAtUtc
             }),
             CreatedAt = approvedAtUtc
@@ -1027,9 +1081,17 @@ public class BookingService : IBookingService
         CompleteRefundRequest request,
         Guid processingUserId)
     {
-        var transactionRef = request.TransactionReference.Trim().ToUpperInvariant();
-        if (transactionRef.Length is < 4 or > 160)
+        if (bookingId == Guid.Empty) throw new NotFoundException("Booking not found.");
+        var transactionRef = request.TransactionReference?.Trim().ToUpperInvariant() ?? string.Empty;
+        if (transactionRef.Length is < 4 or > 160 || transactionRef.Any(char.IsControl))
             throw new BadRequestException("A valid external refund reference is required.");
+        if (request.Amount is <= 0 or > 9999999999999999m)
+            throw new BadRequestException("The refund amount is invalid.");
+        if (request.Channel is not ("BankTransfer" or "Cash" or "Monnify") ||
+            request.EvidenceType is not ("BankStatement" or "ProviderReceipt" or "CashVoucher"))
+            throw new BadRequestException("The refund channel or evidence type is invalid.");
+        var notes = NormalizeOptionalText(request.Notes, "Refund notes", 500);
+        var processingUser = await GetActiveRefundOperatorAsync(processingUserId);
         var booking = await _bookingRepo.GetByIdAsync(bookingId);
         if (booking == null) throw new NotFoundException("Booking not found.");
         if (booking.Folio?.Entries.Any(entry =>
@@ -1056,7 +1118,6 @@ public class BookingService : IBookingService
         if (!validEvidenceForChannel)
             throw new BadRequestException("The evidence type does not match the refund channel.");
 
-        var processingUser = await GetActiveRefundOperatorAsync(processingUserId);
         var threshold = _config.GetValue(
             "FinancialControls:HighValueRefundThreshold",
             500000m);
@@ -1085,17 +1146,17 @@ public class BookingService : IBookingService
             request.Amount,
             transactionRef,
             request.Channel.Trim(),
-            request.Notes,
+            notes,
             processingUserId);
         booking.RefundReference = transactionRef;
         booking.RefundAmount = FolioAccounting.Money((booking.RefundAmount ?? 0m) + request.Amount);
         booking.RefundChannel = request.Channel.Trim();
         booking.RefundEvidenceType = request.EvidenceType.Trim();
-        booking.RefundNotes = request.Notes?.Trim();
+        booking.RefundNotes = notes;
         booking.RefundProcessedByUserId = processingUserId;
         booking.RefundProcessedAtUtc = processedAtUtc;
 
-        var history = JsonSerializer.Deserialize<List<object>>(booking.StatusHistoryJson ?? "[]") ?? [];
+        var history = ReadStatusHistory(booking.StatusHistoryJson);
         history.Add(new
         {
             Action = "MANUAL_REFUND_COMPLETED",
@@ -1140,7 +1201,8 @@ public class BookingService : IBookingService
                 booking.BookingCode,
                 room?.Name ?? "Reserved Room",
                 request.Amount,
-                transactionRef));
+                transactionRef),
+            dataSubjectGuestId: booking.GuestId);
 
         return MapToDto(booking);
     }
@@ -1303,6 +1365,8 @@ public class BookingService : IBookingService
         if (!accountUserId.HasValue) return false;
         var account = await _userManager.FindByIdAsync(accountUserId.Value.ToString());
         return account?.Role == UserRole.Client &&
+               account.Status == ProfileStatus.Active &&
+               account.EmailConfirmed &&
                !string.IsNullOrWhiteSpace(account.GuestId) &&
                string.Equals(account.GuestId, booking.GuestId, StringComparison.Ordinal);
     }
@@ -1320,6 +1384,118 @@ public class BookingService : IBookingService
 
         return user;
     }
+
+    private async Task<ApplicationUser> GetActiveReservationOperatorAsync(Guid userId)
+    {
+        if (userId == Guid.Empty)
+            throw new UnauthorizedAccessException("The authenticated operator is invalid.");
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        var mayManageReservations = user?.Role is UserRole.Admin or UserRole.Manager ||
+                                    user?.Role == UserRole.Staff &&
+                                    user.Department is "Reception" or "FrontDesk";
+        if (user is null || user.Status != ProfileStatus.Active || !mayManageReservations)
+        {
+            throw new UnauthorizedAccessException(
+                "Only an active reservations operator can change a booking.");
+        }
+        return user;
+    }
+
+    private List<object> ReadStatusHistory(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try
+        {
+            var history = JsonSerializer.Deserialize<List<object>>(json) ?? [];
+            return history.Count <= 199 ? history : history.TakeLast(199).ToList();
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(
+                "Invalid booking status history was reset during a lifecycle transition after {ExceptionType}.",
+                ex.GetType().Name);
+            return [];
+        }
+    }
+
+    private static string NormalizeBookingCode(string? value)
+    {
+        if (!TryNormalizeBookingCode(value, out var normalized))
+            throw new BadRequestException("Booking code is invalid.");
+        return normalized;
+    }
+
+    private static bool TryNormalizeBookingCode(string? value, out string normalized)
+    {
+        normalized = value?.Trim().ToUpperInvariant() ?? string.Empty;
+        return normalized.Length is >= 4 and <= 30 &&
+               !normalized.Any(char.IsControl);
+    }
+
+    private static string RequireEmail(string? value)
+    {
+        if (!TryNormalizeEmail(value, out var email))
+            throw new BadRequestException("A valid guest email is required.");
+        return email;
+    }
+
+    private static bool TryNormalizeEmail(string? value, out string normalized)
+    {
+        normalized = value?.Trim().ToLowerInvariant() ?? string.Empty;
+        return normalized.Length is > 0 and <= 254 &&
+               !normalized.Any(char.IsControl) &&
+               new System.ComponentModel.DataAnnotations.EmailAddressAttribute().IsValid(normalized);
+    }
+
+    private static string RequirePhone(string? value)
+    {
+        var phone = value?.Trim() ?? string.Empty;
+        var normalized = NormalizePhone(phone);
+        if (phone.Length is < 7 or > 30 || phone.Any(char.IsControl) ||
+            normalized.TrimStart('+').Length is < 7 or > 20 ||
+            !new System.ComponentModel.DataAnnotations.PhoneAttribute().IsValid(phone))
+        {
+            throw new BadRequestException("A valid guest phone number is required.");
+        }
+        return phone;
+    }
+
+    private static string RequireText(
+        string? value,
+        string field,
+        int maximumLength,
+        int minimumLength = 1)
+    {
+        var cleaned = value?.Trim() ?? string.Empty;
+        if (cleaned.Length < minimumLength || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
+
+    private static string? NormalizeOptionalText(string? value, string field, int maximumLength)
+    {
+        if (value is null) return null;
+        var cleaned = value.Trim();
+        if (cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned.Length == 0 ? null : cleaned;
+    }
+
+    private static void ValidateOptionalText(string? value, string field, int maximumLength)
+    {
+        if (value is not null && (value.Length > maximumLength || value.Any(char.IsControl)))
+            throw new BadRequestException($"{field} is invalid or too long.");
+    }
+
+    private static void ValidateOptionalToken(string? value, string field)
+    {
+        if (value is not null &&
+            (value.Length is < 40 or > 128 || value.Any(char.IsControl)))
+            throw new BadRequestException($"{field} is invalid.");
+    }
+
+    private static bool IsInvalidAuditValue(string? value, int maximumLength) =>
+        value is not null && (value.Length > maximumLength || value.Any(char.IsControl));
 
     private string BuildManageBookingUrl(string bookingCode, string guestAccessToken)
     {

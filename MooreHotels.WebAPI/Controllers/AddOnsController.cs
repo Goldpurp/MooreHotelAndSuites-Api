@@ -21,49 +21,84 @@ public class AddOnsController : ControllerBase
     [HttpGet]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
-    public async Task<IActionResult> GetAll(
-        [FromQuery] bool onlyActive = true,
+    public async Task<ActionResult<IReadOnlyList<PublicAddOnServiceDto>>> GetAll(
         [FromQuery] AddOnCategory? category = null,
-        CancellationToken cancellationToken = default) =>
-        Ok(await _addOnService.GetAllServicesAsync(onlyActive, category, cancellationToken));
+        CancellationToken cancellationToken = default)
+    {
+        var services = await _addOnService.GetAllServicesAsync(
+            true,
+            category,
+            cancellationToken);
+        return Ok(services.Select(ToPublic).ToArray());
+    }
 
     [HttpGet("{id:guid}")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
-    public async Task<IActionResult> GetById(Guid id, CancellationToken cancellationToken = default)
+    public async Task<ActionResult<PublicAddOnServiceDto>> GetById(
+        Guid id,
+        CancellationToken cancellationToken = default)
     {
         var dto = await _addOnService.GetServiceByIdAsync(id, cancellationToken);
-        return dto == null ? NotFound() : Ok(dto);
+        return dto is not { IsActive: true } ? NotFound() : Ok(ToPublic(dto));
+    }
+
+    [HttpGet("management")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> GetManaged(
+        [FromQuery] bool includeInactive = true,
+        [FromQuery] AddOnCategory? category = null,
+        CancellationToken cancellationToken = default) =>
+        Ok(await _addOnService.GetAllServicesAsync(
+            !includeInactive,
+            category,
+            cancellationToken));
+
+    [HttpGet("management/{id:guid}")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> GetManagedById(
+        Guid id,
+        CancellationToken cancellationToken = default)
+    {
+        var dto = await _addOnService.GetServiceByIdAsync(id, cancellationToken);
+        return dto is null ? NotFound() : Ok(dto);
     }
 
     [HttpPost]
     [Authorize(Roles = "Admin,Manager")]
     public async Task<IActionResult> Create([FromBody] CreateAddOnServiceRequest request, CancellationToken cancellationToken = default)
     {
-        var result = await _addOnService.CreateServiceAsync(request, cancellationToken);
-        return CreatedAtAction(nameof(GetById), new { id = result.Id }, result);
+        var result = await _addOnService.CreateServiceAsync(
+            request,
+            GetActorId(),
+            cancellationToken);
+        return CreatedAtAction(nameof(GetManagedById), new { id = result.Id }, result);
     }
 
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,Manager")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateAddOnServiceRequest request, CancellationToken cancellationToken = default) =>
-        Ok(await _addOnService.UpdateServiceAsync(id, request, cancellationToken));
+        Ok(await _addOnService.UpdateServiceAsync(
+            id,
+            request,
+            GetActorId(),
+            cancellationToken));
 
     [HttpDelete("{id:guid}")]
     [Authorize(Roles = "Admin")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken = default)
     {
-        await _addOnService.DeleteServiceAsync(id, cancellationToken);
+        await _addOnService.DeleteServiceAsync(id, GetActorId(), cancellationToken);
         return NoContent();
     }
 
     [HttpGet("bookings/{bookingCode}")]
-    [Authorize(Policy = HotelAuthorization.FolioManage)]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
     public async Task<IActionResult> GetBookingAddOns(string bookingCode, CancellationToken cancellationToken = default) =>
         Ok(await _addOnService.GetBookingAddOnsAsync(bookingCode, cancellationToken));
 
     [HttpPost("bookings/{bookingCode}")]
-    [Authorize(Policy = HotelAuthorization.FolioManage)]
+    [Authorize(Policy = HotelAuthorization.FolioIncidentals)]
     public async Task<IActionResult> AddServiceToBooking(
         string bookingCode,
         [FromBody] AddServiceToBookingRequest request,
@@ -75,4 +110,11 @@ public class AddOnsController : ControllerBase
         Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId)
             ? actorId
             : throw new UnauthorizedAccessException("The authenticated actor is invalid.");
+
+    private static PublicAddOnServiceDto ToPublic(AddOnServiceDto service) => new(
+        service.Id,
+        service.Name,
+        service.Description,
+        service.Category,
+        service.Price);
 }

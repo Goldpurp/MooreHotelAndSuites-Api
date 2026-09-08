@@ -1,8 +1,11 @@
 using System.Data;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Exceptions;
+using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Common;
 using MooreHotels.Domain.Entities;
@@ -14,8 +17,13 @@ namespace MooreHotels.Infrastructure.Services;
 public sealed class FolioService : IFolioService
 {
     private readonly MooreHotelsDbContext _db;
+    private readonly IEmailOutbox _emailOutbox;
 
-    public FolioService(MooreHotelsDbContext db) => _db = db;
+    public FolioService(MooreHotelsDbContext db, IEmailOutbox emailOutbox)
+    {
+        _db = db;
+        _emailOutbox = emailOutbox;
+    }
 
     public async Task<FolioDto> GetByBookingCodeAsync(
         string bookingCode,
@@ -39,12 +47,20 @@ public sealed class FolioService : IFolioService
         if (request.Type is not (FolioEntryType.AddOnCharge or FolioEntryType.Tax or
             FolioEntryType.Fee or FolioEntryType.Adjustment))
             throw new BadRequestException("Staff charges must be an add-on, tax, fee, or debit adjustment.");
-        return MutateAsync(
+        return AuthorizeAndMutateAsync(
+            FolioCapability.Charge,
             bookingCode,
             request.IdempotencyKey,
             actorId,
-            async (booking, folio, key, now) =>
+            async (booking, folio, key, now, actor) =>
             {
+                if (actor.Role == UserRole.Staff &&
+                    IsDepartment(actor.Department, "Reception", "FrontDesk") &&
+                    request.Type != FolioEntryType.AddOnCharge)
+                {
+                    throw new UnauthorizedAccessException(
+                        "Reception staff may post only itemized add-on charges.");
+                }
                 EnsureOpen(folio);
                 if (booking.Status is BookingStatus.Cancelled or BookingStatus.CheckedOut or BookingStatus.NoShow)
                     throw new BadRequestException("Charges cannot be posted to a closed stay.");
@@ -56,11 +72,11 @@ public sealed class FolioService : IFolioService
                     amount,
                     RequireText(request.Description, "Charge description", 200),
                     RequireText(request.SourceType, "Charge source", 80),
-                    Clean(request.SourceId),
+                    Clean(request.SourceId, "Charge source identifier", 160),
                     key,
                     now,
                     actorId,
-                    notes: Clean(request.Notes));
+                    notes: Clean(request.Notes, "Charge notes", 500));
                 _db.FolioEntries.Add(entry);
                 booking.Amount = FolioAccounting.Money(booking.Amount + entry.Amount);
                 RecalculatePaymentStatus(booking, folio.Entries);
@@ -74,11 +90,12 @@ public sealed class FolioService : IFolioService
         PostFolioPaymentRequest request,
         Guid actorId,
         CancellationToken cancellationToken = default) =>
-        MutateAsync(
+        AuthorizeAndMutateAsync(
+            FolioCapability.Payment,
             bookingCode,
             request.IdempotencyKey,
             actorId,
-            async (booking, folio, key, now) =>
+            async (booking, folio, key, now, _) =>
             {
                 EnsureOpen(folio);
                 if (booking.Status is BookingStatus.Cancelled or BookingStatus.CheckedOut or BookingStatus.NoShow)
@@ -103,7 +120,7 @@ public sealed class FolioService : IFolioService
                     now,
                     actorId,
                     reference,
-                    notes: Clean(request.Notes));
+                    notes: Clean(request.Notes, "Payment notes", 500));
                 _db.FolioEntries.Add(entry);
                 RecalculatePaymentStatus(booking, folio.Entries);
                 var updatedBalance = FolioAccounting.Calculate(folio.Entries);
@@ -122,6 +139,7 @@ public sealed class FolioService : IFolioService
                     booking.PaymentCheckoutUrl = null;
                 }
                 await AddAuditAsync(booking, actorId, "FOLIO_PAYMENT_POSTED", entry, now);
+                await QueueFolioReceiptEmailAsync(booking, folio, entry, "Payment", method, now, cancellationToken);
             },
             cancellationToken);
 
@@ -130,11 +148,12 @@ public sealed class FolioService : IFolioService
         PostFolioCreditRequest request,
         Guid actorId,
         CancellationToken cancellationToken = default) =>
-        MutateAsync(
+        AuthorizeAndMutateAsync(
+            FolioCapability.Adjust,
             bookingCode,
             request.IdempotencyKey,
             actorId,
-            async (booking, folio, key, now) =>
+            async (booking, folio, key, now, _) =>
             {
                 EnsureOpen(folio);
                 var current = FolioAccounting.Calculate(folio.Entries);
@@ -152,11 +171,12 @@ public sealed class FolioService : IFolioService
                     key,
                     now,
                     actorId,
-                    notes: Clean(request.Notes));
+                    notes: Clean(request.Notes, "Credit notes", 500));
                 _db.FolioEntries.Add(entry);
                 booking.Amount = Math.Max(0, FolioAccounting.Money(booking.Amount - entry.Amount));
                 RecalculatePaymentStatus(booking, folio.Entries);
                 await AddAuditAsync(booking, actorId, "FOLIO_CREDIT_POSTED", entry, now);
+                await QueueFolioReceiptEmailAsync(booking, folio, entry, "Credit", "Staff Credit", now, cancellationToken);
             },
             cancellationToken);
 
@@ -165,12 +185,16 @@ public sealed class FolioService : IFolioService
         Guid entryId,
         VoidFolioEntryRequest request,
         Guid actorId,
-        CancellationToken cancellationToken = default) =>
-        MutateAsync(
+        CancellationToken cancellationToken = default)
+    {
+        if (entryId == Guid.Empty) throw new NotFoundException("Folio entry not found.");
+        return
+        AuthorizeAndMutateAsync(
+            FolioCapability.Adjust,
             bookingCode,
             request.IdempotencyKey,
             actorId,
-            async (booking, folio, key, now) =>
+            async (booking, folio, key, now, _) =>
             {
                 EnsureOpen(folio);
                 var original = folio.Entries.SingleOrDefault(entry => entry.Id == entryId)
@@ -215,16 +239,18 @@ public sealed class FolioService : IFolioService
                 await AddAuditAsync(booking, actorId, "FOLIO_ENTRY_VOIDED", entry, now);
             },
             cancellationToken);
+    }
 
     public Task<FolioDto> CloseAsync(
         string bookingCode,
         Guid actorId,
         CancellationToken cancellationToken = default) =>
-        MutateAsync(
+        AuthorizeAndMutateAsync(
+            FolioCapability.Close,
             bookingCode,
             $"close:{NormalizeBookingCode(bookingCode)}",
             actorId,
-            (booking, folio, _, now) =>
+            (booking, folio, _, now, _) =>
             {
                 if (folio.Status == FolioStatus.Closed) return Task.CompletedTask;
                 if (booking.Status is not (BookingStatus.CheckedOut or BookingStatus.Cancelled or BookingStatus.NoShow))
@@ -256,6 +282,8 @@ public sealed class FolioService : IFolioService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        _ = RequireText(reason, "Cancellation reason", 500);
+        if (booking.Id == Guid.Empty) throw new BadRequestException("Booking identifier is invalid.");
         var now = booking.CancelledAtUtc ?? DateTime.UtcNow;
         var freeCancellationDeadline = booking.CheckIn.AddHours(-booking.FreeCancellationHours);
         var penaltyPercent = now <= freeCancellationDeadline
@@ -278,6 +306,8 @@ public sealed class FolioService : IFolioService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        _ = RequireText(reason, "No-show reason", 500);
+        if (booking.Id == Guid.Empty) throw new BadRequestException("Booking identifier is invalid.");
         booking.NoShowPenaltyAmount = await ApplyTerminationPolicyAsync(
             booking,
             booking.NoShowPenaltyPercent,
@@ -325,7 +355,7 @@ public sealed class FolioService : IFolioService
                 key,
                 now,
                 actorId == BookingPaymentPolicy.SystemActorId ? null : actorId,
-                notes: Clean(reason));
+                notes: Clean(reason, "Termination reason", 500));
             _db.FolioEntries.Add(entry);
         }
         RecalculatePaymentStatus(booking, folio.Entries);
@@ -342,10 +372,14 @@ public sealed class FolioService : IFolioService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
+        if (booking.Id == Guid.Empty) throw new BadRequestException("Booking identifier is invalid.");
+        _ = await RequireActorAsync(actorId, FolioCapability.Adjust, cancellationToken);
         var folio = await _db.Folios.Include(item => item.Entries)
             .SingleAsync(item => item.BookingId == booking.Id, cancellationToken);
         EnsureOpen(folio);
         var normalizedReference = RequireText(reference, "Refund reference", 160).ToUpperInvariant();
+        var normalizedChannel = RequireText(channel, "Refund channel", 40);
+        var normalizedNotes = Clean(notes, "Refund notes", 500);
         var existing = folio.Entries.SingleOrDefault(entry => entry.ExternalReference == normalizedReference);
         if (existing is not null)
         {
@@ -362,24 +396,80 @@ public sealed class FolioService : IFolioService
             FolioEntryType.Refund,
             FolioEntryDirection.Debit,
             refundAmount,
-            $"{channel} refund",
+            $"{normalizedChannel} refund",
             "Refund",
             booking.Id.ToString(),
             $"refund:{BookingGuestAccess.Hash(normalizedReference)}",
             DateTime.UtcNow,
             actorId,
             normalizedReference,
-            notes: Clean(notes));
+            notes: normalizedNotes);
         _db.FolioEntries.Add(entry);
         RecalculatePaymentStatus(booking, folio.Entries);
+        await QueueFolioReceiptEmailAsync(booking, folio, entry, "Refund", normalizedChannel, DateTime.UtcNow, cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
     }
+
+    private Task<FolioDto> AuthorizeAndMutateAsync(
+        FolioCapability capability,
+        string bookingCode,
+        string clientIdempotencyKey,
+        Guid actorId,
+        Func<Booking, Folio, string, DateTime, ApplicationUser, Task> mutation,
+        CancellationToken cancellationToken,
+        bool idempotencyIsEntry = true)
+        => MutateAsync(
+            bookingCode,
+            clientIdempotencyKey,
+            actorId,
+            capability,
+            mutation,
+            cancellationToken,
+            idempotencyIsEntry);
+
+    private async Task<ApplicationUser> RequireActorAsync(
+        Guid actorId,
+        FolioCapability capability,
+        CancellationToken cancellationToken)
+    {
+        if (actorId == Guid.Empty)
+            throw new UnauthorizedAccessException("The financial actor is invalid.");
+        var actor = await _db.Users.AsNoTracking().SingleOrDefaultAsync(
+            user => user.Id == actorId && user.Status == ProfileStatus.Active,
+            cancellationToken) ?? throw new UnauthorizedAccessException("The financial actor is not active.");
+        if (actor.Role is UserRole.Admin or UserRole.Manager) return actor;
+        if (actor.Role != UserRole.Staff)
+            throw new UnauthorizedAccessException("The account cannot perform staff financial operations.");
+
+        var allowed = capability switch
+        {
+            FolioCapability.Charge => IsDepartment(
+                actor.Department,
+                "Reception",
+                "FrontDesk",
+                "Finance",
+                "Cashier"),
+            FolioCapability.Payment or FolioCapability.Close => IsDepartment(
+                actor.Department,
+                "Finance",
+                "Cashier"),
+            FolioCapability.Adjust => false,
+            _ => false
+        };
+        if (!allowed)
+            throw new UnauthorizedAccessException("The staff account is not authorized for this folio operation.");
+        return actor;
+    }
+
+    private static bool IsDepartment(string? department, params string[] allowed) =>
+        department is not null && allowed.Contains(department.Trim(), StringComparer.OrdinalIgnoreCase);
 
     private async Task<FolioDto> MutateAsync(
         string bookingCode,
         string clientIdempotencyKey,
         Guid actorId,
-        Func<Booking, Folio, string, DateTime, Task> mutation,
+        FolioCapability capability,
+        Func<Booking, Folio, string, DateTime, ApplicationUser, Task> mutation,
         CancellationToken cancellationToken,
         bool idempotencyIsEntry = true)
     {
@@ -398,6 +488,7 @@ public sealed class FolioService : IFolioService
             var folio = await _db.Folios.Include(item => item.Entries)
                 .SingleOrDefaultAsync(item => item.BookingId == booking.Id, cancellationToken)
                 ?? throw new NotFoundException("Booking folio not found.");
+            var actor = await RequireActorAsync(actorId, capability, cancellationToken);
             folio.Booking = booking;
             var key = BuildIdempotencyKey(folio.Id, clientIdempotencyKey);
             if (idempotencyIsEntry && folio.Entries.Any(entry => entry.IdempotencyKey == key))
@@ -405,7 +496,7 @@ public sealed class FolioService : IFolioService
                 await transaction.CommitAsync(cancellationToken);
                 return ToDto(folio);
             }
-            await mutation(booking, folio, key, DateTime.UtcNow);
+            await mutation(booking, folio, key, DateTime.UtcNow, actor);
             await _db.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
             return ToDto(folio);
@@ -539,32 +630,106 @@ public sealed class FolioService : IFolioService
         RequireText(value, "Booking code", 30).ToUpperInvariant();
 
     private static string BuildIdempotencyKey(Guid folioId, string value) =>
-        $"{folioId:N}:{RequireText(value, "Idempotency key", 100)}";
+        $"{folioId:N}:{RequireText(value, "Idempotency key", 100, 8)}";
 
     private static decimal RequirePositiveMoney(decimal value, string field)
     {
         var amount = FolioAccounting.Money(value);
-        if (amount <= 0)
-            throw new BadRequestException($"{field} must be greater than zero.");
+        if (amount <= 0 || amount > 9999999999999999m)
+            throw new BadRequestException($"{field} is outside the supported monetary range.");
         return amount;
     }
 
     private static string NormalizePaymentMethod(string? value)
     {
         var method = RequireText(value, "Payment method", 20);
-        if (method is not ("BankTransfer" or "Cash" or "Monnify" or "Other"))
-            throw new BadRequestException("Payment method must be BankTransfer, Cash, Monnify, or Other.");
+        if (method is not ("BankTransfer" or "Cash" or "Other"))
+            throw new BadRequestException("Payment method must be BankTransfer, Cash, or Other.");
         return method;
     }
 
-    private static string RequireText(string? value, string field, int maximumLength)
+    private enum FolioCapability
+    {
+        Charge,
+        Payment,
+        Adjust,
+        Close
+    }
+
+    private static string RequireText(
+        string? value,
+        string field,
+        int maximumLength,
+        int minimumLength = 1)
     {
         var cleaned = value?.Trim() ?? string.Empty;
-        if (cleaned.Length == 0 || cleaned.Length > maximumLength)
+        if (cleaned.Length < minimumLength || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
             throw new BadRequestException($"{field} is required and cannot exceed {maximumLength} characters.");
         return cleaned;
     }
 
-    private static string? Clean(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string? Clean(string? value, string field, int maximumLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var cleaned = value.Trim();
+        if (cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
+    }
+
+    private async Task QueueFolioReceiptEmailAsync(
+        Booking booking,
+        Folio folio,
+        FolioEntry entry,
+        string entryType,
+        string paymentMethod,
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(booking.GuestId)) return;
+        var guest = await _db.Guests.AsNoTracking()
+            .SingleOrDefaultAsync(g => g.Id == booking.GuestId, cancellationToken);
+        if (guest is null || string.IsNullOrWhiteSpace(guest.Email)) return;
+
+        var deterministicId = CreateDeterministicId($"folio-receipt:{entry.Id:N}");
+        if (_db.EmailOutboxMessages.Local.Any(m => m.Id == deterministicId) ||
+            await _db.EmailOutboxMessages.AnyAsync(m => m.Id == deterministicId, cancellationToken))
+        {
+            return;
+        }
+
+        var balance = FolioAccounting.Calculate(folio.Entries);
+        var guestName = $"{guest.FirstName} {guest.LastName}".Trim();
+        if (string.IsNullOrWhiteSpace(guestName)) guestName = "Valued Guest";
+
+        var payload = new FolioReceiptEmail(
+            guestName,
+            booking.BookingCode,
+            entry.ExternalReference ?? $"RCP-{entry.Id:N}"[..12].ToUpperInvariant(),
+            entryType,
+            paymentMethod,
+            entry.Amount,
+            booking.Currency,
+            Math.Max(0m, balance.Balance),
+            entry.Description,
+            now);
+
+        var message = _emailOutbox.Create(
+            TransactionalEmailTemplates.FolioReceipt,
+            guest.Email,
+            payload,
+            booking.GuestId);
+        message.Id = deterministicId;
+        _db.EmailOutboxMessages.Add(message);
+    }
+
+    private static Guid CreateDeterministicId(string key)
+    {
+        // This preserves the established outbox idempotency key format. The hash is
+        // only a stable namespace mapping for server-generated IDs, not a security primitive.
+#pragma warning disable CA5351
+        var hash = MD5.HashData(Encoding.UTF8.GetBytes(key));
+#pragma warning restore CA5351
+        return new Guid(hash);
+    }
 }

@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using MooreHotels.Domain.Enums;
 
 namespace MooreHotels.Application.DTOs;
@@ -11,18 +12,25 @@ public record AddOnServiceDto(
     bool IsActive,
     DateTime CreatedAt);
 
-public record CreateAddOnServiceRequest(
+public sealed record PublicAddOnServiceDto(
+    Guid Id,
     string Name,
     string Description,
     AddOnCategory Category,
-    decimal Price,
+    decimal Price);
+
+public record CreateAddOnServiceRequest(
+    [Required, StringLength(120, MinimumLength = 1)] string Name,
+    [StringLength(500)] string Description,
+    [EnumDataType(typeof(AddOnCategory))] AddOnCategory Category,
+    [Range(typeof(decimal), "0.01", "9999999999999999")] decimal Price,
     bool IsActive = true);
 
 public record UpdateAddOnServiceRequest(
-    string? Name,
-    string? Description,
-    AddOnCategory? Category,
-    decimal? Price,
+    [StringLength(120, MinimumLength = 1)] string? Name,
+    [StringLength(500)] string? Description,
+    [EnumDataType(typeof(AddOnCategory))] AddOnCategory? Category,
+    [Range(typeof(decimal), "0.01", "9999999999999999")] decimal? Price,
     bool? IsActive);
 
 public record BookingAddOnDto(
@@ -38,6 +46,6 @@ public record BookingAddOnDto(
     DateTime AddedAtUtc);
 
 public record AddServiceToBookingRequest(
-    Guid AddOnServiceId,
-    int Quantity = 1,
-    string? Notes = null);
+    [Required] Guid AddOnServiceId,
+    [Range(1, 1000)] int Quantity = 1,
+    [StringLength(300)] string? Notes = null);

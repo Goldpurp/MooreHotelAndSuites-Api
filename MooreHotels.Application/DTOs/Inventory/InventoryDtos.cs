@@ -17,6 +17,17 @@ public sealed record RoomTypeDto(
     int PhysicalRoomCount,
     DateTime UpdatedAtUtc);
 
+public sealed record PublicRoomTypeDto(
+    Guid Id,
+    string Code,
+    string Name,
+    RoomCategory Category,
+    int BaseOccupancy,
+    int MaxOccupancy,
+    decimal BasePricePerNight,
+    string Description,
+    IReadOnlyList<string> Amenities);
+
 public sealed record SaveRoomTypeRequest(
     [Required, StringLength(30)] string Code,
     [Required, StringLength(120)] string Name,
@@ -45,6 +56,15 @@ public sealed record RoomTypeAvailabilityDto(
     int AvailableUnits,
     bool Available,
     IReadOnlyList<InventoryDayDto> Days);
+
+public sealed record PublicRoomTypeAvailabilityDto(
+    Guid RoomTypeId,
+    string RoomTypeCode,
+    string RoomTypeName,
+    DateOnly CheckInDate,
+    DateOnly CheckOutDate,
+    int RequestedUnits,
+    bool Available);
 
 public sealed record CreateInventoryClosureRequest(
     [Required] Guid RoomTypeId,
@@ -78,6 +98,13 @@ public sealed record ReservationRoomDto(
     string? AssignedRoomNumber,
     DateTime? AssignedAtUtc,
     Guid? AssignedByUserId);
+
+public sealed record PublicReservationRoomDto(
+    Guid Id,
+    int Sequence,
+    Guid RoomTypeId,
+    string RoomTypeCode,
+    string RoomTypeName);
 
 public sealed record AssignReservationRoomRequest(
     [Required] Guid RoomId,

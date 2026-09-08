@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.DTOs.Pricing;
+using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
@@ -46,11 +47,12 @@ public sealed class CompleteHotelOperationsTests
         var unchangedQuote = await pricing.CreateAmendmentQuoteAsync(
             booking.Id,
             new CreatePricingQuoteRequest(
-                booking.RoomId, booking.CheckIn, booking.CheckOut, 2, 0));
+                booking.RoomId, booking.CheckIn, booking.CheckOut, 2, 0),
+            _fixture.Manager.Id);
         Assert.Equal(booking.RoomId, unchangedQuote.RoomId);
 
         var quote = await pricing.CreateAmendmentQuoteAsync(booking.Id, new CreatePricingQuoteRequest(
-            booking.RoomId, start, end, 2, 0));
+            booking.RoomId, start, end, 2, 0), _fixture.Manager.Id);
 
         var result = await amendments.AmendAsync(
             booking.Id,
@@ -73,6 +75,8 @@ public sealed class CompleteHotelOperationsTests
     [Fact]
     public async Task Checkout_creates_cleaning_task_and_inspection_releases_room()
     {
+        var housekeeper = await _fixture.CreateUserAsync(UserRole.Staff, "Housekeeping");
+        var engineer = await _fixture.CreateUserAsync(UserRole.Staff, "Engineering");
         var booking = await _fixture.CreateBookingAsync(
             paymentStatus: PaymentStatus.Paid,
             bookingStatus: BookingStatus.CheckedIn);
@@ -87,12 +91,12 @@ public sealed class CompleteHotelOperationsTests
         Assert.Equal(RoomStatus.Dirty, await RoomStatusAsync(booking.RoomId!.Value));
         await housekeeping.UpdateTaskAsync(
             cleaning.Id,
-            new UpdateHousekeepingTaskRequest(OperationalTaskStatus.InProgress, _fixture.Staff.Id, null, null),
-            _fixture.Staff.Id);
+            new UpdateHousekeepingTaskRequest(OperationalTaskStatus.InProgress, housekeeper.Id, null, null),
+            housekeeper.Id);
         await housekeeping.UpdateTaskAsync(
             cleaning.Id,
-            new UpdateHousekeepingTaskRequest(OperationalTaskStatus.Completed, _fixture.Staff.Id, null, null),
-            _fixture.Staff.Id);
+            new UpdateHousekeepingTaskRequest(OperationalTaskStatus.Completed, housekeeper.Id, null, null),
+            housekeeper.Id);
         var inspection = Assert.Single(
             await housekeeping.GetTasksAsync(),
             item => item.BookingId == booking.Id && item.Type == HousekeepingTaskType.Inspection &&
@@ -123,14 +127,14 @@ public sealed class CompleteHotelOperationsTests
                 WorkPriority.High,
                 time.Today.AddDays(-1),
                 time.Today.AddDays(5),
-                _fixture.Staff.Id),
+                engineer.Id),
             _fixture.Manager.Id);
         Assert.Equal(RoomStatus.OutOfOrder, await RoomStatusAsync(booking.RoomId.Value));
         await housekeeping.UpdateWorkOrderAsync(
             workOrder.Id,
             new UpdateMaintenanceWorkOrderRequest(
                 MaintenanceWorkOrderStatus.Resolved,
-                _fixture.Staff.Id,
+                engineer.Id,
                 "Component replaced and the room passed engineering checks."),
             _fixture.Manager.Id);
         var closure = await _fixture.WithDbAsync(async db =>
@@ -167,9 +171,16 @@ public sealed class CompleteHotelOperationsTests
         });
         await using var scope = _fixture.Services.CreateAsyncScope();
         var crm = scope.ServiceProvider.GetRequiredService<IGuestCrmService>();
+        await Assert.ThrowsAsync<BadRequestException>(() => crm.MergeAsync(
+            new MergeGuestRequest(
+                primaryId,
+                duplicateBooking.GuestId,
+                "VerifiedEmail",
+                "Staff wrote a permanent narrative containing possible guest data."),
+            _fixture.Admin.Id));
         var merged = await crm.MergeAsync(new MergeGuestRequest(
             primaryId, duplicateBooking.GuestId, "VerifiedEmail",
-            "Staff confirmed both verified addresses represent the same guest."), _fixture.Admin.Id);
+            "CRM-MERGE-VERIFIED-EMAIL-001"), _fixture.Admin.Id);
 
         Assert.Equal(1, merged.MovedBookingCount);
         var profile = await crm.GetProfileAsync(primaryId, true);

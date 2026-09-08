@@ -11,11 +11,20 @@ public sealed class PrivacyRequest
     public DataSubjectRequestStatus Status { get; set; } = DataSubjectRequestStatus.Pending;
     public string? Details { get; set; }
     public DateTime RequestedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime DueAtUtc { get; set; }
+    public DateTime? IdentityVerifiedAtUtc { get; set; }
+    public Guid? IdentityVerifiedByUserId { get; set; }
+    public string? IdentityVerificationReference { get; set; }
+    public DateTime? FulfilledAtUtc { get; set; }
+    public string? FulfillmentEvidenceReference { get; set; }
+    public string? FulfillmentDigest { get; set; }
+    public DateTime? ExportGeneratedAtUtc { get; set; }
     public Guid? ResolvedByUserId { get; set; }
     public DateTime? ResolvedAtUtc { get; set; }
     public string? ResolutionNotes { get; set; }
 
     public Guest? Guest { get; set; }
     public ApplicationUser? RequestedByUser { get; set; }
+    public ApplicationUser? IdentityVerifiedByUser { get; set; }
     public ApplicationUser? ResolvedByUser { get; set; }
 }

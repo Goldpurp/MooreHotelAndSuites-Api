@@ -6,7 +6,6 @@ namespace MooreHotels.Application.DTOs;
 public sealed record PublicBookingDto(
     Guid Id,
     string BookingCode,
-    Guid? RoomId,
     string GuestFirstName,
     string GuestLastName,
     string GuestEmail,
@@ -37,6 +36,6 @@ public sealed record PublicBookingDto(
     string? RoomTypeCode = null,
     string? RoomTypeName = null,
     int RoomQuantity = 1,
-    IReadOnlyList<ReservationRoomDto>? Rooms = null,
+    IReadOnlyList<PublicReservationRoomDto>? Rooms = null,
     FolioSummaryDto? Folio = null,
     ReservationPolicySnapshotDto? ReservationPolicy = null);

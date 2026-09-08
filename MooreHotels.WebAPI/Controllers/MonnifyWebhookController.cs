@@ -191,8 +191,8 @@ public sealed class MonnifyWebhookController : ControllerBase
         catch (JsonException exception)
         {
             _logger.LogWarning(
-                exception,
-                "Rejected malformed signed Monnify webhook JSON.");
+                "Rejected malformed signed Monnify webhook JSON with {ExceptionType}.",
+                exception.GetType().Name);
             return BadRequest();
         }
         catch (ServiceUnavailableException)
@@ -203,15 +203,15 @@ public sealed class MonnifyWebhookController : ControllerBase
             exception is BadRequestException or ConflictException)
         {
             _logger.LogWarning(
-                "Rejected a signed Monnify payment because verification did not bind to the booking: {Reason}",
-                exception.Message);
+                "Rejected a signed Monnify payment because verification did not bind to the booking; {ExceptionType} occurred.",
+                exception.GetType().Name);
             return StatusCode(StatusCodes.Status409Conflict);
         }
         catch (Exception exception)
         {
             _logger.LogError(
-                exception,
-                "Monnify webhook processing failed.");
+                "Monnify webhook processing failed with {ExceptionType}.",
+                exception.GetType().Name);
             return StatusCode(StatusCodes.Status500InternalServerError);
         }
     }

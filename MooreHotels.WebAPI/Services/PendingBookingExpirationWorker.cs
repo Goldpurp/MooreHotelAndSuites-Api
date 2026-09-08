@@ -100,7 +100,9 @@ public sealed class PendingBookingExpirationWorker : BackgroundService
         }
         catch (Exception exception)
         {
-            _logger.LogError(exception, "The unpaid-booking expiration sweep failed.");
+            _logger.LogError(
+                "The unpaid-booking expiration sweep failed with {ExceptionType}.",
+                exception.GetType().Name);
             return total;
         }
     }

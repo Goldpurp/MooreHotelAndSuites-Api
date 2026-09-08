@@ -10,9 +10,8 @@ public interface IBookingService
         string email,
         CancellationToken cancellationToken = default);
     Task<BookingDto?> GetBookingByCodeAsync(string code);
-    Task<BookingDto?> GetBookingByCodeAndEmailAsync(
+    Task<BookingDto?> GetBookingWithAccessAsync(
         string code,
-        string? email,
         string? guestAccessToken = null,
         Guid? accountUserId = null);
     Task RequestBookingAccessLinkAsync(string code, string email, string requestId);
@@ -34,7 +33,6 @@ public interface IBookingService
     Task<BookingDto> CancelBookingAsync(Guid bookingId, Guid userId, string? reason = null);
     Task<BookingDto> CancelBookingByGuestAsync(
         string bookingCode,
-        string? email,
         string? guestAccessToken,
         Guid? accountUserId,
         string requestId,

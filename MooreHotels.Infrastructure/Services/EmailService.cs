@@ -167,31 +167,11 @@ public sealed class EmailService : IEmailService
     private static async Task ValidateAcceptedResponseAsync(
         HttpResponseMessage response)
     {
-        if (response.Content.Headers.ContentLength >
-            MaximumProviderResponseBytes)
-        {
-            throw DeliveryUnavailable();
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var buffer = new MemoryStream();
-        var chunk = new byte[4096];
-        int read;
-        while ((read = await stream.ReadAsync(chunk.AsMemory())) > 0)
-        {
-            if (buffer.Length + read > MaximumProviderResponseBytes)
-            {
-                throw DeliveryUnavailable();
-            }
-
-            await buffer.WriteAsync(chunk.AsMemory(0, read));
-        }
-
-        buffer.Position = 0;
+        var bytes = await ReadBoundedProviderContentAsync(response);
         try
         {
-            using var document = await JsonDocument.ParseAsync(
-                buffer,
+            using var document = JsonDocument.Parse(
+                bytes,
                 new JsonDocumentOptions
                 {
                     AllowTrailingCommas = false,
@@ -215,15 +195,9 @@ public sealed class EmailService : IEmailService
 
     private static async Task<bool> IsDuplicateAcceptedAsync(HttpResponseMessage response)
     {
-        if (response.Content.Headers.ContentLength > MaximumProviderResponseBytes)
-        {
-            return false;
-        }
-
         try
         {
-            var bytes = await response.Content.ReadAsByteArrayAsync();
-            if (bytes.Length > MaximumProviderResponseBytes) return false;
+            var bytes = await ReadBoundedProviderContentAsync(response);
             using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions
             {
                 AllowTrailingCommas = false,
@@ -237,10 +211,36 @@ public sealed class EmailService : IEmailService
                        "duplicate_parameter",
                        StringComparison.OrdinalIgnoreCase);
         }
-        catch (JsonException)
+        catch (Exception exception) when (
+            exception is JsonException or ServiceUnavailableException)
         {
             return false;
         }
+    }
+
+    private static async Task<byte[]> ReadBoundedProviderContentAsync(
+        HttpResponseMessage response)
+    {
+        if (response.Content.Headers.ContentLength > MaximumProviderResponseBytes)
+        {
+            throw DeliveryUnavailable();
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var buffer = new MemoryStream();
+        var chunk = new byte[4096];
+        int read;
+        while ((read = await stream.ReadAsync(chunk.AsMemory())) > 0)
+        {
+            if (buffer.Length + read > MaximumProviderResponseBytes)
+            {
+                throw DeliveryUnavailable();
+            }
+
+            await buffer.WriteAsync(chunk.AsMemory(0, read));
+        }
+
+        return buffer.ToArray();
     }
 
     private static bool IsTransient(HttpStatusCode statusCode) =>
@@ -950,5 +950,108 @@ public sealed class EmailService : IEmailService
                 content,
                 "#2F6B4F",
                 $"The refund for reservation {bookingCode} has been processed."));
+    }
+
+    public async Task SendBookingAmendmentConfirmationAsync(string email, BookingAmendmentConfirmationEmail payload)
+    {
+        var guestName = E(payload.GuestName);
+        var bookingCode = E(payload.BookingCode);
+        var roomType = E(payload.RoomTypeName);
+        var reason = E(payload.AmendmentReason);
+        var manageUrl = E(payload.ManageBookingUrl);
+
+        var content = $@"
+        <p style='margin-top:0;'>Dear <strong>{guestName}</strong>,</p>
+        <p>Your reservation <strong>{bookingCode}</strong> has been successfully updated.</p>
+
+        <table role='presentation' width='100%' style='margin:25px 0; background-color:#F8FAFC; border:1px solid #E2E8F0; border-radius:12px; padding:20px;'>
+            <tr>
+                <td class='mobile-stack' colspan='2' style='padding-bottom:15px; border-bottom:1px solid #E2E8F0;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Updated Accommodation</div>
+                    <div style='font-size:16px; font-weight:700; color:#0F172A;'>{roomType} ({payload.RoomQuantity} {(payload.RoomQuantity == 1 ? "room" : "rooms")})</div>
+                </td>
+            </tr>
+            <tr>
+                <td class='mobile-stack' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Check-in</div>
+                    <div style='font-size:14px; font-weight:600; color:#0F172A;'>{payload.CheckIn:ddd, dd MMM yyyy}</div>
+                </td>
+                <td class='mobile-stack-right' align='right' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Check-out</div>
+                    <div style='font-size:14px; font-weight:600; color:#0F172A;'>{payload.CheckOut:ddd, dd MMM yyyy} ({payload.Nights} nights)</div>
+                </td>
+            </tr>
+            <tr>
+                <td class='mobile-stack' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Total Rate</div>
+                    <div style='font-size:18px; font-weight:800; color:#0F172A;'>NGN {payload.TotalAmount:N2}</div>
+                </td>
+                <td class='mobile-stack-right' align='right' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Outstanding Balance</div>
+                    <div style='font-size:18px; font-weight:800; color:#B91C1C;'>NGN {payload.BalanceDue:N2}</div>
+                </td>
+            </tr>
+        </table>
+
+        {(string.IsNullOrWhiteSpace(reason) ? "" : $"<p style='font-size:13px; color:#64748B;'>Amendment notes: <em>{reason}</em></p>")}
+        <p style='font-size:14px; color:#4B5563;'>You can review and manage your stay online at <a href='{manageUrl}'>Manage Reservation</a>.</p>";
+
+        await SendEmailAsync(
+            email,
+            $"Reservation updated: {payload.BookingCode}",
+            BuildTemplate(
+                "Reservation Updated",
+                content,
+                "#1E293B",
+                $"Your reservation {payload.BookingCode} details have been updated."));
+    }
+
+    public async Task SendFolioReceiptAsync(string email, FolioReceiptEmail payload)
+    {
+        var guestName = E(payload.GuestName);
+        var bookingCode = E(payload.BookingCode);
+        var receiptNumber = E(payload.ReceiptNumber);
+        var entryType = E(payload.EntryType);
+        var paymentMethod = E(payload.PaymentMethod);
+        var desc = E(payload.Description);
+
+        var content = $@"
+        <p style='margin-top:0;'>Dear <strong>{guestName}</strong>,</p>
+        <p>This email confirms your {entryType.ToLowerInvariant()} transaction for reservation <strong>{bookingCode}</strong>.</p>
+
+        <table role='presentation' width='100%' style='margin:25px 0; background-color:#F0FDF4; border:1px solid #BBF7D0; border-radius:12px; padding:20px;'>
+            <tr>
+                <td class='mobile-stack'>
+                    <div style='font-size:12px; color:#166534; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;'>Amount {entryType}</div>
+                    <div style='font-size:24px; font-weight:800; color:#14532D;'>{payload.Currency} {payload.Amount:N2}</div>
+                </td>
+                <td class='mobile-stack-right' align='right'>
+                    <div style='font-size:11px; color:#166534; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;'>Receipt #</div>
+                    <div class='mobile-break' style='font-size:14px; font-family:monospace; color:#14532D;'>{receiptNumber}</div>
+                </td>
+            </tr>
+            <tr>
+                <td class='mobile-stack' style='padding-top:15px;'>
+                    <div style='font-size:11px; color:#166534; text-transform:uppercase;'>Method</div>
+                    <div style='font-size:14px; font-weight:600; color:#14532D;'>{paymentMethod}</div>
+                </td>
+                <td class='mobile-stack-right' align='right' style='padding-top:15px;'>
+                    <div style='font-size:11px; color:#166534; text-transform:uppercase;'>Balance Remaining</div>
+                    <div style='font-size:14px; font-weight:700; color:#14532D;'>{payload.Currency} {payload.BalanceAfter:N2}</div>
+                </td>
+            </tr>
+        </table>
+
+        <p style='font-size:13px; color:#4B5563;'>Description: {desc}</p>
+        <p style='font-size:13px; color:#6B7280;'>Processed on: {payload.ProcessedAtUtc:dd MMM yyyy HH:mm} UTC</p>";
+
+        await SendEmailAsync(
+            email,
+            $"Official receipt: {payload.BookingCode} ({receiptNumber})",
+            BuildTemplate(
+                $"{payload.EntryType} Receipt",
+                content,
+                "#166534",
+                $"Receipt for reservation {payload.BookingCode}."));
     }
 }
