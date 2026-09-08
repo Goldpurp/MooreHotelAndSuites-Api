@@ -198,11 +198,26 @@ PFX and password. Never commit the PFX or encoded value.
 
 The image pre-creates `/var/data/moorehotels-keys` as mode `0700` owned by the
 non-root `app` user. Keep the Render disk mounted at `/var/data`; changing the
-mount or key path can make it unwritable. Production startup performs an
-encrypted protect/unprotect round-trip and refuses to serve traffic if the
-persistent path, certificate or password is unusable. After the first staging
-start, restart the service and confirm `/health/ready` remains 200 and the same
+mount or key path can make it unwritable. Production startup performs a
+storage write/flush check, validates every retained non-revoked key, and performs
+an encrypted protect/unprotect round-trip. It refuses to serve traffic if the
+persistent path, certificate or password is unusable. An existing key on a
+read-only mount is not sufficient. After the first staging start, restart the
+service and confirm `/health/ready` remains 200 and the same
 key file remains on the disk.
+
+Also verify that a payload protected before restart can still be unprotected
+afterward and after restoring the key-ring backup. Preserve the original PFX
+and password with that backup. Do not replace the certificate in isolation:
+rehearse any certificate/key-ring migration first, because a different valid
+certificate does not decrypt data protected by the existing keys.
+
+Keep the image's default entrypoint. It removes `MIGRATION_CONNECTION_STRING`
+and `DATABASE_RUNTIME_PASSWORD` before executing .NET, including from Linux's
+initial process environment. Clearing these only inside application code does
+not remove that initial snapshot. The separate pre-deploy command retains its
+owner credential. Operators with hosting-platform access still control the
+configured secrets; this boundary protects the serving API process.
 
 ## 5. Monnify
 

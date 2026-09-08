@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.DataProtection.KeyManagement;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using Npgsql;
@@ -148,6 +149,28 @@ public static class WebApplicationExtensions
 
     private static void VerifyDataProtectionReadiness(IServiceProvider services)
     {
+        // An existing key can decrypt successfully on a read-only mount while
+        // future key rotation is broken. Verify durable writes on every start.
+        var keysPath = services.GetRequiredService<IConfiguration>()["DataProtection:KeysPath"]!;
+        Directory.CreateDirectory(keysPath);
+        var probePath = Path.Combine(keysPath, $".write-probe-{Guid.NewGuid():N}");
+        using (var probe = new FileStream(
+                   probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                   bufferSize: 1, FileOptions.DeleteOnClose))
+        {
+            probe.WriteByte(0);
+            probe.Flush(flushToDisk: true);
+        }
+
+        // Otherwise a different valid certificate can make Data Protection
+        // create a new key while silently abandoning old tokens/outbox data.
+        foreach (var key in services.GetRequiredService<IKeyManager>().GetAllKeys()
+                     .Where(key => !key.IsRevoked))
+        {
+            if (key.CreateEncryptor() is null)
+                throw new InvalidOperationException("An existing Data Protection key is unreadable.");
+        }
+
         var protector = services.GetRequiredService<IDataProtectionProvider>()
             .CreateProtector("MooreHotels.ProductionStartupReadiness.v1");
         var challenge = Guid.NewGuid().ToString("N");

@@ -85,4 +85,53 @@ No push or deployment is part of this verification.
 
 ## 4. Production configuration and encryption-key persistence
 
-Pending.
+- Confirmed and fixed a process-environment leak: clearing deployment secrets
+  inside .NET left their original values in Linux `/proc/1/environ`. The image
+  now removes both migration-owner and runtime-provisioning credentials before
+  executing .NET. A new CI container gate proved the old image fails and the
+  corrected image becomes healthy as non-root PID 1 without either credential.
+- Confirmed and fixed read-only key storage being accepted when an existing key
+  still worked. Startup now creates, writes, flushes and removes a storage probe.
+- Confirmed and fixed a different valid PFX being accepted while existing keys
+  became unreadable and a replacement key was generated. Startup now validates
+  every retained non-revoked key before the protect/unprotect round-trip.
+- Added three startup tests: invalid storage despite a working protector,
+  probe cleanup, and wrong valid certificate rejection without replacement keys.
+- Final Release build and recommended analyzers: zero warnings/errors.
+  Formatting verification passed. Full integration rerun: 256 passed, zero
+  failed/skipped. The 19 unit tests from item 2 also passed; their code and
+  dependencies did not change. Total verified automated tests: 275.
+- Final Linux image:
+  `sha256:46a88e534953db160d0a0b29e2381e73f26ea0987a2afdaead55f6ff9a3ccf4d`.
+  The CI container runtime gate passed again on this image. Its final Trivy
+  scan reported zero HIGH/CRITICAL vulnerabilities using the current verified DB.
+- Final source inventory: 402 files; Trivy secret scan passed. Lockfiles remained
+  unchanged; final workflow YAML/shell syntax and diff whitespace checks passed.
+- Production-mode startup returned HTTP 200 readiness with the dedicated
+  runtime role and VerifyFull TLS. Server inspection confirmed TLS 1.3 for all
+  active rehearsal runtime connections. Security headers were present.
+- Restart retained the exact encrypted key-file hashes, `0700` key directory
+  and `0600` XML files. A payload protected before the restart decrypted after
+  replacement and restart using the API's application name and outbox purpose.
+- Restoring the encrypted key-ring archive into a fresh volume, with the
+  backed-up PFX/password, recovered that same payload and started Production.
+- Seven actual container startup rejection cases passed: read-only existing key
+  ring, missing PFX, wrong PFX password, valid but wrong PFX, untrusted database
+  certificate, privileged runtime login, and missing backup-readiness declaration.
+- All runtime/provider settings and certificates used here were synthetic
+  fixtures on an isolated Docker network without internet egress. They are not
+  production secrets or evidence of live provider/backup acceptance. Actual
+  Render configuration, persistent-disk permissions and external recovery remain
+  unverified until the owner identifies an active production target.
+
+## Remaining external release gates
+
+1. Select and activate/provision the intended production database; both visible
+   Moore Hotels Supabase projects were INACTIVE during this review.
+2. Configure real owner/runtime credentials, encryption certificate and disk,
+   and genuine backup/PITR/restore/provider/alert evidence in the secret manager.
+3. Run preflight and a protected restore rehearsal for that target, then verify
+   the actual deployed configuration and restart behavior.
+4. Push only when authorized and require GitHub Actions/CodeQL on the pushed
+   commit. Guest/staff frontend and live provider acceptance remain outside
+   these four release items.

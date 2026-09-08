@@ -122,6 +122,10 @@ jobs:
         run: dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --configuration Release --no-build --output /tmp/moore-hotels-api
       - name: Build production container
         run: docker build --tag moore-hotels-api:ci .
+      - name: Verify container startup and deployment-secret isolation
+        env:
+          MOORE_CONTAINER_TEST_POSTGRES: Host=127.0.0.1;Port=5432;Database=moore_local_container_tests;Username=postgres;Password=postgres;SSL Mode=Disable
+        run: ./scripts/check-container-runtime.sh moore-hotels-api:ci
       - name: Scan repository for committed secrets
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

@@ -8,7 +8,9 @@ Supabase Data API credentials for Moore Hotels application tables.
 - `MIGRATION_CONNECTION_STRING`: Supabase `postgres` owner through the IPv4
   session pooler on port 5432, with `SSL Mode=VerifyFull`. Use semicolon-separated
   Npgsql key/value syntax, never a URI, so scripts do not place credentials in
-  process arguments. It exists only in the Render pre-deploy environment.
+  process arguments. Render also supplies service variables to the runtime
+  container, so its entrypoint removes the owner credential before executing
+  .NET. It is not present in the API's initial process environment or config.
 - `ConnectionStrings__DefaultConnection`: dedicated `moore_runtime` login
   through the same session pooler. Never use `postgres`, `service_role`, port
   6543 transaction mode, or the Supabase service key here. Start with

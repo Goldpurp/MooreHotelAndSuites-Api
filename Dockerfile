@@ -52,4 +52,7 @@ RUN install -d --owner=app --group=app --mode=0700 /var/data/moorehotels-keys
 
 USER app
 EXPOSE 8080
-ENTRYPOINT ["dotnet", "MooreHotels.WebAPI.dll"]
+# Strip deployment-only credentials before exec creates the API process.
+# Clearing them inside .NET is too late for Linux's /proc/1/environ snapshot.
+# Render's separate pre-deploy command still receives its owner credential.
+ENTRYPOINT ["env", "-u", "MIGRATION_CONNECTION_STRING", "-u", "DATABASE_RUNTIME_PASSWORD", "dotnet", "MooreHotels.WebAPI.dll"]
