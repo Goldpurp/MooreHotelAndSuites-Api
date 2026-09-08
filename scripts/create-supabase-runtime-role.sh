@@ -17,24 +17,28 @@ fi
 
 configure_psql_connection "$MIGRATION_CONNECTION_STRING" "MIGRATION_CONNECTION_STRING"
 runtime_password_base64="$(printf '%s' "$DATABASE_RUNTIME_PASSWORD" | base64 | tr -d '\n')"
-export PGOPTIONS="${PGOPTIONS:+$PGOPTIONS }-c moore.runtime_password_base64=$runtime_password_base64"
-run_psql --set "runtime_role=$DATABASE_RUNTIME_ROLE" <<'SQL'
+# Supavisor need not forward custom startup PGOPTIONS. Set a psql client
+# variable through stdin, keeping the password out of process arguments.
+{
+  printf '\\set runtime_password_base64 %s\n' "$runtime_password_base64"
+  cat <<'SQL'
 SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = :'runtime_role') AS runtime_role_exists
 \gset
 \if :runtime_role_exists
   SELECT format(
       'ALTER ROLE %I WITH LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
       :'runtime_role',
-      convert_from(decode(current_setting('moore.runtime_password_base64'), 'base64'), 'UTF8'))
+      convert_from(decode(:'runtime_password_base64', 'base64'), 'UTF8'))
   \gexec
   SELECT 'Rotated the dedicated Supabase runtime role password.' AS result;
 \else
   SELECT format(
       'CREATE ROLE %I LOGIN PASSWORD %L NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
       :'runtime_role',
-      convert_from(decode(current_setting('moore.runtime_password_base64'), 'base64'), 'UTF8'))
+      convert_from(decode(:'runtime_password_base64', 'base64'), 'UTF8'))
   \gexec
   SELECT 'Created the dedicated Supabase runtime role.' AS result;
 \endif
 SQL
-unset runtime_password_base64 PGOPTIONS
+} | run_psql --set "runtime_role=$DATABASE_RUNTIME_ROLE"
+unset runtime_password_base64

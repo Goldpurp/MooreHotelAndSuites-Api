@@ -7,8 +7,8 @@ the Supabase PostgreSQL project are the production source of truth.
 ## 1. Free hosting
 
 Use **Supabase Free** for PostgreSQL and **Render Free** only for the API.
-The selected Supabase project is `ihxhqfffrxmgqabrncrg` (Moore hotel and suites,
-Frankfurt). Render has no database resource, disk, or pre-deploy command in
+The selected Supabase project is `azclpxuabsffjkuhqzga` (Moore hotel and suites,
+Ireland). Render has no database resource, disk, or pre-deploy command in
 `render.yaml`. Keep auto-deploy **Off**, and deploy a tested commit manually
 only after its external migration finishes. Use `/health/ready` for the health
 check. The existing service is `srv-d5uhns4oud1c73bn28o0`.
@@ -47,7 +47,7 @@ Postgres hostname, or a Supabase API key as a database password.
 Runtime connection (`ConnectionStrings__DefaultConnection` on Render):
 
 ```text
-Host=<actual-pooler>.pooler.supabase.com;Port=5432;Database=postgres;Username=moore_runtime.ihxhqfffrxmgqabrncrg;Password=...;Maximum Pool Size=20;Timeout=10;Command Timeout=30;SSL Mode=VerifyFull
+Host=aws-1-eu-west-1.pooler.supabase.com;Port=5432;Database=postgres;Username=moore_runtime.azclpxuabsffjkuhqzga;Password=...;Maximum Pool Size=20;Timeout=10;Command Timeout=30;SSL Mode=VerifyFull;Root Certificate=/app/certificates/supabase-ca.crt
 ```
 
 Set `Database__Provider=Supabase`, `DATABASE_RUNTIME_ROLE=moore_runtime`, and

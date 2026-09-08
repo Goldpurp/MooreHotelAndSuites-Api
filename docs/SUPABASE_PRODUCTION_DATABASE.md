@@ -5,14 +5,24 @@ Supabase Data API credentials for Moore Hotels application tables.
 
 ## Selected production target
 
-- Project: **Moore hotel and suites** (`ihxhqfffrxmgqabrncrg`).
-- Organization: Goldpurp (`tpajdexfeepffldbsopr`); region: `eu-central-1`.
-- Resumed and confirmed `ACTIVE_HEALTHY` on 2026-09-08, PostgreSQL 17.6.
-- Live inspection found zero public application tables, no EF migration
-  history, no environment marker, and no `moore_runtime` role. The release's
-  SQL preflight passed. This is an uninitialized application database.
-- The organization is on Free. The chosen free plan uses encrypted logical exports, not managed backups or
-  PITR. An off-provider restore rehearsal remains outstanding.
+- Owner-confirmed project: `azclpxuabsffjkuhqzga`, Moore Hotel and Suites
+  organization, Ireland (`eu-west-1`). This replaces the earlier Frankfurt target.
+- Session pooler: `aws-1-eu-west-1.pooler.supabase.com:5432`.
+- Live owner login verified on 2026-09-08 with full TLS verification against
+  Supabase's official CA. Starting schema: no public tables or runtime role.
+- Bootstrap completed on 2026-09-08: 28 EF migrations, 48 application tables,
+  and the `production` environment marker. Independent runtime checks passed;
+  `moore_runtime` cannot create schema objects or delete persisted keys.
+  Data API roles have no `public` schema access. The rebuilt deployment image
+  passed live runtime validation using its bundled CA.
+- An encrypted starting-state schema backup is stored privately outside the
+  repository. This does not establish scheduled off-provider backup coverage.
+  Render deployment and application smoke tests remain outstanding.
+- The image includes the public CA at `/app/certificates/supabase-ca.crt`.
+  Add that `Root Certificate` path to owner/runtime container connections.
+  Host tools use the corresponding absolute local certificate path.
+- The chosen free plan uses encrypted logical exports, not managed backups or
+  PITR. Scheduling and off-provider restore acceptance remain operator tasks.
 
 ## Connection separation
 

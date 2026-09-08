@@ -38,6 +38,7 @@ ENV ASPNETCORE_HTTP_PORTS=8080 \
     DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=false
 
 COPY --from=build --chown=app:app /app/publish .
+COPY certificates/supabase-ca.crt ./certificates/supabase-ca.crt
 COPY --from=build --chown=app:app /app/migrate ./migrate
 COPY --from=build --chown=app:app \
     /src/scripts/create-supabase-runtime-role.sh \
