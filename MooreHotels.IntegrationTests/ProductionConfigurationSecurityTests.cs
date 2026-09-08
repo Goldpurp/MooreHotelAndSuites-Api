@@ -44,16 +44,16 @@ public sealed class ProductionConfigurationSecurityTests
     }
 
     [Fact]
-    public void Production_accepts_an_explicit_render_private_database()
+    public void Production_rejects_the_removed_render_private_database_override()
     {
         var settings = BaselineSettings();
         settings["ConnectionStrings:DefaultConnection"] =
             "Host=dpg-example123-a;Database=moore;Username=moore_app;Password=strong-db-secret;SSL Mode=Disable";
         settings["Database:TrustRenderPrivateNetwork"] = "true";
 
-        ConfigurationBootstrap.ValidateForStartup(
+        Assert.Throws<InvalidOperationException>(() => ConfigurationBootstrap.ValidateForStartup(
             BuildConfiguration(settings),
-            ProductionEnvironment());
+            ProductionEnvironment()));
     }
 
     [Fact]
@@ -92,7 +92,6 @@ public sealed class ProductionConfigurationSecurityTests
 
     [Theory]
     [InlineData("Database:Provider", "Supabase")]
-    [InlineData("Database:TrustRenderPrivateNetwork", "true")]
     [InlineData("ConnectionStrings:DefaultConnection", "Host=aws-0-eu-central-1.pooler.supabase.com;Port=5432;Database=postgres;Username=postgres;Password=secret;SSL Mode=VerifyFull")]
     [InlineData("ConnectionStrings:DefaultConnection", "Host=db.example.com;Database=moore_hotels_local;Username=postgres;Password=secret;SSL Mode=VerifyFull")]
     [InlineData("ConnectionStrings:DefaultConnection", "Host=127.0.0.1;Database=postgres;Username=postgres;Password=secret;SSL Mode=Disable")]
@@ -198,6 +197,32 @@ public sealed class ProductionConfigurationSecurityTests
             ConfigurationBootstrap.ValidateForStartup(
                 BuildConfiguration(settings),
                 ProductionEnvironment()));
+    }
+
+    [Fact]
+    public void Free_hosting_accepts_database_keys_and_honest_logical_backup_declarations()
+    {
+        var settings = BaselineSettings();
+        settings["OperationalReadiness:BackupMode"] = "Logical";
+        settings["OperationalReadiness:ManagedBackupsEnabled"] = "false";
+        settings["OperationalReadiness:PointInTimeRecoveryEnabled"] = "false";
+        settings["DataProtection:StorageProvider"] = "Database";
+        settings.Remove("DataProtection:KeysPath");
+        ConfigurationBootstrap.ValidateForStartup(BuildConfiguration(settings), ProductionEnvironment());
+        settings["OperationalReadiness:EncryptedOffProviderBackupsEnabled"] = "false";
+        Assert.Throws<InvalidOperationException>(() =>
+            ConfigurationBootstrap.ValidateForStartup(BuildConfiguration(settings), ProductionEnvironment()));
+    }
+
+    [Theory]
+    [InlineData("OperationalReadiness:BackupMode", "Unknown")]
+    [InlineData("DataProtection:StorageProvider", "Memory")]
+    public void Production_rejects_unknown_storage_and_backup_modes(string key, string value)
+    {
+        var settings = BaselineSettings();
+        settings[key] = value;
+        Assert.Throws<InvalidOperationException>(() =>
+            ConfigurationBootstrap.ValidateForStartup(BuildConfiguration(settings), ProductionEnvironment()));
     }
 
     [Fact]

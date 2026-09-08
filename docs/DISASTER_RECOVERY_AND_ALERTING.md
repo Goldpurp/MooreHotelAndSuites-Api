@@ -7,22 +7,23 @@ actually passed.
 
 ## Recovery objectives
 
-- RPO: 60 minutes. A recoverable copy must never lag accepted production writes
-  by more than one hour.
+- RPO target: 1440 minutes for daily encrypted logical exports. This depends
+  on the external scheduler completing; a missed export increases data-loss exposure.
 - RTO: 240 minutes. The incident commander must be able to restore, validate,
   cut over, and reopen bookings within four hours.
-- Managed PITR: enabled on the paid production PostgreSQL service.
+- Backup mode: Logical on Supabase Free. Managed backups and PITR are disabled.
 - Portable copy: encrypted, access-controlled, stored outside the database
   provider, and retained according to the approved records schedule.
 - Restore drill: quarterly and after any material database/provider change.
 
 ## Initial setup
 
-1. In the database provider dashboard, confirm paid managed backups and PITR are
-   active and record the recovery window.
-2. Configure a daily logical export to an encrypted off-provider bucket. Use a
-   dedicated read-only backup identity, bucket encryption, versioning, retention,
-   and a lifecycle rule. Alert on a missed or failed export.
+1. Configure the external encrypted export command documented in
+   `PRODUCTION_DEPLOYMENT.md`. Keep the age private key and application PFX
+   separately recoverable. Do not claim PITR is enabled.
+2. Schedule a daily export on a trusted machine outside Render, retaining
+   encrypted copies on a separate device/provider within its free quota.
+   Alert on a missed or failed export; sleeping Render workers cannot schedule it.
 3. Configure uptime checks for `/health/live` and `/health/ready` from at least
    two regions. Page when two consecutive checks fail.
 4. Configure 5xx-rate and p95-latency alerts, plus log alerts for rejected
@@ -40,7 +41,7 @@ actually passed.
 
 1. Choose a recovery point within the RPO and record the production booking,
    guest, room, payment-ledger, and audit-log counts at that point.
-2. Restore PITR to a new isolated database. Never overwrite production.
+2. Decrypt and restore a logical snapshot to a new isolated database. Never overwrite production.
 3. Name the target with `restore`, `drill`, or `rehearsal`; the verification
    script refuses any other database name.
 4. Run:
@@ -61,8 +62,8 @@ actually passed.
 
 1. Freeze deploys and payment/refund administration; identify the last trusted
    write and declare the incident commander.
-2. Prefer PITR because it ordinarily provides a more recent recovery point than
-   a logical export. Restore to a new instance and validate it in isolation.
+2. Restore the latest verified encrypted logical export to a new isolated
+   database. Reconcile writes since its timestamp; there is no PITR on this setup.
 3. Run the verification script and compare business counts and sampled records.
 4. Rotate affected database credentials, update every consumer atomically, and
    observe readiness, errors, queues, payments, and booking creation.
@@ -83,5 +84,5 @@ actually passed.
 | Failed Monnify transaction | Any in 24 hours | Reconcile and inspect provider |
 | Pending Monnify transaction | >30 minutes | Reconcile before room release |
 | Rejected/invalid webhook | Repeated or unexpected source | Security/payment investigation |
-| Backup/PITR checkpoint failure | Any | Page database owner |
+| Encrypted backup failure | Any | Page database owner |
 | Missed off-provider export | One daily export | Page database owner |

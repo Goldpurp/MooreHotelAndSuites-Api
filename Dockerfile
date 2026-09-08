@@ -40,6 +40,7 @@ ENV ASPNETCORE_HTTP_PORTS=8080 \
 COPY --from=build --chown=app:app /app/publish .
 COPY --from=build --chown=app:app /app/migrate ./migrate
 COPY --from=build --chown=app:app \
+    /src/scripts/create-supabase-runtime-role.sh \
     /src/scripts/bind-production-database.sh \
     /src/scripts/database-connection.sh \
     /src/scripts/harden-supabase-data-api.sh \
@@ -48,11 +49,10 @@ COPY --from=build --chown=app:app \
     /src/scripts/validate-production-database.sh \
     /src/scripts/validate-runtime-database-role.sh \
     ./scripts/
-RUN install -d --owner=app --group=app --mode=0700 /var/data/moorehotels-keys
 
 USER app
 EXPOSE 8080
 # Strip deployment-only credentials before exec creates the API process.
 # Clearing them inside .NET is too late for Linux's /proc/1/environ snapshot.
-# Render's separate pre-deploy command still receives its owner credential.
+# External migration runs override this entrypoint with scripts/predeploy-production.sh.
 ENTRYPOINT ["env", "-u", "MIGRATION_CONNECTION_STRING", "-u", "DATABASE_RUNTIME_PASSWORD", "dotnet", "MooreHotels.WebAPI.dll"]

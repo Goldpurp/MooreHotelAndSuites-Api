@@ -142,6 +142,7 @@ BEGIN
     END IF;
 
     FOREACH table_name IN ARRAY ARRAY[
+        'data_protection_keys',
         'booking_code_allocations',
         'booking_amendments',
         'folio_entries',

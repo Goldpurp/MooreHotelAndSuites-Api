@@ -11,24 +11,22 @@ Supabase Data API credentials for Moore Hotels application tables.
 - Live inspection found zero public application tables, no EF migration
   history, no environment marker, and no `moore_runtime` role. The release's
   SQL preflight passed. This is an uninitialized application database.
-- The organization is on Free. Managed backup/PITR acceptance and an encrypted
-  off-provider restore rehearsal remain outstanding. Do not declare them ready
-  merely because the project resumed successfully.
+- The organization is on Free. The chosen free plan uses encrypted logical exports, not managed backups or
+  PITR. An off-provider restore rehearsal remains outstanding.
 
 ## Connection separation
 
 - `MIGRATION_CONNECTION_STRING`: Supabase `postgres` owner through the IPv4
   session pooler on port 5432, with `SSL Mode=VerifyFull`. Use semicolon-separated
   Npgsql key/value syntax, never a URI, so scripts do not place credentials in
-  process arguments. Render also supplies service variables to the runtime
-  container, so its entrypoint removes the owner credential before executing
-  .NET. It is not present in the API's initial process environment or config.
+  process arguments. Supply this only to the external migration runner, never
+  to Render. The API entrypoint also strips it as defense in depth.
 - `ConnectionStrings__DefaultConnection`: dedicated `moore_runtime` login
   through the same session pooler. Never use `postgres`, `service_role`, port
   6543 transaction mode, or the Supabase service key here. Start with
   `Maximum Pool Size=20`; the API rejects values above 32 per instance.
 - `DATABASE_RUNTIME_ROLE=moore_runtime`.
-- `Database__Provider=Supabase` and `Database__TrustRenderPrivateNetwork=false`.
+- `Database__Provider=Supabase`. No Render database or private-network exception.
 
 The pre-deploy connection is also environment-bound. Before migration it
 rejects Local/test/restore targets and any database already stamped for another
@@ -54,8 +52,10 @@ beyond one Render instance.
 3. Run `scripts/create-supabase-runtime-role.sh` with the three required
    environment variables. The same command safely rotates an existing runtime
    role password. Remove `DATABASE_RUNTIME_PASSWORD` afterward.
-4. Configure Render's owner and runtime connection strings separately.
-5. Deploy. The pre-deploy command applies EF migrations, validates relational
+4. Configure only the runtime connection on Render; keep the owner secret on
+   the external runner.
+5. Run `scripts/deploy-database.sh TESTED_IMAGE` externally before manually
+   deploying that same release to Render Free. The command applies EF migrations, validates relational
    invariants, binds the database to `production`, revokes all Data API access
    to `public`, and grants only the required runtime privileges.
 6. Run `scripts/validate-runtime-database-role.sh` with the runtime connection.

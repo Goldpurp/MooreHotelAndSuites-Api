@@ -54,6 +54,7 @@ WHERE to_regclass('public.audit_logs') IS NOT NULL
 \gexec
 SELECT format('REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE public.%I FROM %I', table_name, :'runtime_role')
 FROM (VALUES
+    ('data_protection_keys'),
     ('booking_code_allocations'),
     ('booking_amendments'),
     ('folio_entries'),
@@ -64,6 +65,7 @@ WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
 \gexec
 SELECT format('GRANT SELECT, INSERT ON TABLE public.%I TO %I', table_name, :'runtime_role')
 FROM (VALUES
+    ('data_protection_keys'),
     ('booking_code_allocations'),
     ('booking_amendments'),
     ('folio_entries'),
@@ -72,6 +74,10 @@ FROM (VALUES
 ) AS append_only(table_name)
 WHERE to_regclass(format('public.%I', table_name)) IS NOT NULL
 \gexec
+
+-- Key XML is certificate-encrypted, append-only, and inaccessible to Data API roles.
+DROP POLICY IF EXISTS runtime_key_access ON public.data_protection_keys;
+SELECT format('CREATE POLICY runtime_key_access ON public.data_protection_keys TO %I USING (true) WITH CHECK (true)', :'runtime_role') \gexec
 
 -- The environment marker is owner-managed and immutable to the API role.
 SELECT format('REVOKE ALL ON TABLE public.environment_boundaries FROM %I', :'runtime_role')

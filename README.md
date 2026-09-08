@@ -303,8 +303,8 @@ Production startup fails closed when any of these are missing or unsafe:
   role-management, replication, database-creation and `BYPASSRLS` privileges;
 - non-placeholder JWT, email, Cloudinary and bank-transfer settings;
 - Monnify credentials and its strict webhook boundary when Monnify is enabled;
-- a current pricing-quote requirement, managed backup/PITR/off-provider backup
-  declarations, tested alert routing, and restore-drill evidence;
+- a current pricing-quote requirement, truthful backup-mode and encrypted
+  off-provider backup declarations, tested alert routing, and restore-drill evidence;
 - Brevo and Cloudinary rotation/acceptance evidence, plus hosted-checkout,
   Monnify and PCI evidence before Monnify can be enabled;
 - explicit HTTPS origins, hosts, public application URLs, and API URL;
@@ -319,9 +319,10 @@ consumed. On another host, disable this mode and configure the platform's exact
 trusted proxy address or CIDR. Never use `0.0.0.0/0`.
 
 Keep the API behind the configured reverse proxy, rotate credentials through the
-cloud secret manager, persist `/var/data/moorehotels-keys`, use
-`./scripts/predeploy-production.sh` as the Render pre-deploy command, and run
-restore and rollback rehearsals before the Production migration window. See
+cloud secret manager, and persist encrypted keys in Supabase using
+`DataProtection__StorageProvider=Database`. Render Free hosts only the API;
+run `./scripts/deploy-database.sh TESTED_IMAGE` externally before manually
+deploying that release. Use encrypted logical backups and restore rehearsals. See
 `PRODUCTION_DEPLOYMENT.md` and `render.yaml`.
 
 ## Verification commands

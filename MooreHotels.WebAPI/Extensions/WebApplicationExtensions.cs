@@ -22,7 +22,8 @@ public static class WebApplicationExtensions
 
         try
         {
-            if (app.Environment.IsDeployed())
+            var databaseKeys = string.Equals(app.Configuration["DataProtection:StorageProvider"], "Database", StringComparison.OrdinalIgnoreCase);
+            if (app.Environment.IsDeployed() && !databaseKeys)
             {
                 VerifyDataProtectionReadiness(scope.ServiceProvider);
             }
@@ -80,6 +81,8 @@ public static class WebApplicationExtensions
                 await EnsureRuntimeDatabaseRoleIsLeastPrivilegedAsync(
                     context,
                     app.Configuration["DATABASE_RUNTIME_ROLE"]!);
+                if (databaseKeys)
+                    VerifyDataProtectionReadiness(scope.ServiceProvider);
             }
 
             await DbInitializer.SeedRolesAsync(scope.ServiceProvider);
@@ -149,15 +152,27 @@ public static class WebApplicationExtensions
 
     private static void VerifyDataProtectionReadiness(IServiceProvider services)
     {
-        // An existing key can decrypt successfully on a read-only mount while
-        // future key rotation is broken. Verify durable writes on every start.
-        var keysPath = services.GetRequiredService<IConfiguration>()["DataProtection:KeysPath"]!;
-        Directory.CreateDirectory(keysPath);
-        var probePath = Path.Combine(keysPath, $".write-probe-{Guid.NewGuid():N}");
-        using (var probe = new FileStream(
-                   probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                   bufferSize: 1, FileOptions.DeleteOnClose))
+        var configuration = services.GetRequiredService<IConfiguration>();
+        if (string.Equals(configuration["DataProtection:StorageProvider"], "Database", StringComparison.OrdinalIgnoreCase))
         {
+            var context = services.GetRequiredService<MooreHotelsDbContext>();
+            context.Database.CreateExecutionStrategy().Execute(() =>
+            {
+                using var transaction = context.Database.BeginTransaction();
+                context.Database.ExecuteSqlRaw(
+                    "INSERT INTO public.data_protection_keys (\"FriendlyName\", \"Xml\") VALUES ('startup-write-probe', '<probe />')");
+                transaction.Rollback();
+            });
+        }
+        else
+        {
+            // Existing keys may decrypt on a read-only mount while rotation fails.
+            var keysPath = configuration["DataProtection:KeysPath"]!;
+            Directory.CreateDirectory(keysPath);
+            var probePath = Path.Combine(keysPath, $".write-probe-{Guid.NewGuid():N}");
+            using var probe = new FileStream(
+                probePath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                bufferSize: 1, FileOptions.DeleteOnClose);
             probe.WriteByte(0);
             probe.Flush(flushToDisk: true);
         }
@@ -265,6 +280,12 @@ public static class WebApplicationExtensions
                         has_table_privilege(current_user, 'public."__EFMigrationsHistory"', 'DELETE'),
                     to_regclass('public.bookings') IS NULL OR
                         has_table_privilege(current_user, 'public.bookings', 'DELETE'),
+                    to_regclass('public.data_protection_keys') IS NULL OR
+                        NOT has_table_privilege(current_user, 'public.data_protection_keys', 'SELECT') OR
+                        NOT has_table_privilege(current_user, 'public.data_protection_keys', 'INSERT') OR
+                        has_table_privilege(current_user, 'public.data_protection_keys', 'UPDATE') OR
+                        has_table_privilege(current_user, 'public.data_protection_keys', 'DELETE') OR
+                        has_table_privilege(current_user, 'public.data_protection_keys', 'TRUNCATE') OR
                     to_regclass('public.audit_logs') IS NULL OR
                         has_table_privilege(current_user, 'public.audit_logs', 'UPDATE') OR
                         has_table_privilege(current_user, 'public.audit_logs', 'DELETE'),

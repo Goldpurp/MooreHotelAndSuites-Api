@@ -49,6 +49,7 @@ DECLARE
 BEGIN
     FOREACH required_table IN ARRAY ARRAY[
         'environment_boundaries',
+        'data_protection_keys',
         'users',
         'roles',
         'user_roles',

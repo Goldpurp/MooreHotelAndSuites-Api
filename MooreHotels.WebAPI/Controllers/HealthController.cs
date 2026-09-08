@@ -128,6 +128,7 @@ public class HealthController : ControllerBase
                 Recovery = new
                 {
                     Status = restoreDrillCurrent ? "Verified" : "AttentionRequired",
+                    _operations.BackupMode,
                     _operations.ManagedBackupsEnabled,
                     _operations.PointInTimeRecoveryEnabled,
                     _operations.EncryptedOffProviderBackupsEnabled,

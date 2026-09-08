@@ -159,10 +159,12 @@ The frontend client repositories (Guest Web App and Staff Dashboard) must adhere
 ## 5. Item 10: Production Infrastructure & Operational Acceptance
 
 ### 5.1 Database Backup & Restore Drill Runbook
-- **Engine**: PostgreSQL 16+ on managed infrastructure.
+- **Engine**: PostgreSQL 17 on Supabase Free.
 - **Automated Backup Strategy**:
   - Daily full backup via `pg_dump` with custom compressed format (`-Fc`).
-  - Continuous WAL archiving for Point-In-Time Recovery (PITR) up to 30 days.
+  - age-encrypted exports stored outside Supabase; no paid PITR.
+  - Schedule externally, since Render Free sleeps. Verify the actual schedule
+    before declaring backup readiness.
 - **Quarterly Restore Drill Verification** (and after a material database or
   provider change):
   1. Restore a chosen recovery point to a new isolated database whose name

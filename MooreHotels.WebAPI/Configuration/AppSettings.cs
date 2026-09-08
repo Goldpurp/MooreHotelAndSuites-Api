@@ -78,7 +78,6 @@ public sealed class DatabaseSettings
     public string Provider { get; init; } = "PostgreSql";
     public bool CreateIfMissing { get; init; }
     public bool ApplyMigrationsOnStartup { get; init; }
-    public bool TrustRenderPrivateNetwork { get; init; }
     public int MaxRetryCount { get; init; } = 3;
     public int CommandTimeoutSeconds { get; init; } = 30;
     public int ContextPoolSize { get; init; } = 64;
@@ -116,6 +115,7 @@ public sealed class FinancialControlsSettings
 
 public sealed class OperationalReadinessSettings
 {
+    public string BackupMode { get; init; } = "Managed";
     public bool ManagedBackupsEnabled { get; init; }
     public bool PointInTimeRecoveryEnabled { get; init; }
     public bool EncryptedOffProviderBackupsEnabled { get; init; }
@@ -285,10 +285,7 @@ public static class ConfigurationBootstrap
                         errors.Add(
                             "Local PostgreSQL must use loopback, or an explicitly enabled single-label container host.");
                     }
-                    if (databaseSettings.TrustRenderPrivateNetwork)
-                    {
-                        errors.Add("Local cannot trust the Render private database network.");
-                    }
+
                 }
                 if (environment.IsDeployed())
                 {
@@ -313,30 +310,14 @@ public static class ConfigurationBootstrap
                         errors.Add("Production cannot use a loopback database host.");
                     }
 
-                    var permitsRenderPrivateNetwork =
-                        databaseSettings.TrustRenderPrivateNetwork &&
-                        IsRenderPrivateDatabaseHost(databaseHost);
-                    if ((database.SslMode is SslMode.Disable or SslMode.Allow or SslMode.Prefer) &&
-                        !permitsRenderPrivateNetwork)
-                    {
-                        errors.Add(
-                            "Production PostgreSQL must use SSL Mode=Require, VerifyCA, or VerifyFull unless an explicit Render private database host is trusted.");
-                    }
-
-                    if (databaseSettings.TrustRenderPrivateNetwork &&
-                        !IsRenderPrivateDatabaseHost(databaseHost))
-                    {
-                        errors.Add(
-                            "Database:TrustRenderPrivateNetwork is permitted only for a Render private dpg-*-a hostname.");
-                    }
+                    if (database.SslMode != SslMode.VerifyFull)
+                        errors.Add("Production PostgreSQL must use SSL Mode=VerifyFull.");
 
                     if (string.Equals(
                             databaseSettings.Provider,
                             "Supabase",
                             StringComparison.OrdinalIgnoreCase))
                     {
-                        if (databaseSettings.TrustRenderPrivateNetwork)
-                            errors.Add("A Supabase database cannot use Database:TrustRenderPrivateNetwork.");
                         if (!IsSupabaseSessionPoolerHost(databaseHost) || database.Port != 5432)
                         {
                             errors.Add(
@@ -587,9 +568,12 @@ public static class ConfigurationBootstrap
 
         if (environment.IsDeployed())
         {
-            if (!operations.ManagedBackupsEnabled)
+            var logicalBackups = string.Equals(operations.BackupMode, "Logical", StringComparison.OrdinalIgnoreCase);
+            if (!logicalBackups && !string.Equals(operations.BackupMode, "Managed", StringComparison.OrdinalIgnoreCase))
+                errors.Add("OperationalReadiness:BackupMode must be Managed or Logical.");
+            if (!logicalBackups && !operations.ManagedBackupsEnabled)
                 errors.Add("OperationalReadiness:ManagedBackupsEnabled must be true in Production.");
-            if (!operations.PointInTimeRecoveryEnabled)
+            if (!logicalBackups && !operations.PointInTimeRecoveryEnabled)
                 errors.Add("OperationalReadiness:PointInTimeRecoveryEnabled must be true in Production.");
             if (!operations.EncryptedOffProviderBackupsEnabled)
                 errors.Add("OperationalReadiness:EncryptedOffProviderBackupsEnabled must be true in Production.");
@@ -704,7 +688,11 @@ public static class ConfigurationBootstrap
             errors.Add("HotelSettings check-in and check-out hours must be between 0 and 23.");
         }
 
-        if (environment.IsDeployed() &&
+        var keyStorage = configuration["DataProtection:StorageProvider"] ?? "FileSystem";
+        var databaseKeys = string.Equals(keyStorage, "Database", StringComparison.OrdinalIgnoreCase);
+        if (!databaseKeys && !string.Equals(keyStorage, "FileSystem", StringComparison.OrdinalIgnoreCase))
+            errors.Add("DataProtection:StorageProvider must be Database or FileSystem.");
+        if (environment.IsDeployed() && !databaseKeys &&
             IsMissingOrPlaceholder(configuration["DataProtection:KeysPath"]))
         {
             errors.Add("Production DataProtection:KeysPath must point to persistent encrypted storage so account links survive restarts.");
@@ -712,7 +700,7 @@ public static class ConfigurationBootstrap
         if (environment.IsDeployed())
         {
             var keysPath = configuration["DataProtection:KeysPath"];
-            if (!string.IsNullOrWhiteSpace(keysPath) &&
+            if (!databaseKeys && !string.IsNullOrWhiteSpace(keysPath) &&
                 (!Path.IsPathFullyQualified(keysPath) ||
                  string.Equals(Path.GetFullPath(keysPath), Path.GetPathRoot(keysPath), StringComparison.Ordinal) ||
                  Path.GetFullPath(keysPath).StartsWith("/tmp/", StringComparison.Ordinal)))
@@ -963,14 +951,6 @@ public static class ConfigurationBootstrap
         Regex.IsMatch(
             host,
             "^[a-z0-9][a-z0-9-]{0,62}$",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
-            TimeSpan.FromMilliseconds(100));
-
-    private static bool IsRenderPrivateDatabaseHost(string? host) =>
-        !string.IsNullOrWhiteSpace(host) &&
-        Regex.IsMatch(
-            host,
-            "^dpg-[a-z0-9]+-a$",
             RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
             TimeSpan.FromMilliseconds(100));
 

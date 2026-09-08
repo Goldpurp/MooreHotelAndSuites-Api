@@ -136,6 +136,13 @@ No push or deployment is part of this verification.
    commit. Guest/staff frontend and live provider acceptance remain outside
    these four release items.
 
+## Free-hosting decision
+
+The owner subsequently chose Supabase Free and Render Free. The resulting
+implementation and completed tests are recorded in
+[FREE_HOSTING_VERIFICATION_2026_09_08.md](FREE_HOSTING_VERIFICATION_2026_09_08.md).
+That report supersedes the paid-plan/disk/PITR prerequisites below.
+
 ## Live target follow-up, 2026-09-08
 
 This follow-up supersedes the earlier target-selection limitation above.

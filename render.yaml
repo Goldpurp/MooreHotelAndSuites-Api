@@ -1,19 +1,14 @@
 services:
   - type: web
     runtime: docker
-    name: moore-hotels-api
+    name: MooreHotelAndSuites-Api
     region: frankfurt
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
     healthCheckPath: /health/ready
-    preDeployCommand: ./scripts/predeploy-production.sh
-    autoDeployTrigger: checksPass
+    autoDeployTrigger: "off"
     maxShutdownDelaySeconds: 60
-    disk:
-      name: moore-hotels-api-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
@@ -25,10 +20,8 @@ services:
         sync: false
       # Use Supabase's IPv4 session pooler (*.pooler.supabase.com:5432), a
       # dedicated runtime login, and SSL Mode=VerifyFull.
-      # A separate postgres-owner session-pooler credential is used only by
-      # the pre-deploy migration bundle. Runtime never loads it.
-      - key: MIGRATION_CONNECTION_STRING
-        sync: false
+      # Apply migrations externally before manually deploying the same commit.
+      # The database owner credential is never configured on Render.
       - key: DATABASE_RUNTIME_ROLE
         sync: false
       - key: Database__Provider
@@ -123,14 +116,16 @@ services:
         value: 100
       # These values are declarations backed by provider/dashboard evidence.
       # Do not set them until the linked acceptance action has really passed.
+      - key: OperationalReadiness__BackupMode
+        value: Logical
       - key: OperationalReadiness__ManagedBackupsEnabled
-        sync: false
+        value: false
       - key: OperationalReadiness__PointInTimeRecoveryEnabled
-        sync: false
+        value: false
       - key: OperationalReadiness__EncryptedOffProviderBackupsEnabled
         sync: false
       - key: OperationalReadiness__RecoveryPointObjectiveMinutes
-        value: 60
+        value: 1440
       - key: OperationalReadiness__RecoveryTimeObjectiveMinutes
         value: 240
       - key: OperationalReadiness__RestoreDrillMaximumAgeDays
@@ -239,10 +234,8 @@ services:
         value: 30
       - key: Database__ContextPoolSize
         value: 128
-      - key: Database__TrustRenderPrivateNetwork
-        value: false
-      - key: DataProtection__KeysPath
-        value: /var/data/moorehotels-keys
+      - key: DataProtection__StorageProvider
+        value: Database
       - key: DataProtection__CertificateBase64
         sync: false
       - key: DataProtection__CertificatePassword

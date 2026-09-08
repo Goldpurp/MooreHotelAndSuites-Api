@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.DataProtection.EntityFrameworkCore;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
@@ -9,9 +10,11 @@ using System.Text.Json;
 
 namespace MooreHotels.Infrastructure.Persistence;
 
-public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>
+public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, IdentityRole<Guid>, Guid>, IDataProtectionKeyContext
 {
     public MooreHotelsDbContext(DbContextOptions<MooreHotelsDbContext> options) : base(options) { }
+
+    public DbSet<DataProtectionKey> DataProtectionKeys { get; set; } = null!;
 
     public DbSet<Room> Rooms => Set<Room>();
     public DbSet<RoomType> RoomTypes => Set<RoomType>();
@@ -108,6 +111,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
     protected override void OnModelCreating(ModelBuilder builder)
     {
         base.OnModelCreating(builder);
+        builder.Entity<DataProtectionKey>().ToTable("data_protection_keys");
 
         var listConverter = new ValueConverter<List<string>, string>(
             value => JsonSerializer.Serialize(value, (JsonSerializerOptions?)null),

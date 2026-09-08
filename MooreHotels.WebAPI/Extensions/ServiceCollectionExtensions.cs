@@ -183,7 +183,11 @@ public static class ServiceCollectionExtensions
         var dataProtection = services.AddDataProtection()
             .SetApplicationName($"MooreHotels.{environment.ToClientName()}");
         var keysPath = configuration["DataProtection:KeysPath"];
-        if (!string.IsNullOrWhiteSpace(keysPath))
+        if (string.Equals(configuration["DataProtection:StorageProvider"], "Database", StringComparison.OrdinalIgnoreCase))
+        {
+            dataProtection.PersistKeysToDbContext<MooreHotelsDbContext>();
+        }
+        else if (!string.IsNullOrWhiteSpace(keysPath))
         {
             dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
         }

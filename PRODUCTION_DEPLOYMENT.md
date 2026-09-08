@@ -4,28 +4,28 @@ This is the required release procedure for the API. Do not add a production
 `.env` file to the repository. Render environment variables, secret files and
 the Supabase PostgreSQL project are the production source of truth.
 
-## 1. Infrastructure
+## 1. Free hosting
 
-- Use a Supabase PostgreSQL project in the intended production region. Enable
-  the required backup/PITR plan before accepting guest data.
-- Use a paid Starter-or-higher API web service in the same region.
-- Attach the persistent disk defined in `render.yaml` at `/var/data`.
-- Keep the Supabase project and Render environment under production-owned
-  organization accounts with MFA and separate administrator access.
-- Configure the API health check as `/health/ready`.
-- Keep automatic deploy set to **After CI checks pass**.
+Use **Supabase Free** for PostgreSQL and **Render Free** only for the API.
+The selected Supabase project is `ihxhqfffrxmgqabrncrg` (Moore hotel and suites,
+Frankfurt). Render has no database resource, disk, or pre-deploy command in
+`render.yaml`. Keep auto-deploy **Off**, and deploy a tested commit manually
+only after its external migration finishes. Use `/health/ready` for the health
+check. The existing service is `srv-d5uhns4oud1c73bn28o0`.
 
-The Docker image contains a reviewed EF Core migration bundle and PostgreSQL
-client. Render runs `scripts/predeploy-production.sh`, which first rejects a
-Local/test/restore database target and any existing non-Production environment
-stamp, closes the Supabase Data API surface, validates existing data, applies
-the bundle with `MIGRATION_CONNECTION_STRING`, binds the database to
-`production`, revalidates and re-hardens the schema, and then refreshes runtime
-DML grants for `DATABASE_RUNTIME_ROLE` before starting the new version.
-The running API uses the separate least-privileged
-`ConnectionStrings__DefaultConnection`; startup removes the migration variable
-from its process before configuration is built, does not apply schema changes,
-and fails closed if the database is unavailable.
+Render Free sleeps after idle periods, has cold starts and an ephemeral local
+filesystem. Background email, expiration, and retention workers cannot run
+while it sleeps; queued work resumes when the API wakes. Supabase Free can
+also pause for inactivity. This setup does not promise continuous availability,
+precise job timing, or point-in-time recovery. Monitor free usage quotas and
+configure spending limits; a Free plan does not make excess usage unlimited.
+See [Render Free limits](https://render.com/docs/free) and
+[Supabase project pausing](https://supabase.com/docs/guides/platform/free-project-pausing).
+
+Encryption keys persist in Supabase, encrypted using a PFX held separately in
+Render secrets. No guest data, uploads, or key files depend on the web server's
+local disk. The runtime uses only its least-privileged database login and never
+applies migrations. Do not configure the owner credential on Render.
 
 The image is pinned to .NET 10.0.11 and SDK 10.0.400. Framework packages and EF
 tooling use 10.0.11, and Npgsql EF Core uses 10.0.3. Keep the monthly .NET 10
@@ -40,93 +40,92 @@ ticket store, and cross-instance revocation channel.
 
 ## 2. Database
 
-Before the first deployment:
+Use the Supabase **session pooler** from the project's Connect panel, port
+5432, with `SSL Mode=VerifyFull`. Do not use transaction mode (6543), a Render
+Postgres hostname, or a Supabase API key as a database password.
 
-1. Create a new Supabase project; do not reuse the expired Render database or
-   copy its credentials. Record the IPv4 **session pooler** connection shown by
-   Supabase under **Connect**. Render must use port 5432, not the transaction
-   pooler on port 6543.
-2. Generate a unique runtime password in a password manager, then create (or
-   rotate) the dedicated runtime role with the Supabase `postgres` owner
-   connection:
+Runtime connection (`ConnectionStrings__DefaultConnection` on Render):
 
-   ```bash
-   MIGRATION_CONNECTION_STRING='...' \
-   DATABASE_RUNTIME_ROLE='moore_runtime' \
-   DATABASE_RUNTIME_PASSWORD='...' \
-   ./scripts/create-supabase-runtime-role.sh
-   ```
+```text
+Host=<actual-pooler>.pooler.supabase.com;Port=5432;Database=postgres;Username=moore_runtime.ihxhqfffrxmgqabrncrg;Password=...;Maximum Pool Size=20;Timeout=10;Command Timeout=30;SSL Mode=VerifyFull
+```
 
-   Remove `DATABASE_RUNTIME_PASSWORD` immediately afterward; it is not a
-   Render runtime setting. The runtime role cannot own database objects or
-   receive role-management, database-creation, replication, superuser, or
-   `BYPASSRLS` privileges.
-3. Put the dedicated runtime connection in
-   `ConnectionStrings__DefaultConnection` using Npgsql key/value syntax:
+Set `Database__Provider=Supabase`, `DATABASE_RUNTIME_ROLE=moore_runtime`, and
+`Database__ApplyMigrationsOnStartup=false`. The Local profile continues to use
+isolated local PostgreSQL and cannot connect to the production project.
 
-   ```text
-   Host=<region>.pooler.supabase.com;Port=5432;Database=postgres;Username=moore_runtime.<project-ref>;Password=...;Maximum Pool Size=20;Timeout=10;Command Timeout=30;SSL Mode=VerifyFull
-   ```
+For each release, serially:
 
-   `Maximum Pool Size` is per API instance and is fail-closed above 32. Keep
-   the sum across all instances within the Supabase project/pooler connection
-   budget. Npgsql multiplexing is not permitted with this session-pooler setup.
-4. Configure `MIGRATION_CONNECTION_STRING` with the Supabase `postgres` owner
-   through the same session pooler and `SSL Mode=VerifyFull`, using the same
-   semicolon-separated Npgsql key/value syntax shown above rather than a URI.
-   Use it only for Render's pre-deploy command and migration rehearsal. The
-   application clears this variable before building runtime configuration.
-   `scripts/bind-production-database.sh` additionally requires the production
-   Supabase session-pooler host, port 5432 and `VerifyFull`; it rejects database
-   names marked local, development, test, restore, drill, or rehearsal. Its
-   `MOORE_PRODUCTION_REHEARSAL=true` escape hatch is CI-only and itself requires
-   an explicitly named test/rehearsal database.
-5. Run the grant script once during setup and verify the runtime credential:
+1. Run the release tests and build the exact image with
+   `docker build -t moore-hotels-api:release .`.
+2. Back up any existing application database and rehearse the migration on a
+   restored copy before changing production. See the free backup procedure below.
+3. Supply `MIGRATION_CONNECTION_STRING` (owner session-pooler login),
+   `DATABASE_RUNTIME_ROLE`, and `RUNTIME_CONNECTION_STRING` securely to the
+   external runner's environment. On initial bootstrap only, also supply
+   `DATABASE_RUNTIME_PASSWORD` to create the dedicated role. Do not enter these
+   values into shell history or commit them. Keep owner secrets off Render.
+4. Run `./scripts/deploy-database.sh moore-hotels-api:release` on that machine.
+   This uses the image's migration bundle, closes Data API access, validates
+   business invariants, binds the database to production, provisions the runtime
+   grants, and verifies the runtime login. Any failure stops the sequence.
+5. Remove the migration/provisioning secrets from the runner environment. After
+   success, manually deploy that same commit to the existing Render web service.
+6. Verify readiness, account links, email queue processing, and restart recovery.
 
-   ```bash
-   MIGRATION_CONNECTION_STRING='...' \
-   DATABASE_RUNTIME_ROLE='moore_runtime' \
-   ./scripts/provision-runtime-database-role.sh
+The API role cannot change schema or migration history. Its key-table access
+is append-only, with RLS restricted to that role. Supabase Data API roles receive
+no access to application tables. Browser clients call the API only.
 
-   RUNTIME_CONNECTION_STRING='...' \
-   ./scripts/validate-runtime-database-role.sh
-   ```
+### Free backup and recovery
 
-   The same provisioning runs after every production migration so new tables
-   do not accidentally become inaccessible or over-privileged. Pre-deploy also
-   removes all `public` schema, table, sequence, and function access from
-   Supabase's `anon`, `authenticated`, `service_role`, and `authenticator`
-   roles. The browser applications must never contain a Supabase URL, anon key,
-   service key, or direct database credential; they call this API only.
-   The runtime role receives `SELECT` only on `environment_boundaries`; it
-   cannot insert, update, delete, truncate, reference, trigger, or use the
-   marker's sequence. Production startup requires the singleton marker to be
-   exactly `production` before it serves requests.
-6. Keep network restrictions, organization MFA, database alerts, managed
-   backups, and PITR configured in Supabase. Use a direct IPv6 connection for
-   administration only when the runner supports it; Render uses the IPv4
-   session pooler.
-7. Take a backup of an existing database before every migration.
-8. Rehearse the migration against a restored copy before the production deploy.
-9. Run `MIGRATION_CONNECTION_STRING='...' ./scripts/validate-production-database.sh`
-   against the restored copy before applying the migration bundle.
-10. After restoring the current release, run
-    `RESTORE_DRILL_CONNECTION_STRING='...' ./scripts/verify-restore-drill.sh`.
-    Use PostgreSQL backup tools at least as new as the source server's major
-    version. The verifier requires all application/Identity tables, a production
-    environment marker, matching release migration and valid business data.
-    When migration sources are unavailable, set
-    `RESTORE_DRILL_EXPECTED_MIGRATION` explicitly. Compare recovered record
-    counts/hashes and sequence values with the backup manifest as well.
+Set `OperationalReadiness__BackupMode=Logical`,
+`OperationalReadiness__ManagedBackupsEnabled=false`, and
+`OperationalReadiness__PointInTimeRecoveryEnabled=false`. Logical mode replaces
+only the paid managed/PITR requirement. An encrypted off-provider backup and a
+successful restore drill are still required before accepting guest data.
 
-Complete `docs/DISASTER_RECOVERY_AND_ALERTING.md` before entering the
-`OperationalReadiness__*` declarations. Production startup requires managed
-backups, PITR, an encrypted off-provider copy, all four alert categories, alert
-routing evidence and restore-drill evidence. The authenticated health endpoint
-reports queue age, exhausted work, payment warnings and restore-drill age.
+Install PostgreSQL **17 or newer** client tools and [age](https://age-encryption.org/)
+on a trusted machine outside Render. Create an age identity with `age-keygen`,
+keep its private identity encrypted/offline, and use its public recipient for
+backups. Supply `BACKUP_CONNECTION_STRING` via the runner's secret environment
+and `BACKUP_AGE_RECIPIENT` with the public recipient, then run:
 
-Do not paste database credentials into GitHub, chat, tickets, screenshots or
-application logs.
+```bash
+./scripts/backup-production.sh /secure/backups/moore-YYYY-MM-DD.dump.age
+```
+
+The script streams all public application/Identity tables, sequences, migration
+history, and encrypted keys directly into age encryption. No plaintext dump is
+written. It refuses insecure TLS and existing output files. The supplied
+PostgreSQL client must be at least the source server's major version.
+Keep copies on a separate device/provider and retain the PFX/password separately.
+Schedule this on a trusted machine that is actually on; do not rely on a worker
+inside a sleeping Render instance. Set the recovery-point objective to the real
+backup interval, not a promised PITR interval. Scheduling/restore evidence must
+be established by the operator before the readiness declarations become true.
+
+To rehearse recovery, configure PostgreSQL client environment variables for a
+**fresh isolated** database whose name contains `restore`, `drill`, or
+`rehearsal`. Decrypt the archive into `pg_restore`:
+
+```bash
+age --decrypt --identity /secure/backup-identity.txt moore-YYYY-MM-DD.dump.age \
+  | pg_restore --exit-on-error --clean --if-exists --no-owner --no-privileges --dbname="$PGDATABASE"
+./scripts/verify-restore-drill.sh
+```
+
+The restore command removes conflicting schema objects, including the default
+`public` schema; run it only against the fresh isolated target described above.
+The verifier requires `RESTORE_DRILL_CONNECTION_STRING`. Recreate the dedicated
+runtime role and grants on the restored target; the export intentionally omits
+role passwords and ACLs. Verify record counts, business invariants and protected
+payload decryption with the backed-up PFX. Never restore over production as a
+drill. Logical backups recover only to the exported snapshot.
+
+Complete `docs/DISASTER_RECOVERY_AND_ALERTING.md` and keep the backup, restore,
+provider and alert declarations truthful. The authenticated health endpoint
+reports the chosen backup mode and actual managed/PITR flags.
 
 ## 3. Rotate and enter secrets
 
@@ -134,7 +133,6 @@ The previously used database, JWT, Brevo, Cloudinary and administrator
 credentials must be rotated. Enter the new values only in Render:
 
 - `ConnectionStrings__DefaultConnection`
-- `MIGRATION_CONNECTION_STRING`
 - `DATABASE_RUNTIME_ROLE`
 - `CloudinarySettings__CloudName`
 - `CloudinarySettings__ApiKey`
@@ -196,28 +194,23 @@ Encode the PFX as a single-line base64 value and enter it in Render as
 `DataProtection__CertificatePassword`. Store an encrypted offline backup of the
 PFX and password. Never commit the PFX or encoded value.
 
-The image pre-creates `/var/data/moorehotels-keys` as mode `0700` owned by the
-non-root `app` user. Keep the Render disk mounted at `/var/data`; changing the
-mount or key path can make it unwritable. Production startup performs a
-storage write/flush check, validates every retained non-revoked key, and performs
-an encrypted protect/unprotect round-trip. It refuses to serve traffic if the
-persistent path, certificate or password is unusable. An existing key on a
-read-only mount is not sufficient. After the first staging start, restart the
-service and confirm `/health/ready` remains 200 and the same
-key file remains on the disk.
+Set `DataProtection__StorageProvider=Database`. The encrypted XML key ring is
+stored in `public.data_protection_keys`, included in database backups. Startup
+checks database writes using a rolled-back probe, validates every retained
+non-revoked key, and checks protection/decryption before serving traffic.
+It rejects an unreadable key ring or wrong certificate instead of silently
+starting a replacement ring. Never replace the PFX independently of its keys.
 
-Also verify that a payload protected before restart can still be unprotected
-afterward and after restoring the key-ring backup. Preserve the original PFX
-and password with that backup. Do not replace the certificate in isolation:
-rehearse any certificate/key-ring migration first, because a different valid
-certificate does not decrypt data protected by the existing keys.
+After deployment, restart and confirm an earlier protected payload still
+opens. Repeat that check against a restored backup with the original PFX and
+password. When migrating an existing filesystem key ring, preserve/import its
+XML and original PFX before switching storage; creating a new ring would
+invalidate existing account links and encrypted outbox payloads. The selected
+project was empty during the 2026-09-08 inspection; recheck before bootstrap.
 
-Keep the image's default entrypoint. It removes `MIGRATION_CONNECTION_STRING`
-and `DATABASE_RUNTIME_PASSWORD` before executing .NET, including from Linux's
-initial process environment. Clearing these only inside application code does
-not remove that initial snapshot. The separate pre-deploy command retains its
-owner credential. Operators with hosting-platform access still control the
-configured secrets; this boundary protects the serving API process.
+Keep the default image entrypoint. It removes migration/provisioning variables
+before starting the API as defense in depth. External migration commands use
+a separate disposable container and never run as part of the serving process.
 
 ## 5. Monnify
 
@@ -363,6 +356,5 @@ Do not deploy the dashboard or guest website until all checks pass:
   gate passed.
 - Logs contain no passwords, JWTs, API keys or full connection strings.
 - Rollback and database restore procedures have been rehearsed.
-- Provider-managed PITR, encrypted off-provider export and every alert route
-  have been tested; the latest quarterly restore evidence is visible in
+- Encrypted logical export/restore and every alert route have been tested; the latest quarterly restore evidence is visible in
   authenticated operational health.
