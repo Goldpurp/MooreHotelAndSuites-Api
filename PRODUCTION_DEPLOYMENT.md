@@ -110,6 +110,14 @@ Before the first deployment:
 8. Rehearse the migration against a restored copy before the production deploy.
 9. Run `MIGRATION_CONNECTION_STRING='...' ./scripts/validate-production-database.sh`
    against the restored copy before applying the migration bundle.
+10. After restoring the current release, run
+    `RESTORE_DRILL_CONNECTION_STRING='...' ./scripts/verify-restore-drill.sh`.
+    Use PostgreSQL backup tools at least as new as the source server's major
+    version. The verifier requires all application/Identity tables, a production
+    environment marker, matching release migration and valid business data.
+    When migration sources are unavailable, set
+    `RESTORE_DRILL_EXPECTED_MIGRATION` explicitly. Compare recovered record
+    counts/hashes and sequence values with the backup manifest as well.
 
 Complete `docs/DISASTER_RECOVERY_AND_ALERTING.md` before entering the
 `OperationalReadiness__*` declarations. Production startup requires managed

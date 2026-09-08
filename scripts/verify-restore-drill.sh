@@ -23,7 +23,24 @@ if [[ ! "$database_name" =~ (restore|drill|rehearsal) ]]; then
   exit 2
 fi
 
-run_psql <<'SQL'
+expected_migration="${RESTORE_DRILL_EXPECTED_MIGRATION:-}"
+if [[ -z "$expected_migration" ]]; then
+  migration_directory="$script_directory/../MooreHotels.Infrastructure/Migrations"
+  if [[ -d "$migration_directory" ]]; then
+    expected_migration="$(
+      for migration in "$migration_directory"/[0-9]*.cs; do
+        [[ "$migration" == *.Designer.cs ]] && continue
+        basename "$migration" .cs
+      done | sort | tail -n 1
+    )"
+  fi
+fi
+if [[ ! "$expected_migration" =~ ^[0-9]{14}_[A-Za-z0-9_]+$ ]]; then
+  echo "RESTORE_DRILL_EXPECTED_MIGRATION must identify the release being restored when migration sources are unavailable." >&2
+  exit 2
+fi
+
+run_psql --set "expected_migration=$expected_migration" <<'SQL'
 DO $$
 DECLARE
     required_table text;
@@ -31,12 +48,38 @@ DECLARE
     invalid_count bigint;
 BEGIN
     FOREACH required_table IN ARRAY ARRAY[
+        'environment_boundaries',
+        'users',
+        'roles',
+        'user_roles',
+        'AspNetUserClaims',
+        'AspNetUserLogins',
+        'AspNetUserTokens',
+        'AspNetRoleClaims',
         'bookings',
         'guests',
+        'room_types',
         'rooms',
+        'room_inventory_periods',
+        'room_inventory_closures',
+        'room_images',
+        'media_assets',
+        'media_deletion_outbox',
         'audit_logs',
+        'visit_records',
+        'notifications',
+        'notification_receipts',
+        'monnify_transactions',
         'email_outbox',
+        'booking_email_verifications',
+        'booking_code_allocations',
+        'addon_services',
+        'booking_addons',
+        'privacy_requests',
         'rate_plans',
+        'daily_room_rates',
+        'pricing_rules',
+        'promotions',
         'booking_quotes',
         'booking_quote_lines',
         'reservation_rooms',
@@ -63,6 +106,11 @@ BEGIN
         RAISE EXCEPTION 'Restore verification failed; missing required tables: %', missing_tables;
     END IF;
 
+    IF (SELECT count(*) FROM environment_boundaries
+        WHERE "Id" = 1 AND "EnvironmentName" = 'production') <> 1 THEN
+        RAISE EXCEPTION 'Restore verification failed; production environment boundary is missing.';
+    END IF;
+
     SELECT count(*) INTO invalid_count
     FROM bookings b
     LEFT JOIN guests g ON g."Id" = b."GuestId"
@@ -80,6 +128,16 @@ BEGIN
 END
 $$;
 
+SELECT COALESCE(max("MigrationId") = :'expected_migration', false) AS migration_matches
+FROM "__EFMigrationsHistory"
+\gset
+\if :migration_matches
+\else
+  DO $$ BEGIN
+    RAISE EXCEPTION 'Restore verification failed; migration history does not match the expected release.';
+  END $$;
+\endif
+
 SELECT
     current_database() AS restored_database,
     (SELECT count(*) FROM rooms) AS rooms,
@@ -94,4 +152,9 @@ SELECT
     (SELECT max("MigrationId") FROM "__EFMigrationsHistory") AS latest_migration;
 SQL
 
-echo "Restore-drill structural and relationship verification passed for '$database_name'."
+# Reuse the deployment invariant checks, including folios, unit counts, quotes,
+# price snapshots, retained emails and append-only triggers. This is read-only.
+MIGRATION_CONNECTION_STRING="$RESTORE_DRILL_CONNECTION_STRING" \
+  "$script_directory/validate-production-database.sh"
+
+echo "Restore-drill schema, release, environment and invariant verification passed for '$database_name'."

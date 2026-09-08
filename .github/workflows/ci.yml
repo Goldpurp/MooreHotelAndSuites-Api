@@ -67,6 +67,15 @@ jobs:
           dotnet tool run dotnet-ef database update --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
           dotnet tool run dotnet-ef database update 0 --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
           dotnet tool run dotnet-ef database update --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
+      - name: Verify preflight against previous release schema
+        env:
+          ConnectionStrings__DefaultConnection: ${{ env.MOORE_TEST_POSTGRES }}
+          MIGRATION_CONNECTION_STRING: ${{ env.MOORE_TEST_POSTGRES }}
+        run: |
+          dotnet tool run dotnet-ef database update 20260905081107_CompleteHotelOperationsAndDistribution --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
+          ./scripts/validate-production-database.sh
+          dotnet tool run dotnet-ef database update --project MooreHotels.Infrastructure --startup-project MooreHotels.Infrastructure --configuration Release --no-build
+          ./scripts/validate-production-database.sh
       - name: Rehearse Supabase data and runtime boundaries
         env:
           MIGRATION_CONNECTION_STRING: Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=postgres;Password=postgres;SSL Mode=Disable
@@ -82,6 +91,33 @@ jobs:
           ./scripts/validate-production-database.sh
           ./scripts/provision-runtime-database-role.sh
           RUNTIME_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=moore_runtime_ci;Password=ci-runtime-password-not-for-production;SSL Mode=Disable' ./scripts/validate-runtime-database-role.sh
+      - name: Rehearse backup restore and reject incomplete restores
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: moore_production_rehearsal
+          RESTORE_DRILL_CONNECTION_STRING: Host=127.0.0.1;Port=5432;Database=moore_restore_rehearsal;Username=postgres;Password=postgres;SSL Mode=Disable
+        run: |
+          psql --no-psqlrc -v ON_ERROR_STOP=1 -c "INSERT INTO audit_logs (\"Id\", \"ProfileId\", \"Action\", \"EntityType\", \"EntityId\", \"CreatedAt\") VALUES ('00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000000', 'RestoreGate', 'Release', 'ci-restore-sentinel', CURRENT_TIMESTAMP)"
+          pg_dump --format=custom --file=/tmp/moore-ci-restore.dump
+          createdb moore_restore_rehearsal
+          pg_restore --exit-on-error --dbname=moore_restore_rehearsal /tmp/moore-ci-restore.dump
+          ./scripts/verify-restore-drill.sh
+          export PGDATABASE=moore_restore_rehearsal
+          test "$(psql --no-psqlrc -At -v ON_ERROR_STOP=1 -c 'SELECT count(*) FROM audit_logs WHERE "Id" = $$00000000-0000-0000-0000-000000000001$$::uuid')" = 1
+          psql --no-psqlrc -v ON_ERROR_STOP=1 -c 'ALTER TABLE environment_boundaries RENAME TO saved_environment_boundaries'
+          if ./scripts/verify-restore-drill.sh; then
+            echo 'Incomplete restore was incorrectly accepted.' >&2
+            exit 1
+          fi
+          psql --no-psqlrc -v ON_ERROR_STOP=1 -c 'ALTER TABLE saved_environment_boundaries RENAME TO environment_boundaries'
+          if RESTORE_DRILL_EXPECTED_MIGRATION=20000101000000_WrongRelease ./scripts/verify-restore-drill.sh; then
+            echo 'Wrong migration release was incorrectly accepted.' >&2
+            exit 1
+          fi
+          ./scripts/verify-restore-drill.sh
       - name: Publish API
         run: dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --configuration Release --no-build --output /tmp/moore-hotels-api
       - name: Build production container

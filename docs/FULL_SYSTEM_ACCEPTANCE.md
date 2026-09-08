@@ -169,6 +169,10 @@ The frontend client repositories (Guest Web App and Staff Dashboard) must adhere
      contains `restore`, `drill`, or `rehearsal`; never overwrite production.
   2. Run
      `RESTORE_DRILL_CONNECTION_STRING='...' ./scripts/verify-restore-drill.sh`.
+     The verifier checks required tables, the production environment marker,
+     release migration and deployment invariants. It derives the expected
+     migration from this checkout; when running without migration sources,
+     explicitly set `RESTORE_DRILL_EXPECTED_MIGRATION` to the intended release.
   3. Compare booking, guest, room, payment-ledger and audit-log counts plus the
      newest booking timestamp with the source manifest.
   4. Rehearse connection cutover and rollback without allowing the copy to send

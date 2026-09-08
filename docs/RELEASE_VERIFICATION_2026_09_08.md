@@ -52,7 +52,36 @@ No push or deployment is part of this verification.
 
 ## 3. Database deployment and recovery
 
-Pending.
+- Confirmed and fixed an upgrade blocker: preflight queried
+  `booking_quotes.AmendmentBookingId` before the migration introducing it.
+  The previous-release schema reproduced PostgreSQL's missing-column error.
+  Preflight now checks column existence before that invariant, and CI checks
+  both the previous release and current schema.
+- Confirmed and fixed a restore-verification gap: the old verifier accepted a
+  database missing `environment_boundaries`. It now checks all application and
+  Identity tables, the production marker, expected latest migration, and the
+  full deployment invariants. CI exercises a real dump/restore, checks a data
+  sentinel, and rejects a missing table and wrong migration version.
+- Linux migration bundle: fresh migration, rollback to zero and reapply passed.
+- Populated previous-release upgrade through the actual pre-deploy script:
+  passed. All 27 migrations applied; one paid booking worth NGN 100,000 and its
+  two folio entries survived; production binding and runtime grants passed.
+- Supabase-like role hierarchy, including `service_role` BYPASSRLS and inherited
+  Data API roles: hardening passed. Runtime schema creation, migration-history
+  access, booking deletion, audit mutation and environment mutation were denied.
+  All four Data API roles were denied application access. Runtime operational
+  reads succeeded.
+- Backup/restore used PostgreSQL 16 clients in a disposable Linux container.
+  Exact row hashes matched across all 47 public tables and all sequence values.
+  Recovered data included a booking, room, guest, reservation unit, two folio
+  entries, audit entries and queued email. The new CI restore step was executed
+  verbatim locally and passed, including its negative cases.
+- YAML, every workflow shell block, every shell script and diff whitespace
+  validation passed.
+- Live limitation: the connected Supabase account lists two Moore Hotels
+  projects, both INACTIVE. Neither has been selected as the target. No live
+  schema, permissions, backup/PITR configuration or restore evidence has been
+  approved by these local tests. No remote database was changed.
 
 ## 4. Production configuration and encryption-key persistence
 
