@@ -135,3 +135,31 @@ No push or deployment is part of this verification.
 4. Push only when authorized and require GitHub Actions/CodeQL on the pushed
    commit. Guest/staff frontend and live provider acceptance remain outside
    these four release items.
+
+## Live target follow-up, 2026-09-08
+
+This follow-up supersedes the earlier target-selection limitation above.
+
+- User selected **Moore hotel and suites**, project `ihxhqfffrxmgqabrncrg`,
+  Goldpurp organization, Frankfurt (`eu-central-1`). Resumed the paused project
+  and waited for `ACTIVE_HEALTHY` before final inspection.
+- PostgreSQL reports 17.6. Live catalog inspection confirmed zero public tables,
+  no other non-platform tables, no EF migration history, no environment marker,
+  and no `moore_runtime` role. Executed the SQL body of the repository's
+  production preflight through the Supabase connector: passed. This validates
+  an empty starting schema, not migration deployment or runtime connectivity.
+- The organization reports plan `free`. Managed backup/PITR configuration and
+  off-provider recovery are still unverified; no readiness declarations changed.
+- Inspected the existing Render API service `srv-d5uhns4oud1c73bn28o0` in its
+  dashboard. It uses Free compute, branch `main`, and health path `/api/health`.
+  Pre-deploy commands are unavailable on that plan; the Disk page explicitly
+  says persistent disks require a paid compute plan. The minimum paid option
+  displayed is $7/month (0.5 CPU, 512 MB), before disk and other usage charges.
+- Required deployment configuration: paid compute, a persistent `/var/data`
+  disk, pre-deploy `./scripts/predeploy-production.sh`, and `/health/ready`.
+  Coordinate those changes with the tested release, since the old deployed
+  version may not implement its readiness path. No Render settings were changed.
+- Still needed: securely configured owner/runtime credentials, production PFX
+  and key storage, paid backup/PITR setup, then live migration/runtime checks
+  and a protected restore/restart rehearsal. No schema/data changes, paid
+  upgrades, code push, or application deployment occurred in this follow-up.

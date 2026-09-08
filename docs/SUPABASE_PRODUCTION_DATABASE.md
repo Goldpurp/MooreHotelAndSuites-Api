@@ -3,6 +3,18 @@
 The API uses Supabase as managed PostgreSQL only. Browser clients must not use
 Supabase Data API credentials for Moore Hotels application tables.
 
+## Selected production target
+
+- Project: **Moore hotel and suites** (`ihxhqfffrxmgqabrncrg`).
+- Organization: Goldpurp (`tpajdexfeepffldbsopr`); region: `eu-central-1`.
+- Resumed and confirmed `ACTIVE_HEALTHY` on 2026-09-08, PostgreSQL 17.6.
+- Live inspection found zero public application tables, no EF migration
+  history, no environment marker, and no `moore_runtime` role. The release's
+  SQL preflight passed. This is an uninitialized application database.
+- The organization is on Free. Managed backup/PITR acceptance and an encrypted
+  off-provider restore rehearsal remain outstanding. Do not declare them ready
+  merely because the project resumed successfully.
+
 ## Connection separation
 
 - `MIGRATION_CONNECTION_STRING`: Supabase `postgres` owner through the IPv4
@@ -35,8 +47,9 @@ beyond one Render instance.
 
 ## One-time project bootstrap
 
-1. Create a new Supabase project in the intended production region and record
-   its session-pooler owner connection from **Connect**.
+1. Use the selected project above and record its session-pooler owner connection
+   from **Connect**. Recheck its schema and migration history before bootstrap;
+   do not create a replacement project or overwrite unexpected existing data.
 2. Generate a unique runtime password in a password manager.
 3. Run `scripts/create-supabase-runtime-role.sh` with the three required
    environment variables. The same command safely rotates an existing runtime
