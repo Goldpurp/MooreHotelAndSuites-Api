@@ -24,7 +24,7 @@ RUN dotnet tool run dotnet-ef migrations bundle \
     --no-build \
     --output /app/migrate
 
-FROM mcr.microsoft.com/dotnet/aspnet:10.0.11@sha256:a4556ed033fa96f984bb7a8d348851cb2d36b1281dd2420070045f664fbb5f94 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0.12@sha256:1fe86375600b62e6566b465da9553eef0621f13c67f40fe764cd8dbb1dee1497 AS runtime
 WORKDIR /app
 
 RUN apt-get update \
