@@ -5,9 +5,14 @@ using MooreHotels.WebAPI.Services;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
+using MooreHotels.Application.Interfaces;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Persistence;
+using Microsoft.AspNetCore.RateLimiting;
+using MooreHotels.WebAPI.Extensions;
+using MooreHotels.Application.Common;
+using System.Security.Claims;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -18,86 +23,118 @@ public class RoomsController : ControllerBase
     private readonly IRoomService _roomService;
     private readonly IImageService _imageService;
     private readonly MooreHotelsDbContext _context;
-    private readonly ILogger<RoomsController> _logger;
+    private readonly IMediaDeletionOutbox _mediaDeletionOutbox;
+    private readonly OrphanedMediaCleanup _orphanedMediaCleanup;
 
     public RoomsController(
         IRoomService roomService,
         IImageService imageService,
         MooreHotelsDbContext context,
-        ILogger<RoomsController> logger)
+        IMediaDeletionOutbox mediaDeletionOutbox,
+        OrphanedMediaCleanup orphanedMediaCleanup)
     {
         _roomService = roomService;
         _imageService = imageService;
         _context = context;
-        _logger = logger;
+        _mediaDeletionOutbox = mediaDeletionOutbox;
+        _orphanedMediaCleanup = orphanedMediaCleanup;
     }
 
     [HttpGet]
     [AllowAnonymous]
-    public async Task<IActionResult> GetRooms([FromQuery] RoomCategory? category)
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
+    public async Task<ActionResult<IEnumerable<PublicRoomDto>>> GetRooms(
+        [FromQuery] RoomCategory? category)
     {
-        var includeOffline = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
-        var rooms = await _roomService.GetAllRoomsAsync(category, includeOffline);
-        return Ok(includeOffline ? rooms : rooms.Select(ToPublicRoom));
+        var rooms = await _roomService.GetAllRoomsAsync(category, includeOffline: false);
+        return Ok(rooms.Select(ToPublicRoom));
     }
 
     [HttpGet("search")]
     [AllowAnonymous]
-    public async Task<ActionResult<IEnumerable<RoomDto>>> SearchRooms(
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
+    public async Task<ActionResult<IEnumerable<PublicRoomDto>>> SearchRooms(
         [FromQuery] DateTime? checkIn,
         [FromQuery] DateTime? checkOut,
         [FromQuery] RoomCategory? category,
         [FromQuery] int guest = 1,
-        [FromQuery] string? roomNumber = null,
         [FromQuery] string? amenity = null)
     {
-        if (guest <= 0) return BadRequest("Guest count must be greater than zero.");
-
-        if (checkIn.HasValue && checkOut.HasValue)
-        {
-            if (checkIn >= checkOut) return BadRequest("Check-out must be after check-in.");
-            if (checkIn < DateTime.UtcNow.Date) return BadRequest("Check-in cannot be in the past.");
-        }
-
-        var canViewInternalFields = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
         var request = new RoomSearchRequest(
             checkIn,
             checkOut,
             category,
             guest,
-            canViewInternalFields ? roomNumber : null,
+            null,
             amenity);
         var result = await _roomService.SearchRoomsAsync(request);
-        return Ok(canViewInternalFields ? result : result.Select(ToPublicRoom));
+        return Ok(result.Select(ToPublicRoom));
     }
 
     [HttpGet("{id:guid}")]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetRoom(Guid id)
     {
-        var room = await _roomService.GetRoomByIdAsync(id);
-        var canViewOffline = User.IsInRole("Admin") || User.IsInRole("Manager") || User.IsInRole("Staff");
-        return room == null || (!room.IsOnline && !canViewOffline)
+        var room = (await _roomService.GetAllRoomsAsync(includeOffline: false))
+            .SingleOrDefault(item => item.Id == id);
+        return room is null
             ? NotFound(new { message = "Room not found." })
-            : Ok(canViewOffline ? room : ToPublicRoom(room));
+            : Ok(ToPublicRoom(room));
     }
 
     [HttpGet("{id:guid}/availability")]
     [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
     public async Task<IActionResult> GetAvailability(Guid id, [FromQuery] DateTime checkIn, [FromQuery] DateTime checkOut)
     {
         if (checkIn >= checkOut) return BadRequest("Check-out must be after check-in.");
-        var exists = await _roomService.GetRoomByIdAsync(id);
-        if (exists == null) return NotFound(new { message = "Room not found." });
+        var exists = (await _roomService.GetAllRoomsAsync(includeOffline: false))
+            .Any(item => item.Id == id);
+        if (!exists)
+            return NotFound(new { message = "Room not found." });
 
         var result = await _roomService.CheckAvailabilityAsync(id, checkIn, checkOut);
         return Ok(result);
+    }
+
+    [HttpGet("management")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    public async Task<ActionResult<IEnumerable<RoomDto>>> GetManagedRooms(
+        [FromQuery] RoomCategory? category) =>
+        Ok(await _roomService.GetAllRoomsAsync(category, includeOffline: true));
+
+    [HttpGet("management/search")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    public async Task<ActionResult<IEnumerable<RoomDto>>> SearchManagedRooms(
+        [FromQuery] DateTime? checkIn,
+        [FromQuery] DateTime? checkOut,
+        [FromQuery] RoomCategory? category,
+        [FromQuery] int guest = 1,
+        [FromQuery] string? roomNumber = null,
+        [FromQuery] string? amenity = null) =>
+        Ok(await _roomService.SearchRoomsAsync(new RoomSearchRequest(
+            checkIn,
+            checkOut,
+            category,
+            guest,
+            roomNumber,
+            amenity)));
+
+    [HttpGet("management/{id:guid}")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    public async Task<ActionResult<RoomDto>> GetManagedRoom(Guid id)
+    {
+        var room = await _roomService.GetRoomByIdAsync(id);
+        return room is null ? NotFound(new { message = "Room not found." }) : Ok(room);
     }
 
 
     [HttpPost]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
+    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     public async Task<IActionResult> CreateRoom([FromForm] CreateRoomRequest request, List<IFormFile> files)
     {
         var validationError = await ImageFileValidator.GetValidationErrorAsync(files);
@@ -111,7 +148,7 @@ public class RoomsController : ControllerBase
             {
                 _context.ChangeTracker.Clear();
                 await using var transaction = await _context.Database.BeginTransactionAsync();
-                var roomDto = await _roomService.CreateRoomAsync(request);
+                var roomDto = await _roomService.CreateRoomAsync(request, GetActorId());
                 foreach (var result in uploadResults)
                 {
                     _context.RoomImages.Add(new RoomImage
@@ -135,7 +172,10 @@ public class RoomsController : ControllerBase
         {
             foreach (var result in uploadResults)
             {
-                await _imageService.DeleteImageAsync(result.PublicId);
+                await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                    result.PublicId,
+                    "OrphanedRoomCreate",
+                    HttpContext.TraceIdentifier);
             }
 
             throw;
@@ -148,9 +188,11 @@ public class RoomsController : ControllerBase
     [HttpPost("{id:guid}/images")]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
+    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     public async Task<IActionResult> AddImages(Guid id, List<IFormFile> files)
     {
-        if (files == null || !files.Any()) return BadRequest("No files uploaded.");
+        if (files == null || files.Count == 0) return BadRequest("No files uploaded.");
         var validationError = await ImageFileValidator.GetValidationErrorAsync(files);
         if (validationError is not null) return BadRequest(new { message = validationError });
 
@@ -170,6 +212,23 @@ public class RoomsController : ControllerBase
             {
                 _context.ChangeTracker.Clear();
                 await using var transaction = await _context.Database.BeginTransactionAsync();
+
+                var lockedRoom = await _context.Rooms
+                    .FromSqlInterpolated(
+                        $"SELECT * FROM rooms WHERE \"Id\" = {id} FOR UPDATE")
+                    .SingleOrDefaultAsync();
+                if (lockedRoom is null)
+                {
+                    throw new NotFoundException("Room not found.");
+                }
+
+                var currentImageCount = await _context.RoomImages
+                    .CountAsync(image => image.RoomId == id);
+                if (currentImageCount + uploadResults.Count > 30)
+                {
+                    throw new BadRequestException(
+                        "A room gallery cannot contain more than 30 images.");
+                }
 
                 foreach (var result in uploadResults)
                 {
@@ -193,17 +252,10 @@ public class RoomsController : ControllerBase
         {
             foreach (var result in uploadResults)
             {
-                try
-                {
-                    await _imageService.DeleteImageAsync(result.PublicId);
-                }
-                catch (Exception cleanupException)
-                {
-                    _logger.LogWarning(
-                        cleanupException,
-                        "Could not remove orphaned image {PublicId} after room image failure.",
-                        result.PublicId);
-                }
+                await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                    result.PublicId,
+                    "OrphanedRoomImage",
+                    id.ToString());
             }
 
             throw;
@@ -215,6 +267,8 @@ public class RoomsController : ControllerBase
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
+    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     [ProducesResponseType(typeof(RoomDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     [ProducesResponseType(StatusCodes.Status404NotFound)]
@@ -266,10 +320,27 @@ public class RoomsController : ControllerBase
                 publicIdsToDelete.Clear();
                 await using var transaction = await _context.Database.BeginTransactionAsync();
 
-                await _context.Database.ExecuteSqlInterpolatedAsync(
-                    $"SELECT 1 FROM rooms WHERE \"Id\" = {id} FOR UPDATE");
+                var lockedRoom = await _context.Rooms
+                    .FromSqlInterpolated(
+                        $"SELECT * FROM rooms WHERE \"Id\" = {id} FOR UPDATE")
+                    .SingleOrDefaultAsync();
+                if (lockedRoom is null)
+                {
+                    throw new NotFoundException("Room not found.");
+                }
 
-                await _roomService.UpdateRoomAsync(id, request);
+                var currentImageCount = await _context.RoomImages
+                    .CountAsync(image => image.RoomId == id);
+                var committedRetainedCount = willReplaceImages
+                    ? retainedImageUrls.Count
+                    : currentImageCount;
+                if (committedRetainedCount + uploadResults.Count > 30)
+                {
+                    throw new BadRequestException(
+                        "A room gallery cannot contain more than 30 images.");
+                }
+
+                await _roomService.UpdateRoomAsync(id, request, GetActorId());
 
                 // ReplaceImages disambiguates "replace everything with new uploads"
                 // from "the client did not send image changes".
@@ -291,7 +362,7 @@ public class RoomsController : ControllerBase
                         .Where(img => !retainedImageUrls.Contains(img.Url))
                         .ToList();
 
-                    if (imagesToDelete.Any())
+                    if (imagesToDelete.Count > 0)
                     {
                         _context.RoomImages.RemoveRange(imagesToDelete);
                         publicIdsToDelete.AddRange(imagesToDelete
@@ -312,6 +383,14 @@ public class RoomsController : ControllerBase
                     });
                 }
 
+                foreach (var publicId in publicIdsToDelete.Distinct(StringComparer.Ordinal))
+                {
+                    _context.MediaDeletionJobs.Add(_mediaDeletionOutbox.Create(
+                        publicId,
+                        "Room",
+                        id.ToString()));
+                }
+
                 await _context.SaveChangesAsync();
                 await transaction.CommitAsync();
             });
@@ -320,37 +399,13 @@ public class RoomsController : ControllerBase
         {
             foreach (var result in uploadResults)
             {
-                try
-                {
-                    await _imageService.DeleteImageAsync(result.PublicId);
-                }
-                catch (Exception cleanupException)
-                {
-                    _logger.LogWarning(
-                        cleanupException,
-                        "Could not remove orphaned image {PublicId} after room update failure.",
-                        result.PublicId);
-                }
+                await _orphanedMediaCleanup.DeleteNowOrEnqueueAsync(
+                    result.PublicId,
+                    "OrphanedRoomUpdate",
+                    id.ToString());
             }
 
             throw;
-        }
-
-        // Database truth is committed before removing old cloud assets. A cloud
-        // cleanup outage must not roll back or misreport a successful room edit.
-        foreach (var publicId in publicIdsToDelete.Distinct(StringComparer.Ordinal))
-        {
-            try
-            {
-                await _imageService.DeleteImageAsync(publicId);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(
-                    cleanupException,
-                    "Could not remove superseded room image {PublicId}.",
-                    publicId);
-            }
         }
 
         _context.ChangeTracker.Clear();
@@ -368,7 +423,8 @@ public class RoomsController : ControllerBase
         {
             return NotFound(new { message = "Room not found." });
         }
-        if (await _context.Bookings.AsNoTracking().AnyAsync(booking => booking.RoomId == id))
+        if (await _context.ReservationRooms.AsNoTracking().AnyAsync(item => item.AssignedRoomId == id) ||
+            await _context.Bookings.AsNoTracking().AnyAsync(booking => booking.RoomId == id))
         {
             return Conflict(new
             {
@@ -381,29 +437,26 @@ public class RoomsController : ControllerBase
         {
             _context.ChangeTracker.Clear();
             await using var transaction = await _context.Database.BeginTransactionAsync();
-            var deletedPublicIds = await _roomService.DeleteRoomAsync(id);
+            var deletedPublicIds = await _roomService.DeleteRoomAsync(id, GetActorId());
+            foreach (var publicId in deletedPublicIds
+                         .Where(value => !string.IsNullOrWhiteSpace(value))
+                         .Distinct(StringComparer.Ordinal))
+            {
+                _context.MediaDeletionJobs.Add(_mediaDeletionOutbox.Create(
+                    publicId,
+                    "Room",
+                    id.ToString()));
+            }
             await _context.SaveChangesAsync();
             await transaction.CommitAsync();
             return deletedPublicIds;
         });
 
-        foreach (var publicId in publicIds.Where(value => !string.IsNullOrWhiteSpace(value)))
+        return Accepted(new
         {
-            try
-            {
-                await _imageService.DeleteImageAsync(publicId);
-            }
-            catch (Exception cleanupException)
-            {
-                _logger.LogWarning(
-                    cleanupException,
-                    "Room {RoomId} was deleted, but cloud image {PublicId} could not be removed.",
-                    id,
-                    publicId);
-            }
-        }
-
-        return Ok(new { message = "Room and all associated images deleted successfully." });
+            message = "Room deleted and durable image cleanup queued.",
+            queuedImageCount = publicIds.Count
+        });
     }
 
     private static PublicRoomDto ToPublicRoom(RoomDto room) => new(
@@ -415,7 +468,15 @@ public class RoomsController : ControllerBase
         room.Size,
         room.Description,
         room.Amenities,
-        room.Images);
+        room.Images,
+        room.RoomTypeId,
+        room.RoomTypeCode,
+        room.RoomTypeName);
+
+    private Guid GetActorId() =>
+        Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId)
+            ? actorId
+            : throw new UnauthorizedAccessException("The authenticated actor is invalid.");
 
 
 

@@ -1,19 +1,14 @@
 services:
   - type: web
     runtime: docker
-    name: moore-hotels-api
+    name: MooreHotelAndSuites-Api
     region: frankfurt
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
-    healthCheckPath: /api/health
-    preDeployCommand: ./migrate
-    autoDeployTrigger: checksPass
+    healthCheckPath: /health/ready
+    autoDeployTrigger: "off"
     maxShutdownDelaySeconds: 60
-    disk:
-      name: moore-hotels-api-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: ASPNETCORE_ENVIRONMENT
         value: Production
@@ -23,6 +18,14 @@ services:
         value: 8080
       - key: ConnectionStrings__DefaultConnection
         sync: false
+      # Use Supabase's IPv4 session pooler (*.pooler.supabase.com:5432), a
+      # dedicated runtime login, and SSL Mode=VerifyFull.
+      # Apply migrations externally before manually deploying the same commit.
+      # The database owner credential is never configured on Render.
+      - key: DATABASE_RUNTIME_ROLE
+        sync: false
+      - key: Database__Provider
+        value: Supabase
       - key: Jwt__Key
         generateValue: true
       - key: Jwt__Issuer
@@ -37,6 +40,22 @@ services:
         value: https://admin.moorehotelandsuites.com
       - key: Api__PublicBaseUrl
         value: https://api.moorehotelandsuites.com
+      - key: HotelSettings__Name
+        sync: false
+      - key: HotelSettings__Tagline
+        sync: false
+      - key: HotelSettings__Address
+        sync: false
+      - key: HotelSettings__SupportEmail
+        sync: false
+      - key: HotelSettings__Phone
+        sync: false
+      - key: HotelSettings__TimeZoneId
+        value: Africa/Lagos
+      - key: HotelSettings__CheckInHour
+        value: 14
+      - key: HotelSettings__CheckOutHour
+        value: 12
       - key: AllowedHosts
         value: api.moorehotelandsuites.com;*.onrender.com
       - key: AllowedOrigins__0
@@ -77,6 +96,116 @@ services:
         sync: false
       - key: BankTransferSettings__AccountNumber
         sync: false
+      - key: FinancialControls__HighValueRefundThreshold
+        value: 500000
+      - key: Pricing__DefaultCurrency
+        value: NGN
+      - key: Pricing__QuoteLifetimeMinutes
+        value: 15
+      - key: Pricing__RequireQuoteForBooking
+        value: true
+      - key: ReservationPolicies__Version
+        value: 2026-09
+      - key: ReservationPolicies__FreeCancellationHours
+        value: 24
+      - key: ReservationPolicies__CancellationPenaltyPercent
+        value: 50
+      - key: ReservationPolicies__DepositPercent
+        value: 30
+      - key: ReservationPolicies__NoShowPenaltyPercent
+        value: 100
+      # These values are declarations backed by provider/dashboard evidence.
+      # Do not set them until the linked acceptance action has really passed.
+      - key: OperationalReadiness__BackupMode
+        value: Logical
+      - key: OperationalReadiness__ManagedBackupsEnabled
+        value: false
+      - key: OperationalReadiness__PointInTimeRecoveryEnabled
+        value: false
+      - key: OperationalReadiness__EncryptedOffProviderBackupsEnabled
+        sync: false
+      - key: OperationalReadiness__RecoveryPointObjectiveMinutes
+        value: 1440
+      - key: OperationalReadiness__RecoveryTimeObjectiveMinutes
+        value: 240
+      - key: OperationalReadiness__RestoreDrillMaximumAgeDays
+        value: 100
+      - key: OperationalReadiness__LastRestoreDrillAtUtc
+        sync: false
+      - key: OperationalReadiness__RestoreDrillEvidenceReference
+        sync: false
+      - key: OperationalReadiness__UptimeAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__ApiErrorAndLatencyAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__QueueAgeAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__PaymentAndWebhookAlertsEnabled
+        sync: false
+      - key: OperationalReadiness__AlertRoutingEvidenceReference
+        sync: false
+      - key: OperationalReadiness__QueueAgeWarningMinutes
+        value: 15
+      - key: OperationalReadiness__PaymentPendingWarningMinutes
+        value: 30
+      - key: ProviderAcceptance__Brevo__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__Brevo__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__Brevo__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__Cloudinary__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__Cloudinary__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__Cloudinary__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__HostedPaymentPageOnly
+        value: false
+      # Required only when MonnifySettings__Enabled=true. Add the evidence
+      # values in Render and change HostedPaymentPageOnly only after acceptance.
+      - key: ProviderAcceptance__MonnifySandbox__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__MonnifySandbox__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__MonnifySandbox__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyWebhook__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyWebhook__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__MonnifyWebhook__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyLivePaymentAndRefund__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__MonnifyLivePaymentAndRefund__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__MonnifyLivePaymentAndRefund__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__PciResponsibilityReview__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__PciResponsibilityReview__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__PciResponsibilityReview__EvidenceReference
+        sync: false
+      - key: Privacy__RequirePolicyAcceptance
+        value: true
+      - key: Privacy__CurrentPrivacyPolicyVersion
+        sync: false
+      - key: Privacy__CurrentBookingTermsVersion
+        sync: false
+      - key: Privacy__PrivacyPolicyUrl
+        sync: false
+      - key: Privacy__BookingTermsUrl
+        sync: false
+      - key: Privacy__EnableRetentionWorker
+        value: true
+      - key: Privacy__GuestRetentionDays
+        sync: false
+      - key: Privacy__InactiveAccountRetentionDays
+        sync: false
+      - key: Security__RequireStaffMfa
+        value: true
       - key: Runtime__EnableSwagger
         value: false
       - key: Runtime__EnableExternalServices
@@ -87,14 +216,26 @@ services:
         value: false
       - key: Runtime__EnableBookingExpiration
         value: true
+      - key: Runtime__EnableRateLimiting
+        value: true
+      - key: Runtime__RequirePublicBookingEmailVerification
+        value: true
+      - key: Runtime__EnableMediaDeletion
+        value: true
+      - key: Runtime__ExternalRequestTimeoutSeconds
+        value: 20
       - key: Database__CreateIfMissing
         value: false
       - key: Database__ApplyMigrationsOnStartup
         value: false
-      - key: Database__TrustRenderPrivateNetwork
-        value: true
-      - key: DataProtection__KeysPath
-        value: /var/data/moorehotels-keys
+      - key: Database__MaxRetryCount
+        value: 5
+      - key: Database__CommandTimeoutSeconds
+        value: 30
+      - key: Database__ContextPoolSize
+        value: 128
+      - key: DataProtection__StorageProvider
+        value: Database
       - key: DataProtection__CertificateBase64
         sync: false
       - key: DataProtection__CertificatePassword

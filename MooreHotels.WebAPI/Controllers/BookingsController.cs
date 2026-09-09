@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
@@ -12,6 +13,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using MooreHotels.Domain.Common;
 using System.Security.Claims;
+using System.Diagnostics;
+using System.Security.Cryptography;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -25,6 +28,9 @@ public class BookingsController : ControllerBase
     private readonly IBookingRepository _bookingRepo;
     private readonly MooreHotelsDbContext _dbContext;
     private readonly MonnifySettings _monnifySettings;
+    private readonly IPdfInvoiceGenerator _pdfGenerator;
+    private readonly IAddOnService _addOnService;
+    private readonly IAuthorizationService _authorizationService;
 
     public BookingsController(
         IBookingService bookingService,
@@ -32,7 +38,10 @@ public class BookingsController : ControllerBase
         IMonnifyPaymentProcessor monnifyPaymentProcessor,
         IBookingRepository bookingRepo,
         MooreHotelsDbContext dbContext,
-        IOptions<MonnifySettings> monnifySettings)
+        IOptions<MonnifySettings> monnifySettings,
+        IPdfInvoiceGenerator pdfGenerator,
+        IAddOnService addOnService,
+        IAuthorizationService authorizationService)
     {
         _bookingService = bookingService;
         _monnifyService = monnifyService;
@@ -40,30 +49,85 @@ public class BookingsController : ControllerBase
         _bookingRepo = bookingRepo;
         _dbContext = dbContext;
         _monnifySettings = monnifySettings.Value;
+        _pdfGenerator = pdfGenerator;
+        _addOnService = addOnService;
+        _authorizationService = authorizationService;
     }
 
     [HttpGet]
-    [Authorize(Roles = "Admin,Manager,Staff")]
-    public async Task<IActionResult> GetAllBookings() 
-        => Ok(await _bookingService.GetAllBookingsAsync());
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
+    public async Task<IActionResult> GetAllBookings(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] BookingStatus? status = null,
+        [FromQuery] PaymentStatus? paymentStatus = null,
+        [FromQuery] string? search = null,
+        CancellationToken cancellationToken = default)
+        => Ok(await _bookingService.GetPagedBookingsAsync(page, pageSize, status, paymentStatus, search, cancellationToken));
 
     [HttpGet("{code}")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.ReservationsRead)]
     public async Task<IActionResult> GetBookingByCode(string code)
     {
         var dto = await _bookingService.GetBookingByCodeAsync(code);
         return dto == null ? NotFound() : Ok(dto);
     }
 
-    [HttpGet("lookup")]
+    [HttpGet("{code}/invoice.pdf")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.LookupRateLimitPolicy)]
-    public async Task<IActionResult> LookupBooking([FromQuery] string code, [FromQuery] string email)
+    public async Task<IActionResult> DownloadInvoicePdf(string code, CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(email))
-            return BadRequest(new { Message = "Booking code and associated email are required for lookup." });
+        BookingDto? booking;
+        if ((await _authorizationService.AuthorizeAsync(
+                User,
+                HotelAuthorization.ReservationsRead)).Succeeded)
+        {
+            booking = await _bookingService.GetBookingByCodeAsync(code);
+        }
+        else
+        {
+            Guid? accountUserId = null;
+            if (Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedUserId))
+                accountUserId = parsedUserId;
 
-        var dto = await _bookingService.GetBookingByCodeAndEmailAsync(code, email);
+            var accessToken = Request.Headers["X-Booking-Access-Token"].ToString();
+            booking = await _bookingService.GetBookingWithAccessAsync(
+                code,
+                accessToken,
+                accountUserId);
+        }
+
+        // Use the same response for a missing reservation and failed access so
+        // the invoice route cannot be used to enumerate booking codes.
+        if (booking == null) return NotFound(new { Message = "Invoice not found." });
+
+        var addOns = await _addOnService.GetBookingAddOnsAsync(code, cancellationToken);
+        var pdfBytes = _pdfGenerator.GenerateInvoicePdf(booking, addOns);
+
+        return File(pdfBytes, "application/pdf", $"Invoice-{code}.pdf");
+    }
+
+    [HttpPost("lookup")]
+    [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.LookupRateLimitPolicy)]
+    public async Task<IActionResult> LookupBooking(
+        [FromBody] LookupBookingRequest request,
+        [FromHeader(Name = "X-Booking-Access-Token")] string? accessToken)
+    {
+        Guid? accountUserId = null;
+        if (Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedUserId))
+            accountUserId = parsedUserId;
+        if (string.IsNullOrWhiteSpace(accessToken) &&
+            !accountUserId.HasValue)
+        {
+            return BadRequest(new { Message = "Use a secure booking link or sign in to view this reservation." });
+        }
+
+        var dto = await _bookingService.GetBookingWithAccessAsync(
+            request.Code,
+            accessToken,
+            accountUserId);
         return dto == null
             ? NotFound(new { Message = "No booking found with the provided credentials." })
             : Ok(ToPublicBooking(dto));
@@ -82,6 +146,22 @@ public class BookingsController : ControllerBase
         return Ok(ToPublicBooking(dto));
     }
 
+    [HttpPost("verification/request")]
+    [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicWriteRateLimitPolicy)]
+    public async Task<IActionResult> RequestBookingEmailVerification(
+        [FromBody] RequestBookingEmailVerificationRequest request,
+        CancellationToken cancellationToken)
+    {
+        await _bookingService.RequestBookingEmailVerificationAsync(
+            request.Email,
+            cancellationToken);
+        return Accepted(new
+        {
+            Message = "If the address can receive booking verification, a secure link will be sent."
+        });
+    }
+
     [HttpPost("{code}/verify-monnify")]
     [Authorize(Roles = "Admin,Manager")]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicWriteRateLimitPolicy)]
@@ -91,8 +171,6 @@ public class BookingsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
     public async Task<IActionResult> VerifyMonnify(
         string code,
-        [FromQuery] string? paymentReference,
-        [FromQuery] string? transactionReference,
         CancellationToken cancellationToken)
     {
         if (!_monnifySettings.Enabled)
@@ -101,11 +179,6 @@ public class BookingsController : ControllerBase
                 "Monnify payment verification is not enabled.");
         }
 
-        // Legacy query parameters are accepted only so older dashboards keep
-        // working. They are intentionally ignored: the server-owned reference
-        // persisted during initialization is the sole verification input.
-        _ = paymentReference;
-        _ = transactionReference;
         var booking = await _bookingRepo.GetByCodeAsync(code.Trim().ToUpperInvariant());
         if (booking is null || booking.PaymentMethod != PaymentMethod.Monnify)
         {
@@ -142,13 +215,6 @@ public class BookingsController : ControllerBase
         {
             throw new ConflictException(
                 "Monnify received this payment after the booking expired. The room remains released and staff reconciliation or a refund is required.");
-        }
-
-        if (outcome.Kind == MonnifyPaymentOutcomeKind.Confirmed)
-        {
-            await _bookingService.SendPaymentConfirmationAsync(
-                outcome.BookingCode,
-                outcome.PaymentReference);
         }
 
         var dto = await _bookingService.GetBookingByCodeAsync(outcome.BookingCode);
@@ -200,16 +266,13 @@ public class BookingsController : ControllerBase
             userId,
             HttpContext.TraceIdentifier,
             cancellationToken);
-        await _bookingService.SendPaymentConfirmationAsync(
-            data.BookingCode,
-            data.TransactionReference);
         return Ok(new ManualTransferConfirmationResponse(
             "Bank transfer payment confirmed manually.",
             data));
     }
 
     [HttpPut("{id}/status")]
-    [Authorize(Roles = "Admin,Manager,Staff")]
+    [Authorize(Policy = HotelAuthorization.ReservationsManage)]
     public async Task<IActionResult> UpdateBookingStatus(Guid id, [FromQuery] BookingStatus status)
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -219,93 +282,208 @@ public class BookingsController : ControllerBase
             () => _bookingService.UpdateStatusAsync(id, status, userId));
         return Ok(dto);
     }
-    
+
     [HttpPost("{id}/cancel")]
-[Authorize(Roles = "Admin,Manager,Staff")]
-public async Task<IActionResult> CancelBookingAdmin(Guid id, [FromQuery] string? reason = null)
-{
-    // 1. Robust User ID Extraction
-    var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
-    if (!Guid.TryParse(userIdStr, out var userId))
+    [Authorize(Policy = HotelAuthorization.ReservationsManage)]
+    public async Task<IActionResult> CancelBookingAdmin(
+        Guid id,
+        [FromBody] AdminCancelBookingRequest request)
     {
-        return Unauthorized(new { Message = "User identity is invalid or expired." });
+        // 1. Robust User ID Extraction
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var userId))
+        {
+            return Unauthorized(new { Message = "User identity is invalid or expired." });
+        }
+
+        var dto = await ExecuteBookingMutationAsync(
+            id,
+            () => _bookingService.CancelBookingAsync(id, userId, request.Reason));
+        return Ok(new { Message = "Booking cancelled.", Data = dto });
     }
 
-    var dto = await ExecuteBookingMutationAsync(
-        id,
-        () => _bookingService.CancelBookingAsync(id, userId, reason));
-    return Ok(new { Message = "Booking cancelled.", Data = dto });
-}
-
-[HttpPost("guest/cancel")]
-[AllowAnonymous]
-[EnableRateLimiting(ServiceCollectionExtensions.PublicWriteRateLimitPolicy)]
-public async Task<IActionResult> CancelBookingGuest([FromBody] CancelBookingRequest request)
-{
-    // 3. Model State Check (Ensures BookingCode and Email aren't null)
-    if (!ModelState.IsValid)
+    [HttpPost("guest/cancel")]
+    [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicWriteRateLimitPolicy)]
+    public async Task<IActionResult> CancelBookingGuest([FromBody] CancelBookingRequest request)
     {
-        return BadRequest(ModelState);
+        // 3. Model State Check (Ensures BookingCode and Email aren't null)
+        if (!ModelState.IsValid)
+        {
+            return BadRequest(ModelState);
+        }
+
+        Guid? accountUserId = null;
+        if (Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedUserId))
+            accountUserId = parsedUserId;
+
+        var dto = await ExecuteBookingCodeMutationAsync(
+            request.BookingCode,
+            () => _bookingService.CancelBookingByGuestAsync(
+                request.BookingCode,
+                request.GuestAccessToken,
+                accountUserId,
+                HttpContext.TraceIdentifier,
+                request.Reason));
+        return Ok(new { Message = "Your reservation has been cancelled successfully.", Data = ToPublicBooking(dto) });
     }
 
-    var dto = await _bookingService.CancelBookingByGuestAsync(
-        request.BookingCode,
-        request.Email,
-        request.Reason);
-    return Ok(new { Message = "Your reservation has been cancelled successfully.", Data = ToPublicBooking(dto) });
-}
-
-[HttpPost("{id}/complete-refund")]
-[Authorize(Roles = "Admin,Manager")]
-public async Task<IActionResult> CompleteRefund(Guid id, [FromQuery] string transactionRef)
-{
-    var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
-    if (!Guid.TryParse(userIdStr, out var adminId)) return Unauthorized();
-
-    var dto = await ExecuteBookingMutationAsync(
-        id,
-        () => _bookingService.CompleteRefundAsync(id, transactionRef, adminId));
-    return Ok(new { Message = "Refund marked as completed in system.", Data = dto });
-}
-
-[HttpGet("pending-refunds")]
-[Authorize(Roles = "Admin,Manager")]
-public async Task<IActionResult> GetPendingRefunds() =>
-    Ok(await _bookingService.GetPendingRefundsAsync());
-
-private async Task<T> ExecuteBookingMutationAsync<T>(Guid bookingId, Func<Task<T>> mutation)
-{
-    var strategy = _dbContext.Database.CreateExecutionStrategy();
-    return await strategy.ExecuteAsync(async () =>
+    [HttpPost("access-link")]
+    [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.LookupRateLimitPolicy)]
+    [ProducesResponseType(StatusCodes.Status202Accepted)]
+    public async Task<IActionResult> RequestAccessLink(
+        [FromBody] RequestBookingAccessLinkRequest request)
     {
-        _dbContext.ChangeTracker.Clear();
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync();
-        await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-            $"SELECT 1 FROM bookings WHERE \"Id\" = {bookingId} FOR UPDATE");
-        var result = await mutation();
-        await transaction.CommitAsync();
-        return result;
-    });
-}
+        var started = Stopwatch.StartNew();
+        if (ModelState.IsValid)
+        {
+            await ExecuteBookingCodeMutationAsync(
+                request.BookingCode,
+                () => _bookingService.RequestBookingAccessLinkAsync(
+                    request.BookingCode,
+                    request.Email,
+                    HttpContext.TraceIdentifier));
+        }
 
-private static PublicBookingDto ToPublicBooking(BookingDto booking) => new(
-    booking.Id,
-    booking.BookingCode,
-    booking.RoomId,
-    booking.GuestFirstName,
-    booking.GuestLastName,
-    booking.GuestEmail,
-    booking.CheckIn,
-    booking.CheckOut,
-    booking.Status,
-    booking.Amount,
-    booking.PaymentStatus,
-    booking.PaymentMethod,
-    booking.CreatedAt,
-    booking.PaymentUrl,
-    booking.PaymentInstruction,
-    booking.NotificationMessage,
-    booking.PaymentExpiresAtUtc);
+        var targetMilliseconds = RandomNumberGenerator.GetInt32(250, 451);
+        var remaining = targetMilliseconds - (int)started.ElapsedMilliseconds;
+        if (remaining > 0) await Task.Delay(remaining, HttpContext.RequestAborted);
+
+        // Deliberately identical for existing and unknown reservations to prevent
+        // booking-code or guest-email discovery.
+        return Accepted(new
+        {
+            Message = "If the booking details match, a secure access link will be sent to the booking email."
+        });
+    }
+
+    [HttpPost("{id}/approve-refund")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> ApproveRefund(
+        Guid id,
+        [FromBody] ApproveRefundRequest request)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var approvingUserId)) return Unauthorized();
+
+        var dto = await ExecuteBookingMutationAsync(
+            id,
+            () => _bookingService.ApproveRefundAsync(id, request, approvingUserId));
+        return Ok(new
+        {
+            Message = "High-value refund approved for independent completion.",
+            Data = dto
+        });
+    }
+
+    [HttpPost("{id}/complete-refund")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> CompleteRefund(
+        Guid id,
+        [FromBody] CompleteRefundRequest request)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var adminId)) return Unauthorized();
+
+        var dto = await ExecuteBookingMutationAsync(
+            id,
+            () => _bookingService.CompleteRefundAsync(id, request, adminId));
+        return Ok(new { Message = "Refund marked as completed in system.", Data = dto });
+    }
+
+    [HttpGet("pending-refunds")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> GetPendingRefunds() =>
+        Ok(await _bookingService.GetPendingRefundsAsync());
+
+    private async Task<T> ExecuteBookingMutationAsync<T>(Guid bookingId, Func<Task<T>> mutation)
+    {
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            _dbContext.ChangeTracker.Clear();
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT 1 FROM bookings WHERE \"Id\" = {bookingId} FOR UPDATE");
+            var result = await mutation();
+            await transaction.CommitAsync();
+            return result;
+        });
+    }
+
+    private async Task<T> ExecuteBookingCodeMutationAsync<T>(
+        string bookingCode,
+        Func<Task<T>> mutation)
+    {
+        var normalizedCode = bookingCode.Trim().ToUpperInvariant();
+        var strategy = _dbContext.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            _dbContext.ChangeTracker.Clear();
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync();
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"SELECT 1 FROM bookings WHERE \"BookingCode\" = {normalizedCode} FOR UPDATE");
+            var result = await mutation();
+            await transaction.CommitAsync();
+            return result;
+        });
+    }
+
+    private async Task ExecuteBookingCodeMutationAsync(
+        string bookingCode,
+        Func<Task> mutation)
+    {
+        await ExecuteBookingCodeMutationAsync(
+            bookingCode,
+            async () =>
+            {
+                await mutation();
+                return true;
+            });
+    }
+
+    private static PublicBookingDto ToPublicBooking(BookingDto booking) => new(
+        booking.Id,
+        booking.BookingCode,
+        booking.GuestFirstName,
+        booking.GuestLastName,
+        booking.GuestEmail,
+        booking.CheckIn,
+        booking.CheckOut,
+        booking.Status,
+        booking.Amount,
+        booking.PaymentStatus,
+        booking.PaymentMethod,
+        booking.CreatedAt,
+        booking.PaymentUrl,
+        booking.PaymentInstruction,
+        booking.NotificationMessage,
+        booking.PaymentExpiresAtUtc,
+        booking.GuestAccessToken,
+        booking.GuestAccessExpiresAtUtc,
+        booking.AdultCount,
+        booking.ChildCount,
+        booking.QuoteId,
+        booking.Currency,
+        booking.RoomSubtotal,
+        booking.DiscountAmount,
+        booking.IncludedTaxAmount,
+        booking.TaxAmount,
+        booking.FeeAmount,
+        booking.PriceBreakdown,
+        booking.RoomTypeId,
+        booking.RoomTypeCode,
+        booking.RoomTypeName,
+        booking.RoomQuantity,
+        booking.Rooms?.Select(room => new PublicReservationRoomDto(
+            room.Id,
+            room.Sequence,
+            room.RoomTypeId,
+            room.RoomTypeCode,
+            room.RoomTypeName)).ToArray(),
+        booking.Folio,
+        booking.ReservationPolicy);
 
 
 

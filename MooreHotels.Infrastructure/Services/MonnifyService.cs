@@ -12,7 +12,7 @@ using System.Text.Json;
 
 namespace MooreHotels.Infrastructure.Services;
 
-public sealed class MonnifyService : IMonnifyService
+public sealed class MonnifyService : IMonnifyService, IDisposable
 {
     public const string HttpClientName = "Monnify";
 
@@ -36,6 +36,12 @@ public sealed class MonnifyService : IMonnifyService
         _settings = settings.Value;
         _httpClientFactory = httpClientFactory;
         _logger = logger;
+    }
+
+    public void Dispose()
+    {
+        _tokenRefreshLock.Dispose();
+        GC.SuppressFinalize(this);
     }
 
     public async Task<string> GetAccessTokenAsync(

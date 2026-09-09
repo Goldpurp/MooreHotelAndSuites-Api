@@ -38,6 +38,8 @@ public sealed class BookingEmailLifecycleTests
                 guestPhone = "+2348000000002",
                 checkIn = DateTime.UtcNow.Date.AddDays(10),
                 checkOut = DateTime.UtcNow.Date.AddDays(12),
+                adultCount = 2,
+                childCount = 0,
                 paymentMethod = "directTransfer",
                 notes = "Email lifecycle integration test"
             })
@@ -47,6 +49,7 @@ public sealed class BookingEmailLifecycleTests
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         using var document = JsonDocument.Parse(
             await response.Content.ReadAsStringAsync());
         var bookingCode = document.RootElement
@@ -72,14 +75,16 @@ public sealed class BookingEmailLifecycleTests
     {
         var booking = await _fixture.CreateBookingAsync();
         _fixture.Email.Reset();
-        using var request = AuthorizedRequest(
+        using var request = AuthorizedJson(
             HttpMethod.Post,
-            $"/api/bookings/{booking.Id}/cancel?reason=Hotel%20maintenance",
-            _fixture.Staff);
+            $"/api/bookings/{booking.Id}/cancel",
+            _fixture.Staff,
+            new { reason = "Hotel maintenance" });
 
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         Assert.Contains(
             _fixture.Email.Messages,
             email => email.Template == "Cancellation" &&
@@ -101,6 +106,7 @@ public sealed class BookingEmailLifecycleTests
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         var stored = await _fixture.WithDbAsync(db => db.Bookings
             .AsNoTracking()
             .SingleAsync(item => item.Id == booking.Id));
@@ -134,6 +140,7 @@ public sealed class BookingEmailLifecycleTests
         using var response = await _fixture.Client.SendAsync(request);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await _fixture.FlushEmailOutboxAsync();
         Assert.Contains(
             _fixture.Email.Messages,
             email => email.Template == "Cancellation" &&
@@ -152,6 +159,7 @@ public sealed class BookingEmailLifecycleTests
             .Single();
 
         var expired = await worker.SweepOnceAsync();
+        await _fixture.FlushEmailOutboxAsync();
 
         Assert.Equal(1, expired);
         var stored = await _fixture.WithDbAsync(db => db.Bookings
@@ -173,6 +181,17 @@ public sealed class BookingEmailLifecycleTests
         request.Headers.Authorization =
             new AuthenticationHeaderValue("Bearer", actor.Token);
         AddEnvironmentHeader(request);
+        return request;
+    }
+
+    private static HttpRequestMessage AuthorizedJson(
+        HttpMethod method,
+        string uri,
+        TestUser actor,
+        object body)
+    {
+        var request = AuthorizedRequest(method, uri, actor);
+        request.Content = JsonContent.Create(body);
         return request;
     }
 

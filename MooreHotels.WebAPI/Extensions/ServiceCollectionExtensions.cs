@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading.RateLimiting;
+using FluentValidation;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection;
@@ -15,6 +16,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
@@ -22,10 +24,12 @@ using MooreHotels.Application.Services;
 using MooreHotels.Domain.Common;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Infrastructure.Identity;
+using MooreHotels.Infrastructure.Hubs;
 using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.Infrastructure.Repositories;
 using MooreHotels.Infrastructure.Services;
 using MooreHotels.WebAPI.Configuration;
+using MooreHotels.WebAPI.Filters;
 using MooreHotels.WebAPI.Services;
 
 namespace MooreHotels.WebAPI.Extensions;
@@ -37,6 +41,9 @@ public static class ServiceCollectionExtensions
     public const string PublicWriteRateLimitPolicy = "PublicWrite";
     public const string LookupRateLimitPolicy = "Lookup";
     public const string WebhookRateLimitPolicy = "Webhook";
+    public const string ImageUploadRateLimitPolicy = "ImageUpload";
+    public const string PublicReadRateLimitPolicy = "PublicRead";
+    public const long DefaultRequestBodySize = 1024 * 1024;
 
     public static IServiceCollection AddMooreHotelsApi(
         this IServiceCollection services,
@@ -57,10 +64,17 @@ public static class ServiceCollectionExtensions
         services.Configure<DatabaseSettings>(configuration.GetSection("Database"));
         services.Configure<JwtSettings>(configuration.GetSection("Jwt"));
         services.Configure<BankTransferSettings>(configuration.GetSection("BankTransferSettings"));
+        services.Configure<FinancialControlsSettings>(configuration.GetSection("FinancialControls"));
+        services.Configure<OperationalReadinessSettings>(configuration.GetSection("OperationalReadiness"));
+        services.Configure<ProviderAcceptanceSettings>(configuration.GetSection("ProviderAcceptance"));
+        services.Configure<PricingSettings>(configuration.GetSection("Pricing"));
+        services.Configure<ReservationPolicySettings>(configuration.GetSection("ReservationPolicies"));
         services.Configure<ForwardedHeadersSettings>(configuration.GetSection("ForwardedHeaders"));
         services.Configure<EmailSettings>(configuration.GetSection("EmailSettings"));
-        services.Configure<global::CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
+        services.Configure<CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
         services.Configure<MonnifySettings>(configuration.GetSection("MonnifySettings"));
+        services.Configure<HotelSettings>(configuration.GetSection("HotelSettings"));
+        services.Configure<PrivacySettings>(configuration.GetSection("Privacy"));
 
         if (forwardedHeaders.Enabled)
         {
@@ -75,7 +89,7 @@ public static class ServiceCollectionExtensions
                 // still bounded to the trusted right-most hop below.
                 options.RequireHeaderSymmetry = !forwardedHeaders.TrustRenderEdge;
                 options.KnownProxies.Clear();
-                options.KnownNetworks.Clear();
+                options.KnownIPNetworks.Clear();
 
                 // Render's public container port is reachable only through its
                 // edge proxy. With ForwardLimit=1, ASP.NET consumes only the
@@ -91,9 +105,9 @@ public static class ServiceCollectionExtensions
                     foreach (var network in forwardedHeaders.KnownNetworks)
                     {
                         var parts = network.Split('/', StringSplitOptions.TrimEntries);
-                        options.KnownNetworks.Add(new IPNetwork(
+                        options.KnownIPNetworks.Add(new System.Net.IPNetwork(
                             System.Net.IPAddress.Parse(parts[0]),
-                            int.Parse(parts[1])));
+                            int.Parse(parts[1], System.Globalization.CultureInfo.InvariantCulture)));
                     }
                 }
             });
@@ -102,6 +116,7 @@ public static class ServiceCollectionExtensions
         services.AddControllers(options =>
             {
                 options.SuppressAsyncSuffixInActionNames = false;
+                options.Filters.Add<FluentValidationActionFilter>();
             })
             .AddJsonOptions(options =>
             {
@@ -147,7 +162,7 @@ public static class ServiceCollectionExtensions
 
         services.AddIdentity<ApplicationUser, IdentityRole<Guid>>(options =>
             {
-                options.Password.RequiredLength = 8;
+                options.Password.RequiredLength = 12;
                 options.Password.RequiredUniqueChars = 4;
                 options.Password.RequireDigit = true;
                 options.Password.RequireUppercase = true;
@@ -166,9 +181,13 @@ public static class ServiceCollectionExtensions
             options.TokenLifespan = TimeSpan.FromHours(2));
 
         var dataProtection = services.AddDataProtection()
-            .SetApplicationName("MooreHotels");
+            .SetApplicationName($"MooreHotels.{environment.ToClientName()}");
         var keysPath = configuration["DataProtection:KeysPath"];
-        if (!string.IsNullOrWhiteSpace(keysPath))
+        if (string.Equals(configuration["DataProtection:StorageProvider"], "Database", StringComparison.OrdinalIgnoreCase))
+        {
+            dataProtection.PersistKeysToDbContext<MooreHotelsDbContext>();
+        }
+        else if (!string.IsNullOrWhiteSpace(keysPath))
         {
             dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keysPath));
         }
@@ -178,7 +197,7 @@ public static class ServiceCollectionExtensions
         if (!string.IsNullOrWhiteSpace(certificateBase64) &&
             !string.IsNullOrWhiteSpace(certificatePassword))
         {
-            dataProtection.ProtectKeysWithCertificate(new X509Certificate2(
+            dataProtection.ProtectKeysWithCertificate(X509CertificateLoader.LoadPkcs12(
                 Convert.FromBase64String(certificateBase64),
                 certificatePassword,
                 X509KeyStorageFlags.EphemeralKeySet));
@@ -186,7 +205,7 @@ public static class ServiceCollectionExtensions
         else if (!string.IsNullOrWhiteSpace(certificatePath) &&
                  !string.IsNullOrWhiteSpace(certificatePassword))
         {
-            dataProtection.ProtectKeysWithCertificate(new X509Certificate2(
+            dataProtection.ProtectKeysWithCertificate(X509CertificateLoader.LoadPkcs12FromFile(
                 certificatePath,
                 certificatePassword,
                 X509KeyStorageFlags.EphemeralKeySet));
@@ -212,6 +231,7 @@ public static class ServiceCollectionExtensions
                     RequireExpirationTime = true,
                     ValidateIssuerSigningKey = true,
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.Key)),
+                    ValidAlgorithms = [SecurityAlgorithms.HmacSha256],
                     ClockSkew = TimeSpan.FromSeconds(30),
                     NameClaimType = ClaimTypes.Name,
                     RoleClaimType = ClaimTypes.Role
@@ -220,11 +240,13 @@ public static class ServiceCollectionExtensions
                 {
                     OnMessageReceived = context =>
                     {
-                        var accessToken = context.Request.Query["access_token"];
-                        if (!string.IsNullOrEmpty(accessToken) &&
-                            context.HttpContext.Request.Path.StartsWithSegments("/hubs/notifications"))
+                        if (context.HttpContext.Request.Path.StartsWithSegments("/hubs/notifications"))
                         {
-                            context.Token = accessToken;
+                            var accessTicket = context.Request.Query["access_token"];
+                            var ticketStore = context.HttpContext.RequestServices
+                                .GetRequiredService<RealtimeAccessTicketStore>();
+                            if (ticketStore.TryConsume(accessTicket, out var bearerToken))
+                                context.Token = bearerToken;
                         }
 
                         return Task.CompletedTask;
@@ -237,9 +259,92 @@ public static class ServiceCollectionExtensions
             options.FallbackPolicy = new AuthorizationPolicyBuilder()
                 .RequireAuthenticatedUser()
                 .Build();
+
+            options.AddPolicy(HotelAuthorization.ReservationsRead, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(
+                        context.User,
+                        "Reception",
+                        "FrontDesk",
+                        "Concierge")));
+            options.AddPolicy(HotelAuthorization.ReservationsManage, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Reception", "FrontDesk")));
+            options.AddPolicy(HotelAuthorization.GuestPiiRead, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Reception", "FrontDesk")));
+            options.AddPolicy(HotelAuthorization.FolioRead, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(
+                        context.User,
+                        "Reception",
+                        "FrontDesk",
+                        "Finance",
+                        "Cashier")));
+            options.AddPolicy(HotelAuthorization.FolioCharge, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(
+                        context.User,
+                        "Reception",
+                        "FrontDesk",
+                        "Finance",
+                        "Cashier")));
+            options.AddPolicy(HotelAuthorization.FolioPayment, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Finance", "Cashier")));
+            options.AddPolicy(HotelAuthorization.FolioAdjust, policy =>
+                policy.RequireRole("Admin", "Manager"));
+            options.AddPolicy(HotelAuthorization.FolioClose, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Finance", "Cashier")));
+            options.AddPolicy(HotelAuthorization.FolioIncidentals, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(
+                        context.User,
+                        "Reception",
+                        "FrontDesk",
+                        "Concierge")));
+            options.AddPolicy(HotelAuthorization.OperationsRead, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") ||
+                    context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Reception", "FrontDesk")));
+            options.AddPolicy(HotelAuthorization.HousekeepingManage, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") || context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Housekeeping")));
+            options.AddPolicy(HotelAuthorization.MaintenanceManage, policy =>
+                policy.RequireAssertion(context =>
+                    context.User.IsInRole("Admin") || context.User.IsInRole("Manager") ||
+                    HotelAuthorization.HasDepartment(context.User, "Maintenance", "Engineering")));
+            options.AddPolicy(HotelAuthorization.NightAuditClose, policy =>
+                policy.RequireRole("Admin", "Manager"));
+            options.AddPolicy(HotelAuthorization.GuestCrmManage, policy =>
+                policy.RequireRole("Admin", "Manager"));
+            options.AddPolicy(HotelAuthorization.ChannelsManage, policy =>
+                policy.RequireRole("Admin", "Manager"));
         });
 
-        var origins = configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [];
+        var origins = (configuration.GetSection("AllowedOrigins").Get<string[]>() ?? [])
+            .Select(origin => origin.Trim().TrimEnd('/'))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         services.AddCors(options => options.AddPolicy(FrontendCorsPolicy, policy =>
             policy.WithOrigins(origins)
                 .AllowAnyHeader()
@@ -251,6 +356,13 @@ public static class ServiceCollectionExtensions
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
             options.OnRejected = async (context, cancellationToken) =>
             {
+                if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+                {
+                    context.HttpContext.Response.Headers["Retry-After"] = Math.Max(
+                            1,
+                            (int)Math.Ceiling(retryAfter.TotalSeconds))
+                        .ToString(System.Globalization.CultureInfo.InvariantCulture);
+                }
                 context.HttpContext.Response.ContentType = "application/problem+json";
                 await context.HttpContext.Response.WriteAsJsonAsync(new
                 {
@@ -261,6 +373,38 @@ public static class ServiceCollectionExtensions
                     traceId = context.HttpContext.TraceIdentifier
                 }, cancellationToken);
             };
+
+            if (!runtime.EnableRateLimiting)
+            {
+                options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(_ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(AuthRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(PublicWriteRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(LookupRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(WebhookRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(ImageUploadRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(PublicReadRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
+                return;
+            }
+
+            options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    context.User.Identity?.IsAuthenticated == true
+                        ? $"user:{GetAuthenticatedClientKey(context)}"
+                        : $"ip:{GetClientKey(context)}",
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 300,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
 
             options.AddPolicy(AuthRateLimitPolicy, context =>
                 RateLimitPartition.GetFixedWindowLimiter(
@@ -306,9 +450,40 @@ public static class ServiceCollectionExtensions
                         QueueLimit = 0,
                         AutoReplenishment = true
                     }));
+
+            options.AddPolicy(ImageUploadRateLimitPolicy, context =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    GetAuthenticatedClientKey(context),
+                    _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromHours(1),
+                        QueueLimit = 0,
+                        AutoReplenishment = true
+                    }));
+
+            options.AddPolicy(PublicReadRateLimitPolicy, context =>
+                context.User.Identity?.IsAuthenticated == true
+                    ? RateLimitPartition.GetNoLimiter(GetAuthenticatedClientKey(context))
+                    : RateLimitPartition.GetSlidingWindowLimiter(
+                        GetClientKey(context),
+                        _ => new SlidingWindowRateLimiterOptions
+                        {
+                            PermitLimit = 120,
+                            Window = TimeSpan.FromMinutes(1),
+                            SegmentsPerWindow = 4,
+                            QueueLimit = 0,
+                            AutoReplenishment = true
+                        }));
         });
 
         services.AddResponseCompression();
+        services.AddHsts(options =>
+        {
+            options.MaxAge = TimeSpan.FromDays(365);
+            options.IncludeSubDomains = true;
+            options.Preload = false;
+        });
         services.AddEndpointsApiExplorer();
         services.AddSwaggerGen(options =>
         {
@@ -348,7 +523,14 @@ public static class ServiceCollectionExtensions
         {
             options.EnableDetailedErrors = environment.IsLocal();
             options.MaximumReceiveMessageSize = 32 * 1024;
+            options.MaximumParallelInvocationsPerClient = 1;
+            options.StreamBufferCapacity = 10;
+            options.HandshakeTimeout = TimeSpan.FromSeconds(15);
+            options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
+            options.KeepAliveInterval = TimeSpan.FromSeconds(15);
         });
+        services.AddSingleton(TimeProvider.System);
+        services.AddSingleton<RealtimeAccessTicketStore>();
         services.AddHttpContextAccessor();
         services.AddHttpClient();
         services.ConfigureHttpClientDefaults(http => http.ConfigureHttpClient(client =>
@@ -360,20 +542,47 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGuestRepository, GuestRepository>();
         services.AddScoped<IAuditLogRepository, AuditLogRepository>();
         services.AddScoped<IVisitRecordRepository, VisitRecordRepository>();
+        services.AddScoped<IOperationLedgerRepository, OperationLedgerRepository>();
         services.AddScoped<IRoomService, RoomService>();
         services.AddScoped<IBookingService, BookingService>();
+        services.AddScoped<IPricingService, PricingService>();
+        services.AddScoped<IInventoryService, InventoryService>();
+        services.AddScoped<IFolioService, FolioService>();
+        services.AddScoped<IReservationAmendmentService, ReservationAmendmentService>();
+        services.AddScoped<IHousekeepingService, HousekeepingService>();
+        services.AddScoped<IOperationalReportingService, OperationalReportingService>();
+        services.AddScoped<IGuestCrmService, GuestCrmService>();
+        services.AddScoped<IChannelManagementService, ChannelManagementService>();
+        services.AddScoped<PrivacyDataService>();
         services.AddScoped<IMonnifyPaymentProcessor, MonnifyPaymentProcessor>();
         services.AddScoped<IGuestService, GuestService>();
         services.AddScoped<IAuditService, AuditService>();
         services.AddScoped<IVisitRecordService, VisitRecordService>();
+        services.AddScoped<IAddOnRepository, AddOnRepository>();
+        services.AddScoped<IAddOnService, MooreHotels.Application.Services.AddOnService>();
+        services.AddSingleton<IHotelTimeService, HotelTimeService>();
+        services.AddScoped<IPdfInvoiceGenerator, PdfInvoiceGenerator>();
         services.AddScoped<IAnalyticsService, MooreHotels.Application.Services.AnalyticsService>();
         services.AddScoped<IProfileService, MooreHotels.Application.Services.ProfileService>();
         services.AddScoped<IStaffService, MooreHotels.Application.Services.StaffService>();
+        services.AddScoped<IClientGuestReconciliationService, ClientGuestReconciliationService>();
+        services.AddSingleton<StaffConnectionRegistry>();
+        services.AddSingleton<IStaffSessionRevocationService>(provider =>
+            provider.GetRequiredService<StaffConnectionRegistry>());
         services.AddScoped<IOperationService, OperationService>();
         services.AddScoped<INotificationService, MooreHotels.Infrastructure.Services.NotificationService>();
+        services.AddScoped<IEmailOutbox, EmailOutbox>();
+        services.AddScoped<IMediaDeletionOutbox, MediaDeletionOutbox>();
+        services.AddScoped<IEmailDeliveryContext, EmailDeliveryContext>();
+        services.AddScoped<IApplicationTransaction, ApplicationTransaction>();
+        services.AddValidatorsFromAssemblyContaining<MooreHotels.Application.Validators.CreateBookingRequestValidator>();
         services.AddHostedService<PendingBookingExpirationWorker>();
+        services.AddHostedService<EmailOutboxWorker>();
+        services.AddHostedService<MediaDeletionWorker>();
+        services.AddHostedService<PrivacyRetentionWorker>();
+        services.AddSingleton<OrphanedMediaCleanup>();
 
-        if (string.Equals(
+        if (runtime.EnableExternalServices && string.Equals(
                 email.DeliveryMode,
                 "Brevo",
                 StringComparison.OrdinalIgnoreCase))
@@ -403,7 +612,7 @@ public static class ServiceCollectionExtensions
             services.AddScoped<IEmailService, LocalEmailService>();
         }
 
-        if (monnify.Enabled)
+        if (runtime.EnableExternalServices && monnify.Enabled)
         {
             services.AddHttpClient(
                 MonnifyService.HttpClientName,
@@ -439,7 +648,9 @@ public static class ServiceCollectionExtensions
         services.Configure<Microsoft.AspNetCore.Server.Kestrel.Core.KestrelServerOptions>(options =>
         {
             options.AddServerHeader = false;
-            options.Limits.MaxRequestBodySize = ImageFileValidator.MaxMultipartRequestBytes;
+            options.Limits.MaxRequestBodySize = DefaultRequestBodySize;
+            options.Limits.MaxRequestHeadersTotalSize = 32 * 1024;
+            options.Limits.MaxRequestHeaderCount = 100;
             options.Limits.RequestHeadersTimeout = TimeSpan.FromSeconds(15);
         });
 
@@ -448,4 +659,8 @@ public static class ServiceCollectionExtensions
 
     private static string GetClientKey(HttpContext context) =>
         context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+
+    private static string GetAuthenticatedClientKey(HttpContext context) =>
+        context.User.FindFirstValue(ClaimTypes.NameIdentifier)
+        ?? GetClientKey(context);
 }

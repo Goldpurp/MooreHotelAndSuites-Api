@@ -1,0 +1,58 @@
+name: Daily encrypted production backup
+
+on:
+  schedule:
+    # 03:17 Africa/Lagos (WAT, UTC+1). Scheduled workflows run on the default branch.
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-database-backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      BACKUP_CONNECTION_STRING: ${{ secrets.BACKUP_CONNECTION_STRING }}
+      BACKUP_AGE_RECIPIENT: ${{ secrets.BACKUP_AGE_RECIPIENT }}
+      HEALTHCHECKS_PING_URL: ${{ secrets.HEALTHCHECKS_BACKUP_PING_URL }}
+      BACKUP_PG_DUMP_IMAGE: postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Validate secret configuration
+        run: |
+          test -n "$BACKUP_CONNECTION_STRING"
+          test -n "$BACKUP_AGE_RECIPIENT"
+          test -n "$HEALTHCHECKS_PING_URL"
+      - name: Install age
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends age
+      - name: Create encrypted backup
+        id: backup
+        run: |
+          curl --fail --silent --show-error --retry 3 "$HEALTHCHECKS_PING_URL/start"
+          output="moore-production-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.dump.age"
+          ./scripts/backup-production.sh "$output"
+          test -s "$output"
+          echo "path=$output" >> "$GITHUB_OUTPUT"
+      - name: Store encrypted backup
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: production-backup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.backup.outputs.path }}
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+      - name: Report failed backup
+        if: failure() && env.HEALTHCHECKS_PING_URL != ''
+        run: curl --fail --silent --show-error --retry 3 "$HEALTHCHECKS_PING_URL/fail"
+      - name: Report successful backup
+        run: curl --fail --silent --show-error --retry 3 "$HEALTHCHECKS_PING_URL"

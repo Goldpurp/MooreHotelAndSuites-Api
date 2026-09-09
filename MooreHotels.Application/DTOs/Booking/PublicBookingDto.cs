@@ -1,11 +1,11 @@
 using MooreHotels.Domain.Enums;
+using MooreHotels.Application.DTOs.Pricing;
 
 namespace MooreHotels.Application.DTOs;
 
 public sealed record PublicBookingDto(
     Guid Id,
     string BookingCode,
-    Guid RoomId,
     string GuestFirstName,
     string GuestLastName,
     string GuestEmail,
@@ -19,4 +19,23 @@ public sealed record PublicBookingDto(
     string? PaymentUrl = null,
     string? PaymentInstruction = null,
     string? NotificationMessage = null,
-    DateTime? PaymentExpiresAtUtc = null);
+    DateTime? PaymentExpiresAtUtc = null,
+    string? GuestAccessToken = null,
+    DateTime? GuestAccessExpiresAtUtc = null,
+    int AdultCount = 1,
+    int ChildCount = 0,
+    Guid? QuoteId = null,
+    string Currency = "NGN",
+    decimal RoomSubtotal = 0,
+    decimal DiscountAmount = 0,
+    decimal IncludedTaxAmount = 0,
+    decimal TaxAmount = 0,
+    decimal FeeAmount = 0,
+    IReadOnlyList<PricingQuoteLineDto>? PriceBreakdown = null,
+    Guid? RoomTypeId = null,
+    string? RoomTypeCode = null,
+    string? RoomTypeName = null,
+    int RoomQuantity = 1,
+    IReadOnlyList<PublicReservationRoomDto>? Rooms = null,
+    FolioSummaryDto? Folio = null,
+    ReservationPolicySnapshotDto? ReservationPolicy = null);

@@ -1,10 +1,10 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Enums;
-using MooreHotels.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
+using MooreHotels.WebAPI.Extensions;
 using System.Security.Claims;
 
 namespace MooreHotels.WebAPI.Controllers;
@@ -14,12 +14,10 @@ namespace MooreHotels.WebAPI.Controllers;
 public class StaffController : ControllerBase
 {
     private readonly IStaffService _staffService;
-    private readonly MooreHotelsDbContext _context;
 
-    public StaffController(IStaffService staffService, MooreHotelsDbContext context)
+    public StaffController(IStaffService staffService)
     {
         _staffService = staffService;
-        _context = context;
     }
 
     [HttpGet("stats")]
@@ -33,7 +31,10 @@ public class StaffController : ControllerBase
     [Authorize(Roles = "Admin,Manager")]
     public async Task<IActionResult> GetStaffList()
     {
-        return Ok(await _staffService.GetAllStaffAsync());
+        var staff = await _staffService.GetAllStaffAsync();
+        return Ok(User.IsInRole("Admin")
+            ? staff
+            : staff.Where(item => item.Role != UserRole.Admin));
     }
 
     [HttpGet("clients")]
@@ -46,6 +47,7 @@ public class StaffController : ControllerBase
 
     [HttpPost("onboard-staff")]
     [Authorize(Roles = "Admin,Manager")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> Onboard([FromBody] OnboardUserRequest request)
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
@@ -56,71 +58,106 @@ public class StaffController : ControllerBase
 
     [HttpPut("employees/{id:guid}")]
     [Authorize(Roles = "Admin,Manager")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateStaffRequest request)
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
 
-        var strategy = _context.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
-        {
-            _context.ChangeTracker.Clear();
-            await using var transaction = await _context.Database.BeginTransactionAsync();
-            await _context.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT 1 FROM users WHERE \"Id\" = {id} FOR UPDATE");
-            await _staffService.UpdateUserAsync(id, request, actingUserId);
-            await transaction.CommitAsync();
-        });
+        await _staffService.UpdateUserAsync(id, request, actingUserId);
         return Ok(new { Message = "Staff profile updated. Existing sessions have been revoked." });
     }
 
 
     [HttpPatch("accounts/{id}/status")]
     [Authorize(Roles = "Admin")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> ChangeStatus(
         Guid id,
         [FromBody] ChangeStatusRequest request)
     {
-        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
-        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
-        await _staffService.ChangeUserStatusAsync(id, request.Status, actingUserId);
-        return Ok(new { Message = "Account status updated successfully." });
+        return await ChangeStatusCore(id, request.Status);
     }
 
 
     [HttpPost("accounts/{id}/deactivate")]
     [Authorize(Roles = "Admin,Manager")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> Deactivate(Guid id)
     {
-        return await ChangeStatus(id, new ChangeStatusRequest(ProfileStatus.Suspended));
+        return await ChangeStatusCore(id, ProfileStatus.Suspended);
     }
 
 
     [HttpPost("accounts/{id}/activate")]
     [Authorize(Roles = "Admin,Manager")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> Activate(Guid id)
     {
-        return await ChangeStatus(id, new ChangeStatusRequest(ProfileStatus.Active));
+        return await ChangeStatusCore(id, ProfileStatus.Active);
+    }
+
+    [HttpPost("accounts/{id:guid}/emergency-suspend-admin")]
+    [Authorize(Roles = "Admin")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
+    public async Task<IActionResult> EmergencySuspendAdministrator(
+        Guid id,
+        [FromBody] EmergencyAdminStatusRequest request)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
+        await _staffService.ChangeAdministratorStatusAsync(
+            id,
+            ProfileStatus.Suspended,
+            request,
+            actingUserId);
+        return Ok(new
+        {
+            Message = "Administrator suspended. Existing sessions have been revoked."
+        });
+    }
+
+    [HttpPost("accounts/{id:guid}/emergency-reactivate-admin")]
+    [Authorize(Roles = "Admin")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
+    public async Task<IActionResult> EmergencyReactivateAdministrator(
+        Guid id,
+        [FromBody] EmergencyAdminStatusRequest request)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
+        await _staffService.ChangeAdministratorStatusAsync(
+            id,
+            ProfileStatus.Active,
+            request,
+            actingUserId);
+        return Ok(new
+        {
+            Message = "Administrator reactivated. They must sign in again."
+        });
     }
 
 
 
     [HttpDelete("accounts/{id}")]
     [Authorize(Roles = "Admin")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
     public async Task<IActionResult> Delete(Guid id)
     {
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
-        var strategy = _context.Database.CreateExecutionStrategy();
-        await strategy.ExecuteAsync(async () =>
+        await _staffService.DeleteUserAsync(id, actingUserId);
+        return Ok(new
         {
-            _context.ChangeTracker.Clear();
-            await using var transaction = await _context.Database.BeginTransactionAsync();
-            await _context.Database.ExecuteSqlInterpolatedAsync(
-                $"SELECT 1 FROM users WHERE \"Id\" = {id} FOR UPDATE");
-            await _staffService.DeleteUserAsync(id, actingUserId);
-            await transaction.CommitAsync();
+            Message = "Staff account decommissioned, personal profile data removed, and sessions revoked."
         });
-        return NoContent();
+    }
+
+    private async Task<IActionResult> ChangeStatusCore(Guid id, ProfileStatus status)
+    {
+        var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
+        await _staffService.ChangeUserStatusAsync(id, status, actingUserId);
+        return Ok(new { Message = "Account status updated successfully." });
     }
 }

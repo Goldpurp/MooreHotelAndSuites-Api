@@ -9,6 +9,8 @@ using MooreHotels.Application.Exceptions;
 using System.Net;
 using System.Net.Http.Json;
 using System.Net.Mail;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace MooreHotels.Infrastructure.Services;
 
@@ -22,6 +24,7 @@ public sealed class EmailService : IEmailService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _publicAppUrl;
     private readonly string _dashboardUrl;
+    private readonly IEmailDeliveryContext _deliveryContext;
 
     private const string LogoUrl =
         "https://res.cloudinary.com/dxryndnhl/image/upload/v1777386016/slazzer-preview-ofc3f_uvulyz.png";
@@ -30,11 +33,13 @@ public sealed class EmailService : IEmailService
         IOptions<EmailSettings> settings,
         ILogger<EmailService> logger,
         IHttpClientFactory httpClientFactory,
+        IEmailDeliveryContext deliveryContext,
         IConfiguration configuration)
     {
         _settings = settings.Value;
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _deliveryContext = deliveryContext;
         _publicAppUrl = (configuration["PublicAppUrl"] ?? "https://moorehotelandsuites.com").TrimEnd('/');
         _dashboardUrl = (configuration["DashboardUrl"] ?? "https://admin.moorehotelandsuites.com").TrimEnd('/');
     }
@@ -55,7 +60,13 @@ public sealed class EmailService : IEmailService
                 "The transactional email request is invalid.");
         }
 
-        var idempotencyKey = Guid.NewGuid();
+        // The same logical email always uses the same provider key. This makes
+        // outbox retries safe even if the process stops after Brevo accepted a
+        // message but before the outbox row was deleted.
+        var fingerprint = SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"{recipient.Address}\n{subject}\n{body}"));
+        var idempotencyKey = _deliveryContext.IdempotencyKey ??
+                             new Guid(fingerprint.AsSpan(0, 16));
         var payload = new
         {
             sender = new
@@ -92,10 +103,24 @@ public sealed class EmailService : IEmailService
                 if (response.StatusCode == HttpStatusCode.Created)
                 {
                     await ValidateAcceptedResponseAsync(response);
-                    _logger.LogInformation(
-                        "Brevo accepted transactional email. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
-                        recipient.Host,
-                        attempt);
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "Brevo accepted transactional email. Attempt={Attempt}.",
+                            attempt);
+                    }
+                    return;
+                }
+
+                if (response.StatusCode == HttpStatusCode.BadRequest &&
+                    await IsDuplicateAcceptedAsync(response))
+                {
+                    if (_logger.IsEnabled(LogLevel.Information))
+                    {
+                        _logger.LogInformation(
+                            "Brevo reported an already accepted idempotency key. Attempt={Attempt}.",
+                            attempt);
+                    }
                     return;
                 }
 
@@ -140,31 +165,11 @@ public sealed class EmailService : IEmailService
     private static async Task ValidateAcceptedResponseAsync(
         HttpResponseMessage response)
     {
-        if (response.Content.Headers.ContentLength >
-            MaximumProviderResponseBytes)
-        {
-            throw DeliveryUnavailable();
-        }
-
-        await using var stream = await response.Content.ReadAsStreamAsync();
-        using var buffer = new MemoryStream();
-        var chunk = new byte[4096];
-        int read;
-        while ((read = await stream.ReadAsync(chunk.AsMemory())) > 0)
-        {
-            if (buffer.Length + read > MaximumProviderResponseBytes)
-            {
-                throw DeliveryUnavailable();
-            }
-
-            await buffer.WriteAsync(chunk.AsMemory(0, read));
-        }
-
-        buffer.Position = 0;
+        var bytes = await ReadBoundedProviderContentAsync(response);
         try
         {
-            using var document = await JsonDocument.ParseAsync(
-                buffer,
+            using var document = JsonDocument.Parse(
+                bytes,
                 new JsonDocumentOptions
                 {
                     AllowTrailingCommas = false,
@@ -184,6 +189,56 @@ public sealed class EmailService : IEmailService
         {
             throw DeliveryUnavailable(exception);
         }
+    }
+
+    private static async Task<bool> IsDuplicateAcceptedAsync(HttpResponseMessage response)
+    {
+        try
+        {
+            var bytes = await ReadBoundedProviderContentAsync(response);
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 8
+            });
+            return document.RootElement.TryGetProperty("code", out var code) &&
+                   code.ValueKind == JsonValueKind.String &&
+                   string.Equals(
+                       code.GetString(),
+                       "duplicate_parameter",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (
+            exception is JsonException or ServiceUnavailableException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<byte[]> ReadBoundedProviderContentAsync(
+        HttpResponseMessage response)
+    {
+        if (response.Content.Headers.ContentLength > MaximumProviderResponseBytes)
+        {
+            throw DeliveryUnavailable();
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync();
+        using var buffer = new MemoryStream();
+        var chunk = new byte[4096];
+        int read;
+        while ((read = await stream.ReadAsync(chunk.AsMemory())) > 0)
+        {
+            if (buffer.Length + read > MaximumProviderResponseBytes)
+            {
+                throw DeliveryUnavailable();
+            }
+
+            await buffer.WriteAsync(chunk.AsMemory(0, read));
+        }
+
+        return buffer.ToArray();
     }
 
     private static bool IsTransient(HttpStatusCode statusCode) =>
@@ -340,8 +395,8 @@ public sealed class EmailService : IEmailService
 </body>
 </html>";
     }
-    
-    private string GetBookingSummaryHtml(
+
+    private static string GetBookingSummaryHtml(
         string bookingCode,
         string roomName,
         string roomCategory,
@@ -349,7 +404,9 @@ public sealed class EmailService : IEmailService
         DateTime? checkIn,
         DateTime? checkOut,
         int? nights,
-        decimal? amount)
+        decimal? amount,
+        int? adultCount = null,
+        int? childCount = null)
     {
         bookingCode = E(bookingCode);
         roomName = E(roomName);
@@ -405,10 +462,13 @@ public sealed class EmailService : IEmailService
 
         if (capacity is > 0)
         {
+            var requestedOccupancy = adultCount is > 0
+                ? $" Requested: <strong style='color:#26231F;'>{adultCount.Value} adult(s), {Math.Max(0, childCount ?? 0)} child(ren)</strong>."
+                : string.Empty;
             html += $@"
             <tr>
                 <td colspan='2' style='padding:14px 20px; background-color:#FAF8F5; border-top:1px solid #ECE7E0; color:#615B53; font-size:12px; line-height:18px;'>
-                    Maximum occupancy: <strong style='color:#26231F;'>{capacity.Value} {(capacity.Value == 1 ? "guest" : "guests")}</strong>
+                    Maximum occupancy: <strong style='color:#26231F;'>{capacity.Value} {(capacity.Value == 1 ? "guest" : "guests")}</strong>.{requestedOccupancy}
                 </td>
             </tr>";
         }
@@ -438,14 +498,21 @@ public sealed class EmailService : IEmailService
 
 
     // Guest emails
-    public async Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount)
+    public async Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null)
     {
         guestName = E(guestName);
+        var manageLink = string.IsNullOrWhiteSpace(manageBookingUrl)
+            ? string.Empty
+            : $@"<div style='margin:24px 0; text-align:center;'>
+                 <a class='mobile-button' href='{E(manageBookingUrl)}' style='display:inline-block; background-color:#C94B11; color:#FFFFFF; padding:14px 30px; border-radius:8px; text-decoration:none; font-weight:700;'>View or manage booking</a>
+                </div>";
         var content = $@"
         <p style='margin-top:0;'>Dear <strong>{guestName}</strong>,</p>
         <p>Your booking request at <strong>Moore Hotels & Suites</strong> has been received. Keep your reference below and complete payment where required; the hotel will confirm the stay after payment verification.</p>
         
-        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount)}
+        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount, adultCount, childCount)}
+
+        {manageLink}
 
         <div style='margin-top:25px; padding:17px 18px; background-color:#FAF5E9; border:1px solid #E7D5AE; border-radius:6px; font-size:14px; color:#5C4826;'>
             <strong>Important note:</strong> Please present a valid government-issued ID upon check-in. Our check-in time starts from 2:00 PM.
@@ -460,6 +527,52 @@ public sealed class EmailService : IEmailService
                 content,
                 "#B7792A",
                 $"We have received reservation {bookingCode}."));
+    }
+
+    public async Task SendBookingAccessLinkAsync(
+        string email,
+        string guestName,
+        string bookingCode,
+        string manageBookingUrl)
+    {
+        var content = $@"
+        <p style='margin-top:0;'>Dear <strong>{E(guestName)}</strong>,</p>
+        <p>Use the secure button below to view or manage reservation <strong>{E(bookingCode)}</strong>. This link replaces any older booking-management link.</p>
+        <div style='margin:24px 0; text-align:center;'>
+          <a class='mobile-button' href='{E(manageBookingUrl)}' style='display:inline-block; background-color:#C94B11; color:#FFFFFF; padding:14px 30px; border-radius:8px; text-decoration:none; font-weight:700;'>Open secure booking</a>
+        </div>
+        <p style='font-size:14px; color:#64748B;'>If you did not request this message, no action is required.</p>";
+
+        await SendEmailAsync(
+            email,
+            $"Secure booking access: {bookingCode}",
+            BuildTemplate(
+                "Secure Booking Access",
+                content,
+                "#B7792A",
+                $"Secure access to reservation {bookingCode}."));
+    }
+
+    public async Task SendBookingEmailVerificationAsync(
+        string email,
+        string verificationLink)
+    {
+        var safeLink = E(verificationLink);
+        var content = $@"
+        <p style='margin-top:0;'>Confirm that this email address belongs to you before reserving a room.</p>
+        <div style='margin:24px 0; text-align:center;'>
+          <a class='mobile-button' href='{safeLink}' style='display:inline-block; background-color:#C94B11; color:#FFFFFF; padding:14px 30px; border-radius:8px; text-decoration:none; font-weight:700;'>Continue my booking</a>
+        </div>
+        <p style='font-size:13px; color:#777067;'>This single-use link expires in 15 minutes. If you did not request it, no room has been reserved and no action is required.</p>";
+
+        await SendEmailAsync(
+            email,
+            "Verify your email to reserve a room",
+            BuildTemplate(
+                "Confirm Your Booking Email",
+                content,
+                "#B7792A",
+                "Confirm your email before reserving a room."));
     }
 
     public async Task SendCancellationNoticeAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, DateTime checkIn, string? reason = null)
@@ -692,7 +805,7 @@ public sealed class EmailService : IEmailService
     }
 
     // Admin & security
-    public async Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone)
+    public async Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone)
     {
         guestName = E(guestName);
         guestEmail = E(guestEmail);
@@ -711,7 +824,7 @@ public sealed class EmailService : IEmailService
             </tr>
         </table>
 
-        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount)}
+        {GetBookingSummaryHtml(bookingCode, roomName, roomCategory, capacity, checkIn, checkOut, nights, totalAmount, adultCount, childCount)}
 
         <div style='margin-top:25px; text-align:center;'>
             <a class='mobile-button' href='{bookingsUrl}' style='display:inline-block; background-color:#111111; color:#FFFFFF; padding:12px 25px; border-radius:6px; text-decoration:none; font-size:14px; font-weight:600;'>Manage in Portal</a>
@@ -835,5 +948,108 @@ public sealed class EmailService : IEmailService
                 content,
                 "#2F6B4F",
                 $"The refund for reservation {bookingCode} has been processed."));
+    }
+
+    public async Task SendBookingAmendmentConfirmationAsync(string email, BookingAmendmentConfirmationEmail payload)
+    {
+        var guestName = E(payload.GuestName);
+        var bookingCode = E(payload.BookingCode);
+        var roomType = E(payload.RoomTypeName);
+        var reason = E(payload.AmendmentReason);
+        var manageUrl = E(payload.ManageBookingUrl);
+
+        var content = $@"
+        <p style='margin-top:0;'>Dear <strong>{guestName}</strong>,</p>
+        <p>Your reservation <strong>{bookingCode}</strong> has been successfully updated.</p>
+
+        <table role='presentation' width='100%' style='margin:25px 0; background-color:#F8FAFC; border:1px solid #E2E8F0; border-radius:12px; padding:20px;'>
+            <tr>
+                <td class='mobile-stack' colspan='2' style='padding-bottom:15px; border-bottom:1px solid #E2E8F0;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Updated Accommodation</div>
+                    <div style='font-size:16px; font-weight:700; color:#0F172A;'>{roomType} ({payload.RoomQuantity} {(payload.RoomQuantity == 1 ? "room" : "rooms")})</div>
+                </td>
+            </tr>
+            <tr>
+                <td class='mobile-stack' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Check-in</div>
+                    <div style='font-size:14px; font-weight:600; color:#0F172A;'>{payload.CheckIn:ddd, dd MMM yyyy}</div>
+                </td>
+                <td class='mobile-stack-right' align='right' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Check-out</div>
+                    <div style='font-size:14px; font-weight:600; color:#0F172A;'>{payload.CheckOut:ddd, dd MMM yyyy} ({payload.Nights} nights)</div>
+                </td>
+            </tr>
+            <tr>
+                <td class='mobile-stack' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Total Rate</div>
+                    <div style='font-size:18px; font-weight:800; color:#0F172A;'>NGN {payload.TotalAmount:N2}</div>
+                </td>
+                <td class='mobile-stack-right' align='right' style='padding-top:15px;'>
+                    <div style='font-size:12px; color:#64748B; text-transform:uppercase;'>Outstanding Balance</div>
+                    <div style='font-size:18px; font-weight:800; color:#B91C1C;'>NGN {payload.BalanceDue:N2}</div>
+                </td>
+            </tr>
+        </table>
+
+        {(string.IsNullOrWhiteSpace(reason) ? "" : $"<p style='font-size:13px; color:#64748B;'>Amendment notes: <em>{reason}</em></p>")}
+        <p style='font-size:14px; color:#4B5563;'>You can review and manage your stay online at <a href='{manageUrl}'>Manage Reservation</a>.</p>";
+
+        await SendEmailAsync(
+            email,
+            $"Reservation updated: {payload.BookingCode}",
+            BuildTemplate(
+                "Reservation Updated",
+                content,
+                "#1E293B",
+                $"Your reservation {payload.BookingCode} details have been updated."));
+    }
+
+    public async Task SendFolioReceiptAsync(string email, FolioReceiptEmail payload)
+    {
+        var guestName = E(payload.GuestName);
+        var bookingCode = E(payload.BookingCode);
+        var receiptNumber = E(payload.ReceiptNumber);
+        var entryType = E(payload.EntryType);
+        var paymentMethod = E(payload.PaymentMethod);
+        var desc = E(payload.Description);
+
+        var content = $@"
+        <p style='margin-top:0;'>Dear <strong>{guestName}</strong>,</p>
+        <p>This email confirms your {entryType.ToLowerInvariant()} transaction for reservation <strong>{bookingCode}</strong>.</p>
+
+        <table role='presentation' width='100%' style='margin:25px 0; background-color:#F0FDF4; border:1px solid #BBF7D0; border-radius:12px; padding:20px;'>
+            <tr>
+                <td class='mobile-stack'>
+                    <div style='font-size:12px; color:#166534; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;'>Amount {entryType}</div>
+                    <div style='font-size:24px; font-weight:800; color:#14532D;'>{payload.Currency} {payload.Amount:N2}</div>
+                </td>
+                <td class='mobile-stack-right' align='right'>
+                    <div style='font-size:11px; color:#166534; text-transform:uppercase; letter-spacing:1px; margin-bottom:5px;'>Receipt #</div>
+                    <div class='mobile-break' style='font-size:14px; font-family:monospace; color:#14532D;'>{receiptNumber}</div>
+                </td>
+            </tr>
+            <tr>
+                <td class='mobile-stack' style='padding-top:15px;'>
+                    <div style='font-size:11px; color:#166534; text-transform:uppercase;'>Method</div>
+                    <div style='font-size:14px; font-weight:600; color:#14532D;'>{paymentMethod}</div>
+                </td>
+                <td class='mobile-stack-right' align='right' style='padding-top:15px;'>
+                    <div style='font-size:11px; color:#166534; text-transform:uppercase;'>Balance Remaining</div>
+                    <div style='font-size:14px; font-weight:700; color:#14532D;'>{payload.Currency} {payload.BalanceAfter:N2}</div>
+                </td>
+            </tr>
+        </table>
+
+        <p style='font-size:13px; color:#4B5563;'>Description: {desc}</p>
+        <p style='font-size:13px; color:#6B7280;'>Processed on: {payload.ProcessedAtUtc:dd MMM yyyy HH:mm} UTC</p>";
+
+        await SendEmailAsync(
+            email,
+            $"Official receipt: {payload.BookingCode} ({receiptNumber})",
+            BuildTemplate(
+                $"{payload.EntryType} Receipt",
+                content,
+                "#166534",
+                $"Receipt for reservation {payload.BookingCode}."));
     }
 }

@@ -13,5 +13,10 @@ public class AuditLogsController : ControllerBase
     public AuditLogsController(IAuditService auditService) => _auditService = auditService;
 
     [HttpGet]
-    public async Task<IActionResult> GetLogs() => Ok(await _auditService.GetAllLogsAsync());
+    public async Task<IActionResult> GetLogs(
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20,
+        [FromQuery] string? entityType = null,
+        [FromQuery] string? search = null) =>
+        Ok(await _auditService.GetPagedLogsAsync(page, pageSize, entityType, search));
 }

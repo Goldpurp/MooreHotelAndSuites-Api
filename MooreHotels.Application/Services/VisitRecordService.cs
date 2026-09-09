@@ -1,5 +1,6 @@
 
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
@@ -21,28 +22,54 @@ public class VisitRecordService : IVisitRecordService
     {
         var records = await _visitRepo.GetAllAsync();
         return records.Select(v => new VisitRecordDto(
-            v.Id, v.GuestId, v.GuestName, v.RoomNumber, v.BookingCode, 
+            v.Id, v.GuestId, v.GuestName, v.RoomNumber, v.BookingCode,
             v.Action, v.Timestamp, v.AuthorizedBy));
+    }
+
+    public async Task<PagedResult<VisitRecordDto>> GetPagedRecordsAsync(int pageNumber = 1, int pageSize = 20, string? search = null)
+    {
+        var paged = await _visitRepo.GetPagedRecordsAsync(pageNumber, pageSize, search);
+        var mapped = paged.Items.Select(v => new VisitRecordDto(
+            v.Id, v.GuestId, v.GuestName, v.RoomNumber, v.BookingCode,
+            v.Action, v.Timestamp, v.AuthorizedBy)).ToList();
+        return PagedResult<VisitRecordDto>.Create(mapped, paged.TotalCount, paged.PageNumber, paged.PageSize);
     }
 
     public async Task CreateRecordAsync(string bookingCode, string action, string authorizedBy)
     {
-        var booking = await _bookingRepo.GetByCodeAsync(bookingCode);
-        if (booking == null) throw new Exception("Invalid booking code");
+        var normalizedCode = RequireText(bookingCode, "Booking code", 30).ToUpperInvariant();
+        var normalizedAction = RequireText(action, "Visit action", 40);
+        var normalizedAuthorizer = RequireText(authorizedBy, "Authorizer", 160);
+        var booking = await _bookingRepo.GetByCodeAsync(normalizedCode);
+        if (booking == null) throw new NotFoundException("Invalid booking code.");
+        var assignedUnit = booking.ReservationRooms
+            .OrderBy(item => item.Sequence)
+            .FirstOrDefault(item => item.AssignedRoomId.HasValue);
+        var roomId = assignedUnit?.AssignedRoomId ?? booking.RoomId;
+        if (!roomId.HasValue)
+            throw new BadRequestException("Assign a physical room before recording a stay event.");
 
         var record = new VisitRecord
         {
             Id = Guid.NewGuid(),
-            BookingCode = bookingCode,
+            BookingCode = normalizedCode,
             GuestId = booking.GuestId,
             GuestName = $"{booking.Guest?.FirstName} {booking.Guest?.LastName}",
-            RoomId = booking.RoomId,
-            RoomNumber = booking.Room?.RoomNumber ?? "N/A",
-            Action = action,
+            RoomId = roomId.Value,
+            RoomNumber = assignedUnit?.AssignedRoom?.RoomNumber ?? booking.Room?.RoomNumber ?? "N/A",
+            Action = normalizedAction,
             Timestamp = DateTime.UtcNow,
-            AuthorizedBy = authorizedBy
+            AuthorizedBy = normalizedAuthorizer
         };
 
         await _visitRepo.AddAsync(record);
+    }
+
+    private static string RequireText(string? value, string field, int maximumLength)
+    {
+        var cleaned = value?.Trim() ?? string.Empty;
+        if (cleaned.Length == 0 || cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
+            throw new BadRequestException($"{field} is invalid or too long.");
+        return cleaned;
     }
 }

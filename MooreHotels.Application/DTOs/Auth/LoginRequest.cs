@@ -5,4 +5,6 @@ namespace MooreHotels.Application.DTOs;
 
 public record LoginRequest(
     [Required, EmailAddress, StringLength(254)] string Email,
-    [Required, StringLength(128, MinimumLength = 1)] string Password);
+    [Required, StringLength(128, MinimumLength = 1)] string Password,
+    [StringLength(32)] string? TwoFactorCode = null,
+    bool UseRecoveryCode = false);

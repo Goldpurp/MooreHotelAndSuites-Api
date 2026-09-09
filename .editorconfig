@@ -1,0 +1,14 @@
+root = true
+
+[*.cs]
+# Structured LoggerMessage delegates are useful in very hot loops, but forcing
+# them for every low-frequency startup/controller log obscures the audit signal.
+dotnet_diagnostic.CA1848.severity = none
+
+[MooreHotels.Application/DTOs/Common/PagedResult.cs]
+# A colocated generic factory keeps pagination construction type-safe.
+dotnet_diagnostic.CA1000.severity = none
+
+[MooreHotels.Infrastructure/Migrations/*.cs]
+# EF migrations are generated, immutable release artifacts.
+generated_code = true

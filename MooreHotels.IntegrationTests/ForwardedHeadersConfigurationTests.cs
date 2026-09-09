@@ -41,7 +41,7 @@ public sealed class ForwardedHeadersConfigurationTests
         Assert.Equal(1, options.ForwardLimit);
         Assert.False(options.RequireHeaderSymmetry);
         Assert.Empty(options.KnownProxies);
-        Assert.Empty(options.KnownNetworks);
+        Assert.Empty(options.KnownIPNetworks);
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public sealed class ForwardedHeadersConfigurationTests
         var options = provider.GetRequiredService<IOptions<ForwardedHeadersOptions>>().Value;
 
         Assert.True(options.RequireHeaderSymmetry);
-        Assert.Single(options.KnownNetworks);
+        Assert.Single(options.KnownIPNetworks);
     }
 
     private sealed class TestHostEnvironment : IHostEnvironment

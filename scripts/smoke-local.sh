@@ -47,9 +47,9 @@ assert_status 200 "$status" "liveness"
 jq -e '.status == "Healthy" and .environment == "local"' "$TMP_DIR/live.body" >/dev/null
 grep -Eiq '^X-Moore-API-Environment:[[:space:]]*local' "$TMP_DIR/live.headers"
 
-status="$(request ready "$BASE_URL/api/health")"
+status="$(request ready "$BASE_URL/health/ready")"
 assert_status 200 "$status" "database readiness"
-jq -e '.status == "Healthy" and .database == "Connected"' "$TMP_DIR/ready.body" >/dev/null
+jq -e '.status == "Ready" and .database == "Connected"' "$TMP_DIR/ready.body" >/dev/null
 
 status="$(request swagger "$BASE_URL/swagger/index.html")"
 assert_status 200 "$status" "Local Swagger UI"
@@ -78,8 +78,8 @@ assert_status 409 "$status" "cross-environment protection"
 status="$(request bad-host -H 'Host: attacker.invalid' "$BASE_URL/health/live")"
 assert_status 400 "$status" "Host header protection"
 
-admin_email="$(env_value AdminSeed__Email)"
-admin_password="$(env_value AdminSeed__Password)"
+admin_email="${MOORE_LOCAL_ADMIN_EMAIL:-$(env_value AdminSeed__Email)}"
+admin_password="${MOORE_LOCAL_ADMIN_PASSWORD:-$(env_value AdminSeed__Password)}"
 if [[ -z "$admin_email" || -z "$admin_password" ]]; then
   echo "Local administrator seed values are missing." >&2
   exit 1
@@ -95,5 +95,8 @@ status="$(request analytics -H "Authorization: Bearer $token" "$BASE_URL/api/ana
 assert_status 200 "$status" "authorized analytics"
 status="$(request profile -H "Authorization: Bearer $token" "$BASE_URL/api/Profile/me")"
 assert_status 200 "$status" "authorized profile"
+status="$(request operational-health -H "Authorization: Bearer $token" "$BASE_URL/api/health")"
+assert_status 200 "$status" "authenticated operational health"
+jq -e '.database == "Connected"' "$TMP_DIR/operational-health.body" >/dev/null
 
 echo "All Moore Hotels Local API smoke checks passed."

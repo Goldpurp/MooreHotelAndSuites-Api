@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces;
 
 namespace MooreHotels.IntegrationTests;
@@ -6,7 +7,8 @@ namespace MooreHotels.IntegrationTests;
 public sealed record RecordedEmail(
     string Template,
     string Recipient,
-    string? BookingCode = null);
+    string? BookingCode = null,
+    string? Link = null);
 
 public sealed class RecordingEmailService : IEmailService
 {
@@ -19,12 +21,14 @@ public sealed class RecordingEmailService : IEmailService
     private Task Record(
         string template,
         string recipient,
-        string? bookingCode = null)
+        string? bookingCode = null,
+        string? link = null)
     {
         _messages.Enqueue(new RecordedEmail(
             template,
             recipient,
-            bookingCode));
+            bookingCode,
+            link));
         return Task.CompletedTask;
     }
 
@@ -35,11 +39,26 @@ public sealed class RecordingEmailService : IEmailService
         string roomName,
         string roomCategory,
         int capacity,
+        int adultCount,
+        int childCount,
         DateTime checkIn,
         DateTime checkOut,
         int nights,
-        decimal totalAmount) =>
-        Record("BookingConfirmation", email, bookingCode);
+        decimal totalAmount,
+        string? manageBookingUrl = null) =>
+        Record("BookingConfirmation", email, bookingCode, manageBookingUrl);
+
+    public Task SendBookingAccessLinkAsync(
+        string email,
+        string guestName,
+        string bookingCode,
+        string manageBookingUrl) =>
+        Record("BookingAccessLink", email, bookingCode, manageBookingUrl);
+
+    public Task SendBookingEmailVerificationAsync(
+        string email,
+        string verificationLink) =>
+        Record("BookingEmailVerification", email);
 
     public Task SendCancellationNoticeAsync(
         string email,
@@ -94,6 +113,8 @@ public sealed class RecordingEmailService : IEmailService
         string roomName,
         string roomCategory,
         int capacity,
+        int adultCount,
+        int childCount,
         DateTime checkIn,
         DateTime checkOut,
         int nights,
@@ -135,4 +156,14 @@ public sealed class RecordingEmailService : IEmailService
         string roomName,
         decimal amount) =>
         Record("AdminRefund", adminEmail, bookingCode);
+
+    public Task SendBookingAmendmentConfirmationAsync(
+        string email,
+        BookingAmendmentConfirmationEmail payload) =>
+        Record("BookingAmendmentConfirmation", email, payload.BookingCode, payload.ManageBookingUrl);
+
+    public Task SendFolioReceiptAsync(
+        string email,
+        FolioReceiptEmail payload) =>
+        Record("FolioReceipt", email, payload.BookingCode, payload.ReceiptNumber);
 }

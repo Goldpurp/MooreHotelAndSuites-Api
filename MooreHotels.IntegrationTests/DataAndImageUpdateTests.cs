@@ -58,6 +58,10 @@ public sealed class DataAndImageUpdateTests
         var response = await _fixture.Client.SendAsync(update);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(1, await _fixture.WithDbAsync(db => db.MediaDeletionJobs.CountAsync(
+            job => job.PublicId == oldImage.PublicId)));
+        Assert.True(File.Exists(_fixture.GetLocalAssetPath(oldImage.PublicId)));
+        await _fixture.FlushMediaDeletionOutboxAsync();
         var stored = await _fixture.WithDbAsync(db => db.Rooms
             .AsNoTracking()
             .Include(item => item.Images)
@@ -132,6 +136,10 @@ public sealed class DataAndImageUpdateTests
         Assert.Equal(HttpStatusCode.OK, second.StatusCode);
         var secondBody = await second.Content.ReadFromJsonAsync<AvatarUpdateResponse>();
         Assert.NotNull(secondBody);
+        Assert.Equal(1, await _fixture.WithDbAsync(db => db.MediaDeletionJobs.CountAsync(
+            job => job.PublicId == firstState.User.AvatarPublicId)));
+        Assert.True(File.Exists(_fixture.GetLocalAssetPath(firstState.User.AvatarPublicId!)));
+        await _fixture.FlushMediaDeletionOutboxAsync();
 
         var secondState = await _fixture.WithDbAsync(async db => new
         {
@@ -223,6 +231,20 @@ public sealed class DataAndImageUpdateTests
     }
 
     [Fact]
+    public async Task Client_cannot_create_unattached_assets_through_generic_upload()
+    {
+        using var request = CreateAuthorizedFormRequest(
+            HttpMethod.Post,
+            "/api/images/upload?folder=avatars",
+            _fixture.ClientUser);
+        AddPng(request.Content!, "file", "unattached.png");
+
+        using var response = await _fixture.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Profile_update_keeps_identity_guest_and_audit_in_sync()
     {
         var guest = await _fixture.LinkGuestProfileAsync(_fixture.ClientUser);
@@ -307,7 +329,9 @@ public sealed class DataAndImageUpdateTests
                     department = "Reception"
                 });
             var response = await _fixture.Client.SendAsync(request);
-            Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+            Assert.True(
+                response.StatusCode == HttpStatusCode.Conflict,
+                await response.Content.ReadAsStringAsync());
 
             var after = await _fixture.WithDbAsync(async db => new
             {
@@ -359,7 +383,7 @@ public sealed class DataAndImageUpdateTests
 
         var response = await _fixture.Client.SendAsync(request);
 
-        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
         var state = await _fixture.WithDbAsync(async db =>
         {
             var user = await db.Users.AsNoTracking().SingleAsync(item => item.Email == email);
@@ -379,7 +403,7 @@ public sealed class DataAndImageUpdateTests
     }
 
     [Fact]
-    public async Task Password_contract_accepts_eight_and_rejects_seven_characters()
+    public async Task Password_contract_accepts_twelve_and_rejects_eleven_characters()
     {
         var passwordParameter = typeof(RegisterRequest)
             .GetConstructors()
@@ -390,15 +414,15 @@ public sealed class DataAndImageUpdateTests
         var lengthRule = passwordParameter
             .GetCustomAttribute<StringLengthAttribute>();
         Assert.NotNull(lengthRule);
-        Assert.Equal(8, lengthRule.MinimumLength);
-        Assert.True(lengthRule.IsValid("Aa1!bcde"));
-        Assert.False(lengthRule.IsValid("Aa1!bcd"));
+        Assert.Equal(12, lengthRule.MinimumLength);
+        Assert.True(lengthRule.IsValid("Aa1!bcdefghi"));
+        Assert.False(lengthRule.IsValid("Aa1!bcdefgh"));
 
         await using var scope = _fixture.Services.CreateAsyncScope();
         var options = scope.ServiceProvider
             .GetRequiredService<IOptions<IdentityOptions>>()
             .Value;
-        Assert.Equal(8, options.Password.RequiredLength);
+        Assert.Equal(12, options.Password.RequiredLength);
 
         var userManager =
             scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
@@ -413,12 +437,12 @@ public sealed class DataAndImageUpdateTests
             validator => validator.ValidateAsync(
                 userManager,
                 candidate,
-                "Aa1!bcde")));
+                "Aa1!bcdefghi")));
         var rejected = await Task.WhenAll(userManager.PasswordValidators.Select(
             validator => validator.ValidateAsync(
                 userManager,
                 candidate,
-                "Aa1!bcd")));
+                "Aa1!bcdefgh")));
 
         Assert.All(accepted, result => Assert.True(result.Succeeded));
         Assert.Contains(rejected, result => !result.Succeeded);

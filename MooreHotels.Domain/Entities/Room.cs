@@ -5,6 +5,7 @@ namespace MooreHotels.Domain.Entities;
 public class Room
 {
     public Guid Id { get; set; }
+    public Guid RoomTypeId { get; set; }
     public string RoomNumber { get; set; } = string.Empty;
     public string Name { get; set; } = string.Empty;
     public RoomCategory Category { get; set; }
@@ -17,5 +18,10 @@ public class Room
     public string Description { get; set; } = string.Empty;
     public List<string> Amenities { get; set; } = new();
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-     public ICollection<RoomImage> Images { get; set; } = new List<RoomImage>();
+    public ICollection<RoomImage> Images { get; set; } = new List<RoomImage>();
+    public RoomType? RoomType { get; set; }
+    public ICollection<ReservationRoom> Assignments { get; set; } = new List<ReservationRoom>();
+    public ICollection<HousekeepingTask> HousekeepingTasks { get; set; } = new List<HousekeepingTask>();
+    public ICollection<MaintenanceWorkOrder> MaintenanceWorkOrders { get; set; } = new List<MaintenanceWorkOrder>();
+    public ICollection<RoomInventoryPeriod> InventoryPeriods { get; set; } = new List<RoomInventoryPeriod>();
 }
