@@ -5,8 +5,10 @@
 - GitHub's `Goldpurp/MooreHotelAndSuitesProduction-api` URL redirects to
   `Goldpurp/MooreHotelAndSuites-Api`. These are the same public repository.
   Its remote `main` and Render's last successful deployment are `3e901a1`.
-- The tested release is local branch `codex/prod-hardening-1-5`, commit
-  `13acc9f`. A fresh scan of the Git archive reported zero secret findings.
+- The tested release is local branch `codex/prod-hardening-1-5`. Draft PR #7 is
+  open against `main`; its latest complete CI/CodeQL run passed 284 tests and
+  reported zero open CodeQL alerts. A fresh scan of the Git archive reported
+  zero secret findings.
 - Live read-only queries against the selected Ireland Supabase project
   `azclpxuabsffjkuhqzga` confirmed 28 EF migrations, 48 public tables, zero
   bookings, and zero persisted Data Protection keys.
@@ -39,12 +41,12 @@
 
 ## Remaining dependencies
 
-- The owner approved publishing the release branch to the existing public
-  GitHub repository. Open the release PR and require passing CI/CodeQL before
-  any deployment. Publication alone is not production acceptance.
-- Complete encrypted backup scheduling, permanent storage and tested alert
-  routing. Backup storage preference and two alert recipients were requested;
-  no readiness declarations were fabricated.
+- Complete live setup and a manual success/failure test for the encrypted daily
+  GitHub Actions backup. The workflow, dedicated read-only backup-role scripts,
+  30-day encrypted artifact retention, and Healthchecks.io routing are being
+  added to PR #7. The selected recipients are
+  `moorehotelsandsuites@gmail.com` and `lilswatch112@gmail.com`. No readiness
+  declarations are set until live evidence exists.
 - Complete Brevo and Cloudinary credential-rotation/acceptance evidence and
   approved privacy/terms versions, URLs and retention configuration.
 - After prerequisite acceptance, deploy the tested commit, switch the Render

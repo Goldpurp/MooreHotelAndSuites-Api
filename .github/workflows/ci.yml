@@ -81,6 +81,8 @@ jobs:
           MIGRATION_CONNECTION_STRING: Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=postgres;Password=postgres;SSL Mode=Disable
           DATABASE_RUNTIME_ROLE: moore_runtime_ci
           DATABASE_RUNTIME_PASSWORD: ci-runtime-password-not-for-production
+          DATABASE_BACKUP_ROLE: moore_backup_ci
+          DATABASE_BACKUP_PASSWORD: ci-backup-password-not-for-production
           Database__Provider: Supabase
           MOORE_PRODUCTION_REHEARSAL: true
         run: |
@@ -91,6 +93,8 @@ jobs:
           ./scripts/validate-production-database.sh
           ./scripts/provision-runtime-database-role.sh
           RUNTIME_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=moore_runtime_ci;Password=ci-runtime-password-not-for-production;SSL Mode=Disable' ./scripts/validate-runtime-database-role.sh
+          ./scripts/create-supabase-backup-role.sh
+          BACKUP_CONNECTION_STRING='Host=127.0.0.1;Port=5432;Database=moore_production_rehearsal;Username=moore_backup_ci;Password=ci-backup-password-not-for-production;SSL Mode=Disable' ./scripts/validate-backup-database-role.sh
       - name: Rehearse backup restore and reject incomplete restores
         env:
           PGHOST: 127.0.0.1

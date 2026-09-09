@@ -21,9 +21,12 @@ actually passed.
 1. Configure the external encrypted export command documented in
    `PRODUCTION_DEPLOYMENT.md`. Keep the age private key and application PFX
    separately recoverable. Do not claim PITR is enabled.
-2. Schedule a daily export on a trusted machine outside Render, retaining
-   encrypted copies on a separate device/provider within its free quota.
-   Alert on a missed or failed export; sleeping Render workers cannot schedule it.
+2. Provision and validate the dedicated `moore_backup` role, then configure the
+   repository's daily GitHub Actions export. Retain only age-encrypted artifacts
+   within the free storage quota. Route its Healthchecks.io missed/failed-run
+   notification to `moorehotelsandsuites@gmail.com` and
+   `lilswatch112@gmail.com`, and trigger a manual failure test. Sleeping Render
+   workers cannot schedule the export.
 3. Configure uptime checks for `/health/live` and `/health/ready` from at least
    two regions. Page when two consecutive checks fail.
 4. Configure 5xx-rate and p95-latency alerts, plus log alerts for rejected

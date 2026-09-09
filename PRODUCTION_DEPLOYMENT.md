@@ -85,11 +85,27 @@ Set `OperationalReadiness__BackupMode=Logical`,
 only the paid managed/PITR requirement. An encrypted off-provider backup and a
 successful restore drill are still required before accepting guest data.
 
+Create a dedicated backup login with a unique password, then provision and
+validate its read-only grants. `BYPASSRLS` is necessary because a complete
+disaster-recovery dump must include every protected row; the role receives no
+write, DDL, ownership, replication, server-file, database-creation or
+role-creation privileges.
+
+```bash
+MIGRATION_CONNECTION_STRING='...' \
+DATABASE_BACKUP_ROLE=moore_backup \
+DATABASE_BACKUP_PASSWORD='...' \
+./scripts/create-supabase-backup-role.sh
+
+BACKUP_CONNECTION_STRING='...' ./scripts/validate-backup-database-role.sh
+```
+
 Install PostgreSQL **17 or newer** client tools and [age](https://age-encryption.org/)
 on a trusted machine outside Render. Create an age identity with `age-keygen`,
 keep its private identity encrypted/offline, and use its public recipient for
-backups. Supply `BACKUP_CONNECTION_STRING` via the runner's secret environment
-and `BACKUP_AGE_RECIPIENT` with the public recipient, then run:
+backups. Supply the dedicated role in `BACKUP_CONNECTION_STRING` via the
+runner's secret environment and `BACKUP_AGE_RECIPIENT` with the public
+recipient, then run:
 
 ```bash
 ./scripts/backup-production.sh /secure/backups/moore-YYYY-MM-DD.dump.age
@@ -104,6 +120,23 @@ Schedule this on a trusted machine that is actually on; do not rely on a worker
 inside a sleeping Render instance. Set the recovery-point objective to the real
 backup interval, not a promised PITR interval. Scheduling/restore evidence must
 be established by the operator before the readiness declarations become true.
+
+The repository's `production-backup.yml` workflow runs daily at 03:17 WAT and
+supports a manual test. Configure the following GitHub Actions secrets before
+merging it to the default branch:
+
+- `BACKUP_CONNECTION_STRING`: session-pooler connection for `moore_backup`,
+  with `SSL Mode=VerifyFull` and
+  `Root Certificate=certificates/supabase-ca.crt`.
+- `BACKUP_AGE_RECIPIENT`: public recipient from the offline age identity.
+- `HEALTHCHECKS_BACKUP_PING_URL`: private ping URL for the backup check.
+
+The workflow stores only encrypted archives for 30 days. GitHub artifacts in a
+public repository must be treated as publicly retrievable, so the age private
+identity and database credential must never be uploaded. GitHub Free storage is
+shared and finite; review artifact use monthly and shorten retention before the
+quota is reached. Scheduled workflows in inactive public repositories can be
+disabled by GitHub, so the missed-run alert must remain enabled and tested.
 
 To rehearse recovery, configure PostgreSQL client environment variables for a
 **fresh isolated** database whose name contains `restore`, `drill`, or
