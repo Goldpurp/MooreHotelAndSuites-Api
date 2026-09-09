@@ -107,7 +107,11 @@ be established by the operator before the readiness declarations become true.
 
 To rehearse recovery, configure PostgreSQL client environment variables for a
 **fresh isolated** database whose name contains `restore`, `drill`, or
-`rehearsal`. Decrypt the archive into `pg_restore`:
+`rehearsal`. Before restoring, create the runtime role on that isolated cluster
+if it is absent (`CREATE ROLE moore_runtime NOLOGIN;` for the selected project).
+The dump retains RLS policies that reference this role even with
+`--no-owner --no-privileges`; restoring without it fails. A NOLOGIN role is
+sufficient for the initial restore. Decrypt the archive into `pg_restore`:
 
 ```bash
 age --decrypt --identity /secure/backup-identity.txt moore-YYYY-MM-DD.dump.age \
@@ -117,9 +121,10 @@ age --decrypt --identity /secure/backup-identity.txt moore-YYYY-MM-DD.dump.age \
 
 The restore command removes conflicting schema objects, including the default
 `public` schema; run it only against the fresh isolated target described above.
-The verifier requires `RESTORE_DRILL_CONNECTION_STRING`. Recreate the dedicated
-runtime role and grants on the restored target; the export intentionally omits
-role passwords and ACLs. Verify record counts, business invariants and protected
+The verifier requires `RESTORE_DRILL_CONNECTION_STRING`. Before testing the
+restored API, provision a separate restore-only runtime password and the runtime
+grants on that target; the export intentionally omits role passwords and ACLs.
+Verify record counts, business invariants and protected
 payload decryption with the backed-up PFX. Never restore over production as a
 drill. Logical backups recover only to the exported snapshot.
 

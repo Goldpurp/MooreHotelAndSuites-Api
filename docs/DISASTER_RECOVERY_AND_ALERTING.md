@@ -41,7 +41,11 @@ actually passed.
 
 1. Choose a recovery point within the RPO and record the production booking,
    guest, room, payment-ledger, and audit-log counts at that point.
-2. Decrypt and restore a logical snapshot to a new isolated database. Never overwrite production.
+2. Before restoring, create any runtime role referenced by the dump's RLS
+   policies on the new isolated cluster (`CREATE ROLE moore_runtime NOLOGIN;`
+   for the selected project, if absent). Decrypt and restore the logical
+   snapshot there. Never overwrite production. Provision separate restore-only
+   login credentials and grants before any subsequent API recovery test.
 3. Name the target with `restore`, `drill`, or `rehearsal`; the verification
    script refuses any other database name.
 4. Run:
