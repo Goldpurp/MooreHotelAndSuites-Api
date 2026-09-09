@@ -106,8 +106,7 @@ public sealed class EmailService : IEmailService
                     if (_logger.IsEnabled(LogLevel.Information))
                     {
                         _logger.LogInformation(
-                            "Brevo accepted transactional email. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
-                            recipient.Host,
+                            "Brevo accepted transactional email. Attempt={Attempt}.",
                             attempt);
                     }
                     return;
@@ -119,8 +118,7 @@ public sealed class EmailService : IEmailService
                     if (_logger.IsEnabled(LogLevel.Information))
                     {
                         _logger.LogInformation(
-                            "Brevo reported an already accepted idempotency key. RecipientDomain={RecipientDomain}; Attempt={Attempt}.",
-                            recipient.Host,
+                            "Brevo reported an already accepted idempotency key. Attempt={Attempt}.",
                             attempt);
                     }
                     return;

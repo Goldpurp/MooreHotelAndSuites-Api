@@ -206,6 +206,8 @@ public sealed class PrivacyController : ControllerBase
         [FromBody] UpdatePrivacyRequestRequest request,
         CancellationToken cancellationToken)
     {
+        if (!TryGetUserId(out var actorId)) return Unauthorized();
+
         if (request.Status == DataSubjectRequestStatus.Pending)
             return BadRequest(new { Message = "A processed request cannot be returned to pending." });
         if (request.Status is DataSubjectRequestStatus.Completed or DataSubjectRequestStatus.Rejected &&
@@ -213,8 +215,6 @@ public sealed class PrivacyController : ControllerBase
         {
             return BadRequest(new { Message = "Resolution notes are required when closing a request." });
         }
-        if (!TryGetUserId(out var actorId)) return Unauthorized();
-
         var strategy = _db.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync<IActionResult>(async () =>
         {

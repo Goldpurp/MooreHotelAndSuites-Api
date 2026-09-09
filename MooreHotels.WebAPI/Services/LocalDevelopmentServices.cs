@@ -24,14 +24,13 @@ public sealed class LocalEmailService : IEmailService
         _mailboxRoot = Path.Combine(solutionRoot, ".local", "mailbox");
     }
 
-    private Task Accepted(string template, string recipient)
+    private Task Accepted(string template)
     {
         if (_logger.IsEnabled(LogLevel.Information))
         {
             _logger.LogInformation(
-                "Local email accepted. Template={Template}; RecipientDomain={RecipientDomain}",
-                template,
-                recipient.Split('@').LastOrDefault() ?? "invalid");
+                "Local email accepted. Template={Template}",
+                template);
         }
         return Task.CompletedTask;
     }
@@ -52,33 +51,33 @@ public sealed class LocalEmailService : IEmailService
             File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
         }
 
-        await Accepted(template, recipient);
+        await Accepted(template);
     }
 
     public Task SendBookingConfirmationAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string? manageBookingUrl = null) =>
         string.IsNullOrWhiteSpace(manageBookingUrl)
-            ? Accepted("BookingConfirmation", email)
+            ? Accepted("BookingConfirmation")
             : AcceptedWithLink("BookingConfirmation", email, manageBookingUrl);
     public Task SendBookingAccessLinkAsync(string email, string guestName, string bookingCode, string manageBookingUrl) => AcceptedWithLink("BookingAccessLink", email, manageBookingUrl);
     public Task SendBookingEmailVerificationAsync(string email, string verificationLink) => AcceptedWithLink("BookingEmailVerification", email, verificationLink);
-    public Task SendCancellationNoticeAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, DateTime checkIn, string? reason = null) => Accepted("Cancellation", email);
-    public Task SendCheckInReminderAsync(string email, string guestName, string bookingCode, string roomName, DateTime checkIn) => Accepted("CheckInReminder", email);
+    public Task SendCancellationNoticeAsync(string email, string guestName, string bookingCode, string roomName, string roomCategory, DateTime checkIn, string? reason = null) => Accepted("Cancellation");
+    public Task SendCheckInReminderAsync(string email, string guestName, string bookingCode, string roomName, DateTime checkIn) => Accepted("CheckInReminder");
     public Task SendEmailVerificationAsync(string email, string name, string link) => AcceptedWithLink("EmailVerification", email, link);
     public Task SendPasswordResetAsync(string email, string name, string link) => AcceptedWithLink("PasswordReset", email, link);
-    public Task SendPaymentSuccessAsync(string email, string guestName, string bookingCode, string roomName, decimal amount, string reference) => Accepted("PaymentSuccess", email);
-    public Task SendCheckOutThankYouAsync(string email, string guestName, string bookingCode, string roomName) => Accepted("CheckOutThankYou", email);
-    public Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone) => Accepted("AdminNewBooking", adminEmail);
+    public Task SendPaymentSuccessAsync(string email, string guestName, string bookingCode, string roomName, decimal amount, string reference) => Accepted("PaymentSuccess");
+    public Task SendCheckOutThankYouAsync(string email, string guestName, string bookingCode, string roomName) => Accepted("CheckOutThankYou");
+    public Task SendAdminNewBookingAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, string roomCategory, int capacity, int adultCount, int childCount, DateTime checkIn, DateTime checkOut, int nights, decimal totalAmount, string guestEmail, string guestPhone) => Accepted("AdminNewBooking");
     public Task SendStaffWelcomeEmailAsync(string email, string name, string setupLink, string role) => AcceptedWithLink("StaffWelcome", email, setupLink);
-    public Task SendAccountSuspendedAsync(string email, string name) => Accepted("AccountSuspended", email);
-    public Task SendAccountActivatedAsync(string email, string name) => Accepted("AccountActivated", email);
-    public Task SendRefundCompletionNoticeAsync(string email, string guestName, string bookingCode, string roomName, decimal amount, string reference) => Accepted("RefundCompleted", email);
-    public Task SendAdminRefundAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, decimal amount) => Accepted("AdminRefund", adminEmail);
+    public Task SendAccountSuspendedAsync(string email, string name) => Accepted("AccountSuspended");
+    public Task SendAccountActivatedAsync(string email, string name) => Accepted("AccountActivated");
+    public Task SendRefundCompletionNoticeAsync(string email, string guestName, string bookingCode, string roomName, decimal amount, string reference) => Accepted("RefundCompleted");
+    public Task SendAdminRefundAlertAsync(string adminEmail, string guestName, string bookingCode, string roomName, decimal amount) => Accepted("AdminRefund");
     public Task SendBookingAmendmentConfirmationAsync(string email, BookingAmendmentConfirmationEmail payload) =>
         string.IsNullOrWhiteSpace(payload.ManageBookingUrl)
-            ? Accepted("BookingAmendmentConfirmation", email)
+            ? Accepted("BookingAmendmentConfirmation")
             : AcceptedWithLink("BookingAmendmentConfirmation", email, payload.ManageBookingUrl);
     public Task SendFolioReceiptAsync(string email, FolioReceiptEmail payload) =>
-        Accepted("FolioReceipt", email);
+        Accepted("FolioReceipt");
 }
 
 public sealed class UnavailableMonnifyService : IMonnifyService

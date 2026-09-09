@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using MooreHotels.Application.DTOs;
@@ -12,6 +13,30 @@ namespace MooreHotels.IntegrationTests;
 
 public sealed class BrevoEmailServiceContractTests
 {
+    [Theory]
+    [InlineData(HttpStatusCode.Created, "{\"messageId\":\"<test-message@brevo>\"}")]
+    [InlineData(HttpStatusCode.BadRequest, "{\"code\":\"duplicate_parameter\",\"message\":\"duplicate idempotencyKey\"}")]
+    public async Task Acceptance_logs_exclude_recipient_information(
+        HttpStatusCode status,
+        string response)
+    {
+        var logger = new RecordingLogger();
+        var handler = new RecordingHandler(Response(status, response));
+        var service = CreateService(handler, logger: logger);
+
+        await service.SendPasswordResetAsync(
+            "private-guest@private-company.example",
+            "Private Guest",
+            "https://example.test/reset#token=private-reset-token");
+
+        Assert.NotEmpty(logger.Messages);
+        var logs = string.Join('\n', logger.Messages);
+        Assert.DoesNotContain("private-guest", logs, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("private-company.example", logs, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Private Guest", logs, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("private-reset-token", logs, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task Transient_failure_is_retried_with_one_idempotency_key()
     {
@@ -142,7 +167,8 @@ public sealed class BrevoEmailServiceContractTests
 
     private static EmailService CreateService(
         RecordingHandler handler,
-        EmailDeliveryContext? deliveryContext = null)
+        EmailDeliveryContext? deliveryContext = null,
+        ILogger<EmailService>? logger = null)
     {
         var client = new HttpClient(handler)
         {
@@ -165,7 +191,7 @@ public sealed class BrevoEmailServiceContractTests
                 AdminNotificationEmail = "admin@example.test",
                 MaxRetryAttempts = 3
             }),
-            NullLogger<EmailService>.Instance,
+            logger ?? NullLogger<EmailService>.Instance,
             new FixedHttpClientFactory(client),
             deliveryContext ?? new EmailDeliveryContext(),
             configuration);
@@ -186,6 +212,21 @@ public sealed class BrevoEmailServiceContractTests
         Uri Uri,
         string? ApiKey,
         string Body);
+
+    private sealed class RecordingLogger : ILogger<EmailService>
+    {
+        public List<string> Messages { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, exception));
+    }
 
     private sealed class RecordingHandler : HttpMessageHandler
     {

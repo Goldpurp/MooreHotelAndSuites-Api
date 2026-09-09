@@ -50,6 +50,11 @@ public class ImagesController : ControllerBase
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
     public async Task<IActionResult> Upload(IFormFile file, [FromQuery] string folder = "website-assets")
     {
+        if (!Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uploaderId))
+        {
+            return Unauthorized();
+        }
+
         if (file == null || file.Length == 0)
             return BadRequest(new { message = "File is empty or not provided." });
 
@@ -64,11 +69,6 @@ public class ImagesController : ControllerBase
             {
                 message = "Use the dedicated room or profile endpoint for room and avatar images."
             });
-        }
-
-        if (!Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var uploaderId))
-        {
-            return Unauthorized();
         }
 
         ImageUploadResult? result = null;
@@ -102,8 +102,7 @@ public class ImagesController : ControllerBase
                     HttpContext.TraceIdentifier);
             }
             _logger.LogError(
-                "Image upload failed for folder {Folder} with {ExceptionType}.",
-                folder,
+                "Image upload failed with {ExceptionType}.",
                 exception.GetType().Name);
             return StatusCode(500, new { message = "The image could not be uploaded." });
         }
