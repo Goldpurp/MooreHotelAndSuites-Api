@@ -41,12 +41,10 @@
 
 ## Remaining dependencies
 
-- Complete live setup and a manual success/failure test for the encrypted daily
-  GitHub Actions backup. The workflow, dedicated read-only backup-role scripts,
-  30-day encrypted artifact retention, and Healthchecks.io routing are being
-  added to PR #7. The selected recipients are
-  `moorehotelsandsuites@gmail.com` and `lilswatch112@gmail.com`. No readiness
-  declarations are set until live evidence exists.
+- Merge PR #7 to place the daily encrypted backup workflow on the default
+  branch, then manually dispatch it and verify its GitHub artifact. GitHub only
+  schedules workflows from the default branch. No scheduled-backup readiness
+  declaration is set before that hosted run succeeds.
 - Complete Brevo and Cloudinary credential-rotation/acceptance evidence and
   approved privacy/terms versions, URLs and retention configuration.
 - After prerequisite acceptance, deploy the tested commit, switch the Render
@@ -73,3 +71,26 @@ does not establish either a healthy or a failed current service.
   were removed. Production data was not changed.
 - There are no production Data Protection keys yet, so recovery of an actual
   production encrypted payload still needs verification after deployment.
+
+## Encrypted backup and alert setup completed
+
+- Created `moore_backup` in the selected live Supabase project after explicit
+  approval for its complete-data read scope. Live validation confirmed
+  `BYPASSRLS` for complete logical exports and no write, DDL, ownership,
+  replication, server-file, database-creation, role-creation or inherited-role
+  privileges.
+- A PostgreSQL 17 dump through the dedicated role completed. The repository's
+  age-streaming backup command then created a 176,196-byte encrypted archive;
+  decryption into PostgreSQL 17 `pg_restore --list` succeeded without writing a
+  plaintext dump.
+- Added the dedicated connection, age public recipient and Healthchecks ping URL
+  as encrypted GitHub Actions repository secrets. Their values were not added
+  to Git.
+- Created the free Healthchecks.io project under
+  `moorehotelsandsuites@gmail.com`, named the daily backup check, set a one-day
+  period with four-hour grace, and enabled confirmed email integrations for
+  `moorehotelsandsuites@gmail.com` and `lilswatch112@gmail.com`.
+- Triggered a controlled failure and recovery. Healthchecks reported successful
+  delivery to both email integrations and returned the check to Up. This proves
+  backup alert routing; it does not establish the separate uptime, API latency,
+  queue or payment alert categories.
