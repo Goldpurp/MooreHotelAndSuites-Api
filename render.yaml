@@ -105,11 +105,11 @@ services:
       - key: Pricing__RequireQuoteForBooking
         value: true
       - key: ReservationPolicies__Version
-        value: 2026-09
+        value: 2026-09-13
       - key: ReservationPolicies__FreeCancellationHours
         value: 24
       - key: ReservationPolicies__CancellationPenaltyPercent
-        value: 50
+        value: 100
       - key: ReservationPolicies__DepositPercent
         value: 30
       - key: ReservationPolicies__NoShowPenaltyPercent

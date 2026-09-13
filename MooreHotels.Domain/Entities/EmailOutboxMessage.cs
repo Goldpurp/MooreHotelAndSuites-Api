@@ -19,4 +19,15 @@ public sealed class EmailOutboxMessage
     public DateTime CreatedAtUtc { get; set; }
     public DateTime? QuarantinedAtUtc { get; set; }
     public string? DeliveryFailureMetadataJson { get; set; }
+
+    /// <summary>
+    /// Set once the provider has accepted this message. The outbox row is
+    /// normally deleted immediately after that in the same worker pass; this
+    /// field exists only for the rare case where the delete itself fails
+    /// (e.g. a transient DB error right after a successful send), so a later
+    /// retry can finish cleanup without re-sending through the provider -
+    /// whose own idempotency header is not a documented, provider-enforced
+    /// dedup guarantee we can rely on alone.
+    /// </summary>
+    public DateTime? DeliveredAtUtc { get; set; }
 }

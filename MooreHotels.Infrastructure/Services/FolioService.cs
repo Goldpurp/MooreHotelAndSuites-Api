@@ -363,8 +363,8 @@ public sealed class FolioService : IFolioService
         return penalty;
     }
 
-    public async Task ApplyRefundAsync(
-        Booking booking,
+    public async Task<Booking> ApplyRefundAsync(
+        Guid bookingId,
         decimal amount,
         string reference,
         string channel,
@@ -372,42 +372,184 @@ public sealed class FolioService : IFolioService
         Guid actorId,
         CancellationToken cancellationToken = default)
     {
-        if (booking.Id == Guid.Empty) throw new BadRequestException("Booking identifier is invalid.");
+        if (bookingId == Guid.Empty) throw new BadRequestException("Booking identifier is invalid.");
         _ = await RequireActorAsync(actorId, FolioCapability.Adjust, cancellationToken);
-        var folio = await _db.Folios.Include(item => item.Entries)
-            .SingleAsync(item => item.BookingId == booking.Id, cancellationToken);
-        EnsureOpen(folio);
         var normalizedReference = RequireText(reference, "Refund reference", 160).ToUpperInvariant();
         var normalizedChannel = RequireText(channel, "Refund channel", 40);
         var normalizedNotes = Clean(notes, "Refund notes", 500);
-        var existing = folio.Entries.SingleOrDefault(entry => entry.ExternalReference == normalizedReference);
-        if (existing is not null)
+
+        return await ExecuteUnderBookingLockAsync(bookingId, async (booking, folio) =>
         {
-            if (existing.Type != FolioEntryType.Refund || existing.Amount != FolioAccounting.Money(amount))
-                throw new ConflictException("The refund reference is already used for different folio data.");
-            return;
+            EnsureOpen(folio);
+            var existing = folio.Entries.SingleOrDefault(entry => entry.ExternalReference == normalizedReference);
+            if (existing is not null)
+            {
+                if (existing.Type != FolioEntryType.Refund || existing.Amount != FolioAccounting.Money(amount))
+                    throw new ConflictException("The refund reference is already used for different folio data.");
+                return;
+            }
+            var balance = FolioAccounting.Calculate(folio.Entries);
+            var refundAmount = FolioAccounting.Money(amount);
+            if (refundAmount <= 0 || refundAmount > balance.GuestCredit)
+                throw new BadRequestException("Refund amount exceeds the unsettled guest credit.");
+            var entry = FolioAccounting.NewEntry(
+                folio,
+                FolioEntryType.Refund,
+                FolioEntryDirection.Debit,
+                refundAmount,
+                $"{normalizedChannel} refund",
+                "Refund",
+                booking.Id.ToString(),
+                $"refund:{BookingGuestAccess.Hash(normalizedReference)}",
+                DateTime.UtcNow,
+                actorId,
+                normalizedReference,
+                notes: normalizedNotes);
+            _db.FolioEntries.Add(entry);
+            RecalculatePaymentStatus(booking, folio.Entries);
+            await QueueFolioReceiptEmailAsync(booking, folio, entry, "Refund", normalizedChannel, DateTime.UtcNow, cancellationToken);
+        }, cancellationToken);
+    }
+
+    public async Task<RefundCompletionResult> CompleteApprovedRefundAsync(
+        Guid bookingId,
+        decimal amount,
+        string reference,
+        string channel,
+        string evidenceType,
+        string? notes,
+        Guid processingUserId,
+        decimal highValueThreshold,
+        CancellationToken cancellationToken = default)
+    {
+        if (bookingId == Guid.Empty) throw new BadRequestException("Booking identifier is invalid.");
+        _ = await RequireActorAsync(processingUserId, FolioCapability.Adjust, cancellationToken);
+        var normalizedReference = RequireText(reference, "Refund reference", 160).ToUpperInvariant();
+        var normalizedChannel = RequireText(channel, "Refund channel", 40);
+        var normalizedEvidenceType = RequireText(evidenceType, "Refund evidence type", 40);
+        var normalizedNotes = Clean(notes, "Refund notes", 500);
+
+        var applied = false;
+        var lockedBooking = await ExecuteUnderBookingLockAsync(bookingId, async (booking, folio) =>
+        {
+            EnsureOpen(folio);
+            var refundAmount = FolioAccounting.Money(amount);
+            var alreadyProcessed = folio.Entries.Any(entry =>
+                entry.Type == FolioEntryType.Refund &&
+                entry.ExternalReference == normalizedReference &&
+                entry.Amount == refundAmount);
+            if (alreadyProcessed) return;
+
+            if (booking.PaymentStatus != PaymentStatus.RefundPending)
+                throw new BadRequestException("This booking is not flagged for a manual refund.");
+
+            var balance = FolioAccounting.Calculate(folio.Entries);
+            if (refundAmount <= 0 || refundAmount > balance.GuestCredit)
+                throw new BadRequestException("The refund amount exceeds the unsettled guest credit.");
+
+            if (refundAmount >= highValueThreshold)
+            {
+                if (!booking.RefundApprovedByUserId.HasValue || !booking.RefundApprovedAtUtc.HasValue)
+                {
+                    throw new BadRequestException(
+                        "This high-value refund requires approval from a different administrator or manager.");
+                }
+                if (booking.RefundProcessedAtUtc.HasValue &&
+                    booking.RefundProcessedAtUtc >= booking.RefundApprovedAtUtc)
+                {
+                    throw new BadRequestException(
+                        "This approval has already been consumed. A new refund requires a fresh approval.");
+                }
+                if (booking.RefundApprovedByUserId == processingUserId)
+                {
+                    throw new BadRequestException(
+                        "The person who approved a high-value refund cannot also complete it.");
+                }
+                if (booking.RefundApprovedAmount != refundAmount)
+                {
+                    throw new BadRequestException(
+                        "The completed amount must exactly match the independently approved amount.");
+                }
+            }
+
+            var entry = FolioAccounting.NewEntry(
+                folio,
+                FolioEntryType.Refund,
+                FolioEntryDirection.Debit,
+                refundAmount,
+                $"{normalizedChannel} refund",
+                "Refund",
+                booking.Id.ToString(),
+                $"refund:{BookingGuestAccess.Hash(normalizedReference)}",
+                DateTime.UtcNow,
+                processingUserId,
+                normalizedReference,
+                notes: normalizedNotes);
+            _db.FolioEntries.Add(entry);
+            RecalculatePaymentStatus(booking, folio.Entries);
+
+            booking.RefundReference = normalizedReference;
+            booking.RefundAmount = FolioAccounting.Money((booking.RefundAmount ?? 0m) + refundAmount);
+            booking.RefundChannel = normalizedChannel;
+            booking.RefundEvidenceType = normalizedEvidenceType;
+            booking.RefundNotes = normalizedNotes;
+            booking.RefundProcessedByUserId = processingUserId;
+            booking.RefundProcessedAtUtc = DateTime.UtcNow;
+            applied = true;
+
+            await QueueFolioReceiptEmailAsync(
+                booking, folio, entry, "Refund", normalizedChannel, DateTime.UtcNow, cancellationToken);
+        }, cancellationToken);
+        return new RefundCompletionResult(lockedBooking, applied);
+    }
+
+    public async Task<Booking> ExecuteUnderBookingLockAsync(
+        Guid bookingId,
+        Func<Booking, Folio, Task> mutation,
+        CancellationToken cancellationToken = default)
+    {
+        if (_db.Database.CurrentTransaction is not null)
+        {
+            // An existing transaction does not prove the caller locked this
+            // booking. Acquire the lock here too and discard unlocked reads.
+            // The caller retains ownership of commit/rollback.
+            _db.ChangeTracker.Clear();
+            var lockedBooking = await _db.Bookings
+                .FromSqlInterpolated($"SELECT * FROM bookings WHERE \"Id\" = {bookingId} FOR UPDATE")
+                .SingleOrDefaultAsync(b => b.Id == bookingId, cancellationToken)
+                ?? throw new NotFoundException("Booking not found.");
+            var lockedFolio = await _db.Folios.Include(item => item.Entries)
+                .SingleOrDefaultAsync(item => item.BookingId == lockedBooking.Id, cancellationToken)
+                ?? throw new NotFoundException("Booking folio not found.");
+            await mutation(lockedBooking, lockedFolio);
+            await _db.SaveChangesAsync(cancellationToken);
+            return lockedBooking;
         }
-        var balance = FolioAccounting.Calculate(folio.Entries);
-        var refundAmount = FolioAccounting.Money(amount);
-        if (refundAmount <= 0 || refundAmount > balance.GuestCredit)
-            throw new BadRequestException("Refund amount exceeds the unsettled guest credit.");
-        var entry = FolioAccounting.NewEntry(
-            folio,
-            FolioEntryType.Refund,
-            FolioEntryDirection.Debit,
-            refundAmount,
-            $"{normalizedChannel} refund",
-            "Refund",
-            booking.Id.ToString(),
-            $"refund:{BookingGuestAccess.Hash(normalizedReference)}",
-            DateTime.UtcNow,
-            actorId,
-            normalizedReference,
-            notes: normalizedNotes);
-        _db.FolioEntries.Add(entry);
-        RecalculatePaymentStatus(booking, folio.Entries);
-        await QueueFolioReceiptEmailAsync(booking, folio, entry, "Refund", normalizedChannel, DateTime.UtcNow, cancellationToken);
-        await _db.SaveChangesAsync(cancellationToken);
+
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
+        {
+            // Clearing the tracker is essential: without it, a booking/folio
+            // already loaded earlier in this request (before any lock was
+            // held) would be returned from the identity map unchanged, and
+            // the FOR UPDATE lock below would serialize concurrent requests
+            // against a row it never actually re-reads.
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(
+                IsolationLevel.ReadCommitted,
+                cancellationToken);
+            var booking = await _db.Bookings
+                .FromSqlInterpolated($"SELECT * FROM bookings WHERE \"Id\" = {bookingId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken)
+                ?? throw new NotFoundException("Booking not found.");
+            var folio = await _db.Folios.Include(item => item.Entries)
+                .SingleOrDefaultAsync(item => item.BookingId == booking.Id, cancellationToken)
+                ?? throw new NotFoundException("Booking folio not found.");
+            await mutation(booking, folio);
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return booking;
+        });
     }
 
     private Task<FolioDto> AuthorizeAndMutateAsync(

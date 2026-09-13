@@ -16,7 +16,10 @@ Configure and approve these values before taking bookings:
 
 Each booking stores its own copy. Existing bookings migrated from the former
 behavior use `LEGACY-FULL-REFUND`, a 100% deposit, a 0% cancellation penalty and
-a 100% no-show penalty. Staff amendment routes are:
+a 100% no-show penalty. Policy version `2026-09-13` grants a full refund when
+the cancellation is confirmed at least 24 hours before check-in. A cancellation
+inside the final 24 hours and a no-show both retain 100% of the room subtotal.
+Staff amendment routes are:
 
 - `POST /api/reservations/{bookingId}/amendments`
 - `POST /api/reservations/{bookingId}/amendment-quotes`
