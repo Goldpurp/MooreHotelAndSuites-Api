@@ -69,9 +69,10 @@ localhost were used, never the production database.
   then applied that exact SQL twice. Both runs passed; exactly one migration
   entry and the expected nullable column were present afterward.
 
-Hosted CI must still verify the new commit, including its Linux/container,
-CodeQL, secret scanning and migration/restore gates. Prior CI success applies
-only to the older merged commit.
+Hosted CI verified commit `1feeccc36fa72afab7fd8da7726f654736628a6e` in
+[draft PR #20](https://github.com/Goldpurp/MooreHotelAndSuites-Api/pull/20).
+The Linux/container, secret scanning and migration/restore `verify` job passed.
+CodeQL passed and reported no new alerts in code changed by the pull request.
 
 ## Release gates in order
 
@@ -79,10 +80,12 @@ only to the older merged commit.
 - [x] Reproduce and fix the additional code defects above.
 - [x] Finish local build, test, formatting, dependency and EF verification.
 - [x] Commit the hardening work on `codex/go-live-verification-2026-09-13`.
-- [ ] Push the branch and open the prepared draft PR. Automatic approval review
-  rejected the push because explicit authorization to send the source changes
-  to `Goldpurp/MooreHotelAndSuites-Api` was required. No push or PR creation occurred.
-- [ ] Obtain independent review and green CI for the new PR, then merge.
+- [x] Push the branch and open
+  [draft PR #20](https://github.com/Goldpurp/MooreHotelAndSuites-Api/pull/20).
+  The repository was returned to public visibility so CodeQL remains available
+  on the account's current GitHub plan.
+- [ ] Obtain independent review, reconfirm green CI on the final documentation
+  commit, then merge.
 - [x] Recheck the actual production EF migration history and schema. Before
   migration, a read-only query in project `azclpxuabsffjkuhqzga` confirmed 28
   migrations, zero bookings, zero administrators, zero MFA-enabled users, zero
