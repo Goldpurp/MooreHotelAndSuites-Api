@@ -160,12 +160,8 @@ public sealed class InventoryAndFolioTests
             _fixture.Admin.Id);
         Assert.Equal(15000m, voided.GuestCredit);
 
-        var scopedDb = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
-        var trackedBooking = await scopedDb.Bookings
-            .Include(item => item.Folio).ThenInclude(folio => folio!.Entries)
-            .SingleAsync(item => item.Id == booking.Id);
         await folios.ApplyRefundAsync(
-            trackedBooking,
+            booking.Id,
             15000m,
             $"REF-{Guid.NewGuid():N}",
             "Cash",
@@ -187,6 +183,102 @@ public sealed class InventoryAndFolioTests
             database.Database.ExecuteSqlInterpolatedAsync(
                 $"DELETE FROM folio_entries WHERE \"Id\" = {original.Id}"));
         Assert.Equal("CK_folio_entries_immutable", databaseError.ConstraintName);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Concurrent_refunds_cannot_collectively_exceed_the_guest_credit_balance(bool callerOwnsTransaction)
+    {
+        var booking = await _fixture.CreateBookingAsync(
+            paymentMethod: PaymentMethod.DirectTransfer,
+            paymentStatus: PaymentStatus.RefundPending,
+            bookingStatus: BookingStatus.Cancelled,
+            amount: 100000m);
+
+        // Two independent callers (separate scopes/DbContexts, exactly like
+        // two concurrent HTTP requests hitting IFolioService directly rather
+        // than through BookingsController's own per-mutation FOR UPDATE
+        // guard) each request a refund that individually fits the 100,000
+        // guest credit, but together would overdraw it. Only one may post.
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var readers = 0;
+        async Task<bool> TryRefundAsync(string reference)
+        {
+            await using var scope = _fixture.Services.CreateAsyncScope();
+            var folios = scope.ServiceProvider.GetRequiredService<IFolioService>();
+            var db = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
+            try
+            {
+                await db.Database.CreateExecutionStrategy().ExecuteAsync(async () =>
+                {
+                    await using var transaction = callerOwnsTransaction
+                        ? await db.Database.BeginTransactionAsync()
+                        : null;
+                    // Both callers retain the same unlocked credit snapshot.
+                    // An open transaction alone does not lock the booking.
+                    await db.Bookings.Include(item => item.Folio!).ThenInclude(item => item.Entries)
+                        .SingleAsync(item => item.Id == booking.Id);
+                    if (Interlocked.Increment(ref readers) == 2) ready.TrySetResult();
+                    await ready.Task.WaitAsync(TimeSpan.FromSeconds(15));
+                    await folios.ApplyRefundAsync(
+                        booking.Id,
+                        70000m,
+                        reference,
+                        "Cash",
+                        "Concurrent refund race test.",
+                        _fixture.Admin.Id);
+                    if (transaction is not null) await transaction.CommitAsync();
+                });
+                return true;
+            }
+            catch (BadRequestException)
+            {
+                return false;
+            }
+        }
+
+        var results = await Task.WhenAll(
+            TryRefundAsync($"RACE-A-{Guid.NewGuid():N}"),
+            TryRefundAsync($"RACE-B-{Guid.NewGuid():N}"));
+
+        Assert.Single(results, result => result);
+        Assert.Single(results, result => !result);
+
+        await using var verifyScope = _fixture.Services.CreateAsyncScope();
+        var verifyFolios = verifyScope.ServiceProvider.GetRequiredService<IFolioService>();
+        var final = await verifyFolios.GetByBookingCodeAsync(booking.BookingCode);
+        Assert.Equal(70000m, final.Refunds);
+        Assert.Equal(30000m, final.GuestCredit);
+    }
+
+    [Fact]
+    public async Task A_high_value_refund_approval_cannot_be_spent_twice()
+    {
+        var booking = await _fixture.CreateBookingAsync(
+            paymentStatus: PaymentStatus.RefundPending,
+            bookingStatus: BookingStatus.Cancelled,
+            amount: 1500000m);
+        await using var scope = _fixture.Services.CreateAsyncScope();
+        var folios = scope.ServiceProvider.GetRequiredService<IFolioService>();
+        var db = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
+        await db.Bookings.Where(item => item.Id == booking.Id).ExecuteUpdateAsync(setters => setters
+            .SetProperty(item => item.RefundApprovedByUserId, _fixture.Admin.Id)
+            .SetProperty(item => item.RefundApprovedAtUtc, DateTime.UtcNow.AddMinutes(-1))
+            .SetProperty(item => item.RefundApprovedAmount, 500000m));
+        var reference = $"APPROVED-{Guid.NewGuid():N}";
+        var first = await folios.CompleteApprovedRefundAsync(
+            booking.Id, 500000m, reference, "BankTransfer", "BankStatement", null, _fixture.Manager.Id, 500000m);
+        Assert.True(first.Applied);
+        var replay = await folios.CompleteApprovedRefundAsync(
+            booking.Id, 500000m, reference, "BankTransfer", "BankStatement", null, _fixture.Manager.Id, 500000m);
+        Assert.False(replay.Applied);
+        await Assert.ThrowsAsync<BadRequestException>(() => folios.CompleteApprovedRefundAsync(
+            booking.Id, 500000m, $"SECOND-{Guid.NewGuid():N}", "BankTransfer", "BankStatement", null,
+            _fixture.Manager.Id, 500000m));
+        var final = await folios.GetByBookingCodeAsync(booking.BookingCode);
+        Assert.Equal(500000m, final.Refunds);
+        Assert.Equal(1000000m, final.GuestCredit);
     }
 
     [Fact]

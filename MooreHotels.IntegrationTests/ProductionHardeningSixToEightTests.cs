@@ -576,7 +576,7 @@ public sealed class ProductionHardeningSixToEightTests
             amount: 100000m);
 
         await folios.ApplyRefundAsync(
-            refundBooking,
+            refundBooking.Id,
             50000m,
             $"REF-RECEIPT-{Guid.NewGuid():N}"[..20],
             "BankTransfer",
@@ -751,13 +751,13 @@ public sealed class ProductionHardeningSixToEightTests
 
         var refId = $"CONFLICT-REF-{Guid.NewGuid():N}"[..20];
         await folios.ApplyRefundAsync(
-            refundBooking, 30000m, refId, "Cash", "Initial refund portion", _fixture.Admin.Id);
+            refundBooking.Id, 30000m, refId, "Cash", "Initial refund portion", _fixture.Admin.Id);
 
         // Reusing same reference with different amount -> ConflictException (409)
         await Assert.ThrowsAsync<MooreHotels.Application.Exceptions.ConflictException>(async () =>
         {
             await folios.ApplyRefundAsync(
-                refundBooking, 40000m, refId, "Cash", "Conflicting amount", _fixture.Admin.Id);
+                refundBooking.Id, 40000m, refId, "Cash", "Conflicting amount", _fixture.Admin.Id);
         });
     }
 

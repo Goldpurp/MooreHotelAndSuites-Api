@@ -118,6 +118,40 @@ public sealed class AdminEmergencyAccessTests
     }
 
     [Fact]
+    public async Task Authenticator_key_is_encrypted_at_rest_and_only_decrypted_through_identity()
+    {
+        var enrolled = await EnableMfaAndRefreshTokenAsync(
+            await _fixture.CreateUserAsync(UserRole.Admin));
+        try
+        {
+            var rawStoredValue = await _fixture.WithDbAsync(db => db.UserTokens
+                .Where(token =>
+                    token.UserId == enrolled.User.Id &&
+                    token.Name == "AuthenticatorKey")
+                .Select(token => token.Value)
+                .SingleAsync());
+
+            await using var scope = _fixture.Services.CreateAsyncScope();
+            var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+            var stored = await userManager.FindByIdAsync(enrolled.User.Id.ToString());
+            var decryptedKey = await userManager.GetAuthenticatorKeyAsync(stored!);
+
+            Assert.NotNull(rawStoredValue);
+            Assert.NotNull(decryptedKey);
+            // The raw column must not equal or contain the real Base32 TOTP
+            // secret the application actually uses - proving
+            // SetTokenAsync/GetTokenAsync round-trip through encryption
+            // rather than storing the value verbatim.
+            Assert.NotEqual(decryptedKey, rawStoredValue);
+            Assert.DoesNotContain(decryptedKey!, rawStoredValue!, StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await DeleteUserAsync(enrolled.User.Id);
+        }
+    }
+
+    [Fact]
     public async Task Concurrent_mutual_suspension_preserves_one_operational_administrator()
     {
         var first = await EnableMfaAndRefreshTokenAsync(

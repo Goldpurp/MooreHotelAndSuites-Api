@@ -413,8 +413,8 @@ public sealed class PricingService : IPricingService
         if (quote.RoomId != booking.RoomId ||
             quote.RoomTypeId != (booking.RoomTypeId ?? quote.RoomTypeId) ||
             quote.RoomQuantity != booking.RoomQuantity ||
-            quote.CheckInDate != DateOnly.FromDateTime(booking.CheckIn) ||
-            quote.CheckOutDate != DateOnly.FromDateTime(booking.CheckOut) ||
+            quote.CheckInDate != DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckIn)) ||
+            quote.CheckOutDate != DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckOut)) ||
             quote.AdultCount != booking.AdultCount ||
             quote.ChildCount != booking.ChildCount)
         {

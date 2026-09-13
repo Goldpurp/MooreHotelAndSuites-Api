@@ -57,7 +57,7 @@ public class Booking
     public DateTime? PoliciesAcceptedAtUtc { get; set; }
     public string ReservationPolicyVersion { get; set; } = "2026-09";
     public int FreeCancellationHours { get; set; } = 24;
-    public decimal CancellationPenaltyPercent { get; set; } = 50m;
+    public decimal CancellationPenaltyPercent { get; set; } = 100m;
     public decimal DepositPercent { get; set; } = 30m;
     public decimal NoShowPenaltyPercent { get; set; } = 100m;
     public decimal CancellationPenaltyAmount { get; set; }

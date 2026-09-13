@@ -17,7 +17,7 @@ public sealed class CompleteHotelOperationsTests
     public CompleteHotelOperationsTests(ManualTransferTestFixture fixture) => _fixture = fixture;
 
     [Fact]
-    public async Task Late_cancellation_keeps_snapshotted_penalty_and_only_refunds_the_balance()
+    public async Task Cancellation_inside_24_hours_keeps_the_full_room_charge()
     {
         var booking = await _fixture.CreateBookingAsync(
             paymentStatus: PaymentStatus.Paid,
@@ -30,8 +30,27 @@ public sealed class CompleteHotelOperationsTests
         var result = await bookings.CancelBookingAsync(
             booking.Id, _fixture.Manager.Id, "Guest requested a late cancellation.");
 
-        Assert.Equal(50000m, result.ReservationPolicy!.CancellationPenaltyAmount);
-        Assert.Equal(50000m, result.Folio!.GuestCredit);
+        Assert.Equal(100000m, result.ReservationPolicy!.CancellationPenaltyAmount);
+        Assert.Equal(0m, result.Folio!.GuestCredit);
+        Assert.Equal(PaymentStatus.PartiallyPaid, result.PaymentStatus);
+    }
+
+    [Fact]
+    public async Task Cancellation_before_24_hours_refunds_the_full_room_charge()
+    {
+        var booking = await _fixture.CreateBookingAsync(
+            paymentStatus: PaymentStatus.Paid,
+            bookingStatus: BookingStatus.Confirmed,
+            checkInUtc: DateTime.UtcNow.AddDays(2),
+            checkOutUtc: DateTime.UtcNow.AddDays(4));
+
+        await using var scope = _fixture.Services.CreateAsyncScope();
+        var bookings = scope.ServiceProvider.GetRequiredService<IBookingService>();
+        var result = await bookings.CancelBookingAsync(
+            booking.Id, _fixture.Manager.Id, "Guest cancelled before the cutoff.");
+
+        Assert.Equal(0m, result.ReservationPolicy!.CancellationPenaltyAmount);
+        Assert.Equal(100000m, result.Folio!.GuestCredit);
         Assert.Equal(PaymentStatus.RefundPending, result.PaymentStatus);
     }
 

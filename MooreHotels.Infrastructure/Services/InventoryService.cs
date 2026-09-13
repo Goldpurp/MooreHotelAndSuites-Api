@@ -447,8 +447,8 @@ public sealed class InventoryService : IInventoryService
             if (booking.Status == BookingStatus.CheckedIn && room.Status != RoomStatus.Available)
                 throw new BadRequestException("An in-house room move requires a clean and available destination room.");
 
-            var checkInDate = DateOnly.FromDateTime(booking.CheckIn);
-            var checkOutDate = DateOnly.FromDateTime(booking.CheckOut);
+            var checkInDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckIn));
+            var checkOutDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckOut));
             if (await _db.RoomInventoryClosures.AnyAsync(closure =>
                     closure.IsActive &&
                     closure.RoomId == room.Id &&

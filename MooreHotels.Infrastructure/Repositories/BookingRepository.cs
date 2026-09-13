@@ -7,6 +7,7 @@ using MooreHotels.Domain.Enums;
 using MooreHotels.Domain.Common;
 using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.Application.Interfaces;
+using MooreHotels.Application.Interfaces.Services;
 using System.Data;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -22,10 +23,12 @@ public class BookingRepository : IBookingRepository
 
     private readonly MooreHotelsDbContext _db;
     private readonly IEmailOutbox _emailOutbox;
-    public BookingRepository(MooreHotelsDbContext db, IEmailOutbox emailOutbox)
+    private readonly IHotelTimeService _hotelTime;
+    public BookingRepository(MooreHotelsDbContext db, IEmailOutbox emailOutbox, IHotelTimeService hotelTime)
     {
         _db = db;
         _emailOutbox = emailOutbox;
+        _hotelTime = hotelTime;
     }
 
     public async Task<Booking?> GetByIdAsync(Guid id) =>
@@ -287,8 +290,8 @@ public class BookingRepository : IBookingRepository
                 if (lockedQuote.RoomId != booking.RoomId ||
                     lockedQuote.RoomTypeId != booking.RoomTypeId ||
                     lockedQuote.RoomQuantity != booking.RoomQuantity ||
-                    lockedQuote.CheckInDate != DateOnly.FromDateTime(booking.CheckIn) ||
-                    lockedQuote.CheckOutDate != DateOnly.FromDateTime(booking.CheckOut) ||
+                    lockedQuote.CheckInDate != DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckIn)) ||
+                    lockedQuote.CheckOutDate != DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckOut)) ||
                     lockedQuote.AdultCount != booking.AdultCount ||
                     lockedQuote.ChildCount != booking.ChildCount ||
                     lockedQuote.Currency != booking.Currency ||
@@ -371,8 +374,8 @@ public class BookingRepository : IBookingRepository
                                  item.Booking.CreatedAt <= expirationCutoffUtc))
                 .Select(item => new { item.Booking!.CheckIn, item.Booking.CheckOut })
                 .ToListAsync(cancellationToken);
-            var checkInDate = DateOnly.FromDateTime(booking.CheckIn);
-            var checkOutDate = DateOnly.FromDateTime(booking.CheckOut);
+            var checkInDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckIn));
+            var checkOutDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckOut));
             var closures = await _db.RoomInventoryClosures
                 .Where(closure => closure.RoomTypeId == booking.RoomTypeId &&
                                   closure.IsActive && closure.StartDate < checkOutDate &&

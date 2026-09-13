@@ -102,8 +102,13 @@ public sealed class EmailOutboxWorker : BackgroundService
     {
         try
         {
-            await using (var deliveryScope = _scopeFactory.CreateAsyncScope())
+            // A message reclaimed here with DeliveredAtUtc already set was
+            // successfully sent on a prior attempt that crashed before it
+            // could remove the outbox row - skip straight to cleanup instead
+            // of sending through the provider again.
+            if (!message.DeliveredAtUtc.HasValue)
             {
+                await using var deliveryScope = _scopeFactory.CreateAsyncScope();
                 var sender = deliveryScope.ServiceProvider.GetRequiredService<IEmailService>();
                 var outbox = deliveryScope.ServiceProvider.GetRequiredService<IEmailOutbox>();
                 var deliveryContext = deliveryScope.ServiceProvider.GetRequiredService<IEmailDeliveryContext>();
@@ -111,15 +116,41 @@ public sealed class EmailOutboxWorker : BackgroundService
                 await DispatchAsync(sender, outbox, message);
             }
 
-            await using var successScope = _scopeFactory.CreateAsyncScope();
-            var db = successScope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
+            await using var cleanupScope = _scopeFactory.CreateAsyncScope();
+            var db = cleanupScope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
             var persisted = await db.EmailOutboxMessages.SingleOrDefaultAsync(
                 item => item.Id == message.Id && item.LockId == lockId,
                 cancellationToken);
-            if (persisted is not null)
+            if (persisted is null) return;
+
+            // Commit provider acceptance separately, before cleanup begins.
+            // Once this succeeds, a crash or failed delete cannot cause a
+            // resend. A crash between provider acceptance and this commit
+            // still requires provider-side deduplication for exactly-once delivery.
+            if (!persisted.DeliveredAtUtc.HasValue)
+            {
+                persisted.DeliveredAtUtc = DateTime.UtcNow;
+                await db.SaveChangesAsync(cancellationToken);
+            }
+
+            try
             {
                 db.EmailOutboxMessages.Remove(persisted);
                 await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Acceptance is already durable. Release the lease so the
+                // next sweep can retry cleanup without sending again.
+                db.ChangeTracker.Clear();
+                var fallback = await db.EmailOutboxMessages.SingleOrDefaultAsync(
+                    item => item.Id == message.Id && item.LockId == lockId,
+                    cancellationToken);
+                if (fallback is not null)
+                {
+                    fallback.LockedUntilUtc = null;
+                    await db.SaveChangesAsync(cancellationToken);
+                }
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

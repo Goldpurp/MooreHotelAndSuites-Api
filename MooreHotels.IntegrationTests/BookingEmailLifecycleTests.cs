@@ -5,6 +5,8 @@ using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Interfaces;
 using MooreHotels.Domain.Enums;
 using MooreHotels.WebAPI.Services;
 
@@ -170,6 +172,125 @@ public sealed class BookingEmailLifecycleTests
             _fixture.Email.Messages,
             email => email.Template == "Cancellation" &&
                      email.BookingCode == booking.BookingCode);
+    }
+
+    [Fact]
+    public async Task Provider_acceptance_is_saved_before_outbox_cleanup_begins()
+    {
+        var recipient = $"outbox-marker-{Guid.NewGuid():N}@example.test";
+        await using (var scope = _fixture.Services.CreateAsyncScope())
+        {
+            await scope.ServiceProvider.GetRequiredService<IEmailOutbox>().EnqueueAsync(
+                TransactionalEmailTemplates.PasswordReset, recipient,
+                new PasswordResetEmail("Marker Test", "https://example.test/reset"));
+        }
+        await _fixture.WithDbAsync(async db =>
+        {
+            await db.Database.ExecuteSqlRawAsync("""
+                CREATE FUNCTION require_email_delivery_marker() RETURNS trigger AS $$
+                BEGIN
+                    IF OLD."DeliveredAtUtc" IS NULL THEN
+                        RAISE EXCEPTION 'cleanup started before acceptance was recorded';
+                    END IF;
+                    RETURN OLD;
+                END;
+                $$ LANGUAGE plpgsql;
+                CREATE TRIGGER require_email_delivery_marker_trigger
+                BEFORE DELETE ON email_outbox
+                FOR EACH ROW EXECUTE FUNCTION require_email_delivery_marker();
+                """);
+            return true;
+        });
+        try
+        {
+            var worker = _fixture.Services.GetServices<IHostedService>().OfType<EmailOutboxWorker>().Single();
+            await worker.ProcessOnceAsync();
+            Assert.Single(_fixture.Email.Messages, message => message.Recipient == recipient);
+            Assert.Equal(0, await _fixture.WithDbAsync(db => db.EmailOutboxMessages
+                .CountAsync(message => message.Recipient == recipient)));
+        }
+        finally
+        {
+            await _fixture.WithDbAsync(async db =>
+            {
+                await db.Database.ExecuteSqlRawAsync("""
+                    DROP TRIGGER IF EXISTS require_email_delivery_marker_trigger ON email_outbox;
+                    DROP FUNCTION IF EXISTS require_email_delivery_marker();
+                    """);
+                return true;
+            });
+        }
+    }
+
+    [Fact]
+    public async Task A_delivered_email_is_not_resent_if_removing_its_outbox_row_fails()
+    {
+        // Brevo's request-level "idempotencyKey" header is not a documented
+        // server-side dedup guarantee, so correctness must not depend on it:
+        // if the provider accepts a message but the local cleanup delete
+        // then fails (simulated here with a forced trigger), a retry must
+        // not send through the provider a second time.
+        _fixture.Email.Reset();
+        var recipient = $"outbox-resend-{Guid.NewGuid():N}@example.test";
+        await using (var enqueueScope = _fixture.Services.CreateAsyncScope())
+        {
+            var outbox = enqueueScope.ServiceProvider.GetRequiredService<IEmailOutbox>();
+            await outbox.EnqueueAsync(
+                TransactionalEmailTemplates.PasswordReset,
+                recipient,
+                new PasswordResetEmail("Outbox Test", "https://example.test/reset"));
+        }
+
+        var worker = _fixture.Services
+            .GetServices<IHostedService>()
+            .OfType<EmailOutboxWorker>()
+            .Single();
+
+        await _fixture.WithDbAsync(async db =>
+        {
+            await db.Database.ExecuteSqlRawAsync(
+                """
+                CREATE OR REPLACE FUNCTION fail_email_outbox_delete() RETURNS trigger AS $$
+                BEGIN
+                    RAISE EXCEPTION 'forced email outbox delete failure';
+                END;
+                $$ LANGUAGE plpgsql;
+                CREATE TRIGGER fail_email_outbox_delete_trigger
+                BEFORE DELETE ON email_outbox
+                FOR EACH ROW EXECUTE FUNCTION fail_email_outbox_delete();
+                """);
+            return true;
+        });
+
+        try
+        {
+            await worker.ProcessOnceAsync();
+
+            Assert.Single(_fixture.Email.Messages, m => m.Recipient == recipient);
+            var afterFailedCleanup = await _fixture.WithDbAsync(db => db.EmailOutboxMessages
+                .AsNoTracking()
+                .SingleAsync(m => m.Recipient == recipient));
+            Assert.NotNull(afterFailedCleanup.DeliveredAtUtc);
+            Assert.Null(afterFailedCleanup.LockedUntilUtc);
+        }
+        finally
+        {
+            await _fixture.WithDbAsync(async db =>
+            {
+                await db.Database.ExecuteSqlRawAsync(
+                    """
+                    DROP TRIGGER IF EXISTS fail_email_outbox_delete_trigger ON email_outbox;
+                    DROP FUNCTION IF EXISTS fail_email_outbox_delete();
+                    """);
+                return true;
+            });
+        }
+
+        await worker.ProcessOnceAsync();
+
+        Assert.Single(_fixture.Email.Messages, m => m.Recipient == recipient);
+        Assert.Equal(0, await _fixture.WithDbAsync(db => db.EmailOutboxMessages
+            .CountAsync(m => m.Recipient == recipient)));
     }
 
     private static HttpRequestMessage AuthorizedRequest(

@@ -370,11 +370,11 @@ public class BookingService : IBookingService
                 ? request.BookingTermsVersion
                 : null,
             PoliciesAcceptedAtUtc = policiesAcceptedAtUtc,
-            ReservationPolicyVersion = _config["ReservationPolicies:Version"] ?? "2026-09",
+            ReservationPolicyVersion = _config["ReservationPolicies:Version"] ?? "2026-09-13",
             FreeCancellationHours = Math.Clamp(
                 _config.GetValue("ReservationPolicies:FreeCancellationHours", 24), 0, 720),
             CancellationPenaltyPercent = Math.Clamp(
-                _config.GetValue("ReservationPolicies:CancellationPenaltyPercent", 50m), 0m, 100m),
+                _config.GetValue("ReservationPolicies:CancellationPenaltyPercent", 100m), 0m, 100m),
             DepositPercent = Math.Clamp(
                 _config.GetValue("ReservationPolicies:DepositPercent", 30m), 0m, 100m),
             NoShowPenaltyPercent = Math.Clamp(
@@ -1010,52 +1010,66 @@ public class BookingService : IBookingService
         if (request.Amount is <= 0 or > 9999999999999999m)
             throw new BadRequestException("The refund approval amount is invalid.");
         var approvingUser = await GetActiveRefundOperatorAsync(approvingUserId);
-        var booking = await _bookingRepo.GetByIdAsync(bookingId);
-        if (booking == null) throw new NotFoundException("Booking not found.");
-        if (booking.PaymentStatus != PaymentStatus.RefundPending)
-            throw new BadRequestException("This booking is not flagged for a manual refund.");
-
-        var guestCredit = booking.Folio is null
-            ? 0m
-            : FolioAccounting.Calculate(booking.Folio.Entries).GuestCredit;
-        var approvedAmount = request.Amount ?? guestCredit;
-        if (approvedAmount <= 0 || approvedAmount > guestCredit)
-            throw new BadRequestException("The approved amount exceeds the unsettled guest credit.");
-
         var threshold = _config.GetValue(
             "FinancialControls:HighValueRefundThreshold",
             500000m);
-        if (approvedAmount < threshold)
-            throw new BadRequestException("This refund is below the dual-approval threshold.");
 
-        if (booking.RefundApprovedByUserId.HasValue)
-        {
-            var priorApprovalWasConsumed = booking.RefundProcessedAtUtc.HasValue &&
-                                           booking.RefundApprovedAtUtc.HasValue &&
-                                           booking.RefundProcessedAtUtc >= booking.RefundApprovedAtUtc;
-            if (!priorApprovalWasConsumed)
-            {
-                if (booking.RefundApprovedByUserId == approvingUserId &&
-                    booking.RefundApprovedAmount == approvedAmount) return MapToDto(booking);
-                throw new BadRequestException("This refund already has its first approval.");
-            }
-        }
-
+        decimal approvedAmount = 0m;
+        var alreadyApproved = false;
         var approvedAtUtc = DateTime.UtcNow;
-        booking.RefundApprovedByUserId = approvingUserId;
-        booking.RefundApprovedAtUtc = approvedAtUtc;
-        booking.RefundApprovedAmount = approvedAmount;
-        var history = ReadStatusHistory(booking.StatusHistoryJson);
-        history.Add(new
-        {
-            Action = "HIGH_VALUE_REFUND_APPROVED",
-            Timestamp = approvedAtUtc,
-            ApproverId = approvingUserId,
-            ApproverRole = approvingUser.Role.ToString()
-        });
-        booking.StatusHistoryJson = JsonSerializer.Serialize(history);
 
-        await _bookingRepo.UpdateAsync(booking);
+        // Everything that reads-then-decides on the guest credit balance or
+        // the approval fields runs while the booking row is locked, so two
+        // concurrent approval/completion requests for the same booking
+        // cannot both act on the same pre-lock snapshot.
+        var lockedBooking = await _folioService.ExecuteUnderBookingLockAsync(bookingId, (booking, folio) =>
+        {
+            if (booking.PaymentStatus != PaymentStatus.RefundPending)
+                throw new BadRequestException("This booking is not flagged for a manual refund.");
+
+            var guestCredit = FolioAccounting.Calculate(folio.Entries).GuestCredit;
+            approvedAmount = request.Amount ?? guestCredit;
+            if (approvedAmount <= 0 || approvedAmount > guestCredit)
+                throw new BadRequestException("The approved amount exceeds the unsettled guest credit.");
+            if (approvedAmount < threshold)
+                throw new BadRequestException("This refund is below the dual-approval threshold.");
+
+            if (booking.RefundApprovedByUserId.HasValue)
+            {
+                var priorApprovalWasConsumed = booking.RefundProcessedAtUtc.HasValue &&
+                                               booking.RefundApprovedAtUtc.HasValue &&
+                                               booking.RefundProcessedAtUtc >= booking.RefundApprovedAtUtc;
+                if (!priorApprovalWasConsumed)
+                {
+                    if (booking.RefundApprovedByUserId == approvingUserId &&
+                        booking.RefundApprovedAmount == approvedAmount)
+                    {
+                        alreadyApproved = true;
+                        return Task.CompletedTask;
+                    }
+                    throw new BadRequestException("This refund already has its first approval.");
+                }
+            }
+
+            approvedAtUtc = DateTime.UtcNow;
+            booking.RefundApprovedByUserId = approvingUserId;
+            booking.RefundApprovedAtUtc = approvedAtUtc;
+            booking.RefundApprovedAmount = approvedAmount;
+            var history = ReadStatusHistory(booking.StatusHistoryJson);
+            history.Add(new
+            {
+                Action = "HIGH_VALUE_REFUND_APPROVED",
+                Timestamp = approvedAtUtc,
+                ApproverId = approvingUserId,
+                ApproverRole = approvingUser.Role.ToString()
+            });
+            booking.StatusHistoryJson = JsonSerializer.Serialize(history);
+            return Task.CompletedTask;
+        });
+
+        var booking = await _bookingRepo.GetByIdAsync(lockedBooking.Id) ?? lockedBooking;
+        if (alreadyApproved) return MapToDto(booking);
+
         await _auditRepo.AddAsync(new AuditLog
         {
             Id = Guid.NewGuid(),
@@ -1092,22 +1106,6 @@ public class BookingService : IBookingService
             throw new BadRequestException("The refund channel or evidence type is invalid.");
         var notes = NormalizeOptionalText(request.Notes, "Refund notes", 500);
         var processingUser = await GetActiveRefundOperatorAsync(processingUserId);
-        var booking = await _bookingRepo.GetByIdAsync(bookingId);
-        if (booking == null) throw new NotFoundException("Booking not found.");
-        if (booking.Folio?.Entries.Any(entry =>
-                entry.Type == FolioEntryType.Refund &&
-                entry.ExternalReference == transactionRef &&
-                entry.Amount == FolioAccounting.Money(request.Amount)) == true)
-        {
-            return MapToDto(booking);
-        }
-        if (booking.PaymentStatus != PaymentStatus.RefundPending)
-            throw new BadRequestException("This booking is not flagged for a manual refund.");
-        var guestCredit = booking.Folio is null
-            ? 0m
-            : FolioAccounting.Calculate(booking.Folio.Entries).GuestCredit;
-        if (request.Amount <= 0 || request.Amount > guestCredit)
-            throw new BadRequestException("The refund amount exceeds the unsettled guest credit.");
         var validEvidenceForChannel = request.Channel switch
         {
             "BankTransfer" => request.EvidenceType == "BankStatement",
@@ -1121,40 +1119,33 @@ public class BookingService : IBookingService
         var threshold = _config.GetValue(
             "FinancialControls:HighValueRefundThreshold",
             500000m);
-        if (request.Amount >= threshold)
-        {
-            if (!booking.RefundApprovedByUserId.HasValue ||
-                !booking.RefundApprovedAtUtc.HasValue)
-            {
-                throw new BadRequestException(
-                    "This high-value refund requires approval from a different administrator or manager.");
-            }
-            if (booking.RefundApprovedByUserId == processingUserId)
-            {
-                throw new BadRequestException(
-                    "The person who approved a high-value refund cannot also complete it.");
-            }
-            if (booking.RefundApprovedAmount != request.Amount)
-                throw new BadRequestException(
-                    "The completed amount must exactly match the independently approved amount.");
-        }
-
         var processedAtUtc = DateTime.UtcNow;
-        var approvingUserId = booking.RefundApprovedByUserId;
-        await _folioService.ApplyRefundAsync(
-            booking,
+
+        // The guest-credit balance, prior-approval fields and idempotent
+        // replay check are all re-evaluated fresh inside this call, under a
+        // single lock on the booking row, so two concurrent completions for
+        // the same booking cannot both post against the same pre-lock
+        // guest-credit snapshot (the bug that let a booking be over-refunded).
+        var refundResult = await _folioService.CompleteApprovedRefundAsync(
+            bookingId,
             request.Amount,
             transactionRef,
             request.Channel.Trim(),
+            request.EvidenceType.Trim(),
             notes,
-            processingUserId);
-        booking.RefundReference = transactionRef;
-        booking.RefundAmount = FolioAccounting.Money((booking.RefundAmount ?? 0m) + request.Amount);
-        booking.RefundChannel = request.Channel.Trim();
-        booking.RefundEvidenceType = request.EvidenceType.Trim();
-        booking.RefundNotes = notes;
-        booking.RefundProcessedByUserId = processingUserId;
-        booking.RefundProcessedAtUtc = processedAtUtc;
+            processingUserId,
+            threshold);
+
+        var booking = await _bookingRepo.GetByIdAsync(refundResult.Booking.Id) ?? refundResult.Booking;
+        var approvingUserId = booking.RefundApprovedByUserId;
+
+        if (!refundResult.Applied)
+        {
+            // The lock resolved this call as an idempotent replay of an
+            // already-completed refund (matching reference and amount) —
+            // nothing new was posted, so there is nothing further to record.
+            return MapToDto(booking);
+        }
 
         var history = ReadStatusHistory(booking.StatusHistoryJson);
         history.Add(new

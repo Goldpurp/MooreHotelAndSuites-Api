@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -174,7 +175,13 @@ public static class ServiceCollectionExtensions
                 options.Lockout.MaxFailedAccessAttempts = 5;
                 options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
             })
-            .AddEntityFrameworkStores<MooreHotelsDbContext>()
+            // ProtectedUserStore replaces the default EF Core user store so
+            // every AspNetUserTokens value (TOTP authenticator keys, 2FA
+            // recovery codes) is encrypted at rest via Data Protection
+            // instead of being written as plaintext. The role store stays
+            // the standard EF Core implementation.
+            .AddUserStore<ProtectedUserStore>()
+            .AddRoleStore<RoleStore<IdentityRole<Guid>, MooreHotelsDbContext, Guid>>()
             .AddDefaultTokenProviders();
 
         services.Configure<DataProtectionTokenProviderOptions>(options =>
