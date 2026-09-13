@@ -4,8 +4,9 @@
 
 **Not approved for guest traffic.** The 12 September report was partly stale
 and overstated the completeness of the code fixes. This document supersedes
-its release status. No production database migration or API deployment was
-performed during this verification.
+its release status. The additive email-outbox migration was applied to the
+empty production database during this verification. No API deployment was
+performed.
 
 ## Confirmed against GitHub
 
@@ -18,6 +19,11 @@ performed during this verification.
   [The September 13 run](https://github.com/Goldpurp/MooreHotelAndSuites-Api/actions/runs/34745252421)
   produced the unexpired artifact `production-backup-34745252421-1`
   (176,388 bytes). Artifact presence does not prove it can be restored.
+- After applying the email-outbox migration, a second manual encrypted backup
+  [run #6](https://github.com/Goldpurp/MooreHotelAndSuites-Api/actions/runs/34754802892)
+  completed successfully in 40 seconds and produced one retained artifact. The
+  September 9 isolated restore rehearsal remains the latest restore evidence;
+  this newer artifact has not yet been restored.
 
 ## Defects reproduced and fixed in this pass
 
@@ -77,18 +83,22 @@ only to the older merged commit.
   rejected the push because explicit authorization to send the source changes
   to `Goldpurp/MooreHotelAndSuites-Api` was required. No push or PR creation occurred.
 - [ ] Obtain independent review and green CI for the new PR, then merge.
-- [x] Recheck the actual production EF migration history and schema. A
-  read-only query in project `azclpxuabsffjkuhqzga` confirmed 28 migrations,
-  latest `20260908104546_PersistEncryptedDataProtectionKeys`, zero bookings,
-  zero administrators, zero MFA-enabled users, zero Identity-token rows, zero
-  persisted Data Protection keys, and no `email_outbox.DeliveredAtUtc` column.
-- [ ] Review and apply `releases/20260913-email-outbox-delivery.sql` as an
-  external database release step, with a current backup and rollback plan.
-  Verify the new EF history entry and nullable column. Keep startup migrations off.
+- [x] Recheck the actual production EF migration history and schema. Before
+  migration, a read-only query in project `azclpxuabsffjkuhqzga` confirmed 28
+  migrations, zero bookings, zero administrators, zero MFA-enabled users, zero
+  Identity-token rows, zero persisted Data Protection keys, and no
+  `email_outbox.DeliveredAtUtc` column.
+- [x] Apply the reviewed additive SQL in
+  `docs/releases/20260913-email-outbox-delivery.sql` as an external database
+  release step. A post-apply query confirmed migration
+  `20260912174325_AddEmailOutboxDeliveredMarker`, the nullable
+  `email_outbox.DeliveredAtUtc` column, and 29 total migrations. Startup
+  migrations remain off.
 - [ ] Verify Render's remaining settings, inbound
   network isolation and forwarded-header sanitization before relying on
   `ForwardedHeaders__TrustRenderEdge=true`.
-- [ ] Complete Brevo/Cloudinary rotation and provider acceptance evidence;
+- [ ] Complete Brevo/Cloudinary provider acceptance evidence and revoke the
+  superseded credentials after the replacements pass deployed tests;
   finalize owner-approved privacy/terms versions, URLs and retention settings.
 - [ ] Deploy the reviewed commit; set `/health/ready`; verify health, CORS,
   queue operation, alert routes and restart recovery with the same certificate.
@@ -121,6 +131,17 @@ trust based solely on the service name. Reassess before changing plans.
 
 Provider acceptance and approved policy records have been requested from the
 release owner. Their existence and live configuration are not assumed.
+On 13 September, Brevo showed the exact sender
+`info@moorehotelandsuites.com` as verified and showed green DKIM and DMARC
+status for `moorehotelandsuites.com`; no additional Namecheap DNS change was
+indicated. A new one-year production SMTP key named
+`moore-hotels-render-prod-2026-09-13` was created and saved to Render as
+`EmailSettings__ApiPass` using Save only. A new active Cloudinary key with the
+same production-specific name and the provider's `Master Admin` role was
+created for cloud `dxryndnhl`; its key, secret and cloud name were saved to the
+Moore API Render service using Save only. The prior Brevo and Cloudinary
+credentials remain active until the new credentials pass deployed acceptance
+tests, so rotation is not yet complete.
 The intended public policy URLs both return HTTP 200 and render substantive
 documents. The privacy notice says it was last updated on 13 July 2026; the
 currently deployed terms say they took effect on 1 January 2024. The release
