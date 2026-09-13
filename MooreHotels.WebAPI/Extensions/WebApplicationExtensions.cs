@@ -437,6 +437,7 @@ public static class WebApplicationExtensions
         app.UseRouting();
         app.UseCors(ServiceCollectionExtensions.FrontendCorsPolicy);
         app.UseAuthentication();
+        app.UseMiddleware<LaunchGateMiddleware>();
         app.UseRateLimiter();
         app.UseUserStatusEnforcement();
         app.UseAuthorization();

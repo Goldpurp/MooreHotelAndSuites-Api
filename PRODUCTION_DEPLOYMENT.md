@@ -167,6 +167,15 @@ reports the chosen backup mode and actual managed/PITR flags.
 
 ## 3. Rotate and enter secrets
 
+For the first production deployment, set `LaunchGate__Enabled=true` and store a
+random value of at least 32 bytes in `LaunchGate__ValidationKey`. While enabled,
+anonymous public API requests receive HTTP 503; health probes and staff login
+remain available, authenticated staff can complete setup, and acceptance tools
+can send the secret in `X-Moore-Launch-Validation`. Never put that header value
+in a browser bundle, logs, screenshots, tickets, or source control. After every
+acceptance item is complete, set `LaunchGate__Enabled=false`, remove the key,
+and redeploy. Startup will then require all alert and provider evidence.
+
 The previously used database, JWT, Brevo, Cloudinary and administrator
 credentials must be rotated. Enter the new values only in Render:
 

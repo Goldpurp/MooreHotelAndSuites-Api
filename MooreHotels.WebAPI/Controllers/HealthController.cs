@@ -17,17 +17,20 @@ public class HealthController : ControllerBase
     private readonly OperationalReadinessSettings _operations;
     private readonly ProviderAcceptanceSettings _providerAcceptance;
     private readonly MonnifySettings _monnify;
+    private readonly LaunchGateSettings _launchGate;
 
     public HealthController(
         MooreHotelsDbContext context,
         IOptions<OperationalReadinessSettings> operations,
         IOptions<ProviderAcceptanceSettings> providerAcceptance,
-        IOptions<MonnifySettings> monnify)
+        IOptions<MonnifySettings> monnify,
+        IOptions<LaunchGateSettings> launchGate)
     {
         _context = context;
         _operations = operations.Value;
         _providerAcceptance = providerAcceptance.Value;
         _monnify = monnify.Value;
+        _launchGate = launchGate.Value;
     }
 
     [HttpGet]
@@ -94,14 +97,42 @@ public class HealthController : ControllerBase
                                     mediaQueueAgeMinutes.GetValueOrDefault() <=
                                     _operations.QueueAgeWarningMinutes;
             var paymentHealth = failedPaymentsLastDay == 0 && stalePendingPayments == 0;
+            var alertsAccepted = _operations.UptimeAlertsEnabled &&
+                                 _operations.ApiErrorAndLatencyAlertsEnabled &&
+                                 _operations.QueueAgeAlertsEnabled &&
+                                 _operations.PaymentAndWebhookAlertsEnabled &&
+                                 !string.IsNullOrWhiteSpace(_operations.AlertRoutingEvidenceReference);
+            var providersAccepted = IsAccepted(_providerAcceptance.Cloudinary) &&
+                                    IsAccepted(_providerAcceptance.Brevo) &&
+                                    (!_monnify.Enabled ||
+                                     (IsAccepted(_providerAcceptance.MonnifySandbox) &&
+                                      IsAccepted(_providerAcceptance.MonnifyWebhook) &&
+                                      IsAccepted(_providerAcceptance.MonnifyLivePaymentAndRefund) &&
+                                      IsAccepted(_providerAcceptance.PciResponsibilityReview) &&
+                                      _providerAcceptance.HostedPaymentPageOnly));
 
             var response = new
             {
-                Status = emailQueueHealthy && mediaQueueHealthy && paymentHealth && restoreDrillCurrent
+                Status = emailQueueHealthy && mediaQueueHealthy && paymentHealth && restoreDrillCurrent &&
+                         alertsAccepted && providersAccepted && !_launchGate.Enabled
                     ? "Healthy"
                     : "Degraded",
                 Timestamp = now,
                 Database = "Connected",
+                Launch = new
+                {
+                    AcceptingGuestTraffic = !_launchGate.Enabled,
+                    ValidationMode = _launchGate.Enabled
+                },
+                Alerts = new
+                {
+                    Accepted = alertsAccepted,
+                    _operations.UptimeAlertsEnabled,
+                    _operations.ApiErrorAndLatencyAlertsEnabled,
+                    _operations.QueueAgeAlertsEnabled,
+                    _operations.PaymentAndWebhookAlertsEnabled,
+                    _operations.AlertRoutingEvidenceReference
+                },
                 EmailQueue = new
                 {
                     Status = emailQueueHealthy ? "Operational" : "AttentionRequired",
@@ -182,13 +213,16 @@ public class HealthController : ControllerBase
 
     private static object ToAcceptanceStatus(AcceptanceEvidence evidence) => new
     {
-        Accepted = evidence.AcceptedAtUtc.HasValue &&
-                   !string.IsNullOrWhiteSpace(evidence.EvidenceReference) &&
-                   !string.IsNullOrWhiteSpace(evidence.CredentialRotationReference),
+        Accepted = IsAccepted(evidence),
         evidence.AcceptedAtUtc,
         evidence.EvidenceReference,
         evidence.CredentialRotationReference
     };
+
+    private static bool IsAccepted(AcceptanceEvidence evidence) =>
+        evidence.AcceptedAtUtc.HasValue &&
+        !string.IsNullOrWhiteSpace(evidence.EvidenceReference) &&
+        !string.IsNullOrWhiteSpace(evidence.CredentialRotationReference);
 
     [HttpGet("~/health/ready")]
     [AllowAnonymous]
