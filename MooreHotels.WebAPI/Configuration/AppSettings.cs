@@ -133,6 +133,12 @@ public sealed class OperationalReadinessSettings
     public int PaymentPendingWarningMinutes { get; init; } = 30;
 }
 
+public sealed class LaunchGateSettings
+{
+    public bool Enabled { get; init; }
+    public string ValidationKey { get; init; } = string.Empty;
+}
+
 public sealed class AcceptanceEvidence
 {
     public string CredentialRotationReference { get; init; } = string.Empty;
@@ -242,6 +248,8 @@ public static class ConfigurationBootstrap
             .Get<PrivacySettings>() ?? new PrivacySettings();
         var operations = configuration.GetSection("OperationalReadiness")
             .Get<OperationalReadinessSettings>() ?? new OperationalReadinessSettings();
+        var launchGate = configuration.GetSection("LaunchGate")
+            .Get<LaunchGateSettings>() ?? new LaunchGateSettings();
         var providerAcceptance = configuration.GetSection("ProviderAcceptance")
             .Get<ProviderAcceptanceSettings>() ?? new ProviderAcceptanceSettings();
         var pricing = configuration.GetSection("Pricing")
@@ -596,24 +604,35 @@ public static class ConfigurationBootstrap
                 errors.Add(
                     "OperationalReadiness restore drill evidence is older than RestoreDrillMaximumAgeDays.");
             }
-            if (!operations.UptimeAlertsEnabled ||
-                !operations.ApiErrorAndLatencyAlertsEnabled ||
-                !operations.QueueAgeAlertsEnabled ||
-                !operations.PaymentAndWebhookAlertsEnabled)
+            if (launchGate.Enabled)
             {
-                errors.Add("All OperationalReadiness alert categories must be enabled in Production.");
+                if (IsMissingOrPlaceholder(launchGate.ValidationKey) ||
+                    System.Text.Encoding.UTF8.GetByteCount(launchGate.ValidationKey) < 32)
+                {
+                    errors.Add("LaunchGate:ValidationKey must contain at least 32 UTF-8 bytes when the production launch gate is enabled.");
+                }
             }
-            if (IsMissingOrPlaceholder(operations.AlertRoutingEvidenceReference))
-                errors.Add("OperationalReadiness:AlertRoutingEvidenceReference is required in Production.");
+            else
+            {
+                if (!operations.UptimeAlertsEnabled ||
+                    !operations.ApiErrorAndLatencyAlertsEnabled ||
+                    !operations.QueueAgeAlertsEnabled ||
+                    !operations.PaymentAndWebhookAlertsEnabled)
+                {
+                    errors.Add("All OperationalReadiness alert categories must be enabled in Production.");
+                }
+                if (IsMissingOrPlaceholder(operations.AlertRoutingEvidenceReference))
+                    errors.Add("OperationalReadiness:AlertRoutingEvidenceReference is required in Production.");
+
+                if (string.Equals(email.DeliveryMode, "Brevo", StringComparison.OrdinalIgnoreCase))
+                    RequireProviderAcceptance(providerAcceptance.Brevo, "Brevo", errors);
+                RequireProviderAcceptance(providerAcceptance.Cloudinary, "Cloudinary", errors);
+            }
             if (operations.QueueAgeWarningMinutes is < 1 or > 1440)
                 errors.Add("OperationalReadiness:QueueAgeWarningMinutes must be between 1 and 1440.");
             if (operations.PaymentPendingWarningMinutes is < 5 or > 1440)
                 errors.Add("OperationalReadiness:PaymentPendingWarningMinutes must be between 5 and 1440.");
-
-            if (string.Equals(email.DeliveryMode, "Brevo", StringComparison.OrdinalIgnoreCase))
-                RequireProviderAcceptance(providerAcceptance.Brevo, "Brevo", errors);
-            RequireProviderAcceptance(providerAcceptance.Cloudinary, "Cloudinary", errors);
-            if (monnify.Enabled)
+            if (monnify.Enabled && !launchGate.Enabled)
             {
                 RequireProviderAcceptance(providerAcceptance.MonnifySandbox, "Monnify sandbox", errors);
                 RequireProviderAcceptance(providerAcceptance.MonnifyWebhook, "Monnify webhook", errors);

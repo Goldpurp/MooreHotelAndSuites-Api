@@ -148,6 +148,14 @@ services:
         value: 15
       - key: OperationalReadiness__PaymentPendingWarningMinutes
         value: 30
+      # Keep enabled while provider and operations acceptance is in progress.
+      # Public traffic is blocked; health, staff login, authenticated staff, and
+      # requests with the secret validation header remain available. Disable it
+      # only after every production acceptance declaration below is truthful.
+      - key: LaunchGate__Enabled
+        sync: false
+      - key: LaunchGate__ValidationKey
+        sync: false
       - key: ProviderAcceptance__Brevo__CredentialRotationReference
         sync: false
       - key: ProviderAcceptance__Brevo__AcceptedAtUtc

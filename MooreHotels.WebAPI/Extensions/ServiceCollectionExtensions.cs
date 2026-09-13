@@ -67,6 +67,7 @@ public static class ServiceCollectionExtensions
         services.Configure<BankTransferSettings>(configuration.GetSection("BankTransferSettings"));
         services.Configure<FinancialControlsSettings>(configuration.GetSection("FinancialControls"));
         services.Configure<OperationalReadinessSettings>(configuration.GetSection("OperationalReadiness"));
+        services.Configure<LaunchGateSettings>(configuration.GetSection("LaunchGate"));
         services.Configure<ProviderAcceptanceSettings>(configuration.GetSection("ProviderAcceptance"));
         services.Configure<PricingSettings>(configuration.GetSection("Pricing"));
         services.Configure<ReservationPolicySettings>(configuration.GetSection("ReservationPolicies"));

@@ -435,6 +435,40 @@ public sealed class ProductionConfigurationSecurityTests
         Assert.Contains("older than", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Production_launch_gate_allows_pending_alert_and_provider_acceptance()
+    {
+        var settings = BaselineSettings();
+        settings["LaunchGate:Enabled"] = "true";
+        settings["LaunchGate:ValidationKey"] = "0123456789abcdef0123456789abcdef";
+        settings["OperationalReadiness:QueueAgeAlertsEnabled"] = "false";
+        settings["OperationalReadiness:AlertRoutingEvidenceReference"] = "";
+        settings["ProviderAcceptance:Brevo:EvidenceReference"] = "";
+        settings["ProviderAcceptance:Cloudinary:EvidenceReference"] = "";
+
+        ConfigurationBootstrap.ValidateForStartup(
+            BuildConfiguration(settings),
+            ProductionEnvironment());
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("too-short")]
+    [InlineData("<SET_IN_ENV>")]
+    public void Production_launch_gate_requires_a_strong_non_placeholder_key(string key)
+    {
+        var settings = BaselineSettings();
+        settings["LaunchGate:Enabled"] = "true";
+        settings["LaunchGate:ValidationKey"] = key;
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            ConfigurationBootstrap.ValidateForStartup(
+                BuildConfiguration(settings),
+                ProductionEnvironment()));
+
+        Assert.Contains("LaunchGate:ValidationKey", exception.Message, StringComparison.Ordinal);
+    }
+
     private static IConfiguration BuildConfiguration(
         IDictionary<string, string?> values) =>
         new ConfigurationBuilder()
