@@ -52,10 +52,16 @@ public class UserStatusMiddleware
 
             var isStaff = user.Role is UserRole.Admin or UserRole.Manager or UserRole.Staff;
             var mfaSetupRoute = context.Request.Path.StartsWithSegments("/api/mfa");
+            var passwordRotationRoute =
+                HttpMethods.IsPost(context.Request.Method) &&
+                context.Request.Path.Equals(
+                    "/api/profile/rotate-security",
+                    StringComparison.OrdinalIgnoreCase);
             if (configuration.GetValue<bool>("Security:RequireStaffMfa") &&
                 isStaff &&
                 !user.TwoFactorEnabled &&
-                !mfaSetupRoute)
+                !mfaSetupRoute &&
+                !passwordRotationRoute)
             {
                 await RejectSessionAsync(
                     context,
