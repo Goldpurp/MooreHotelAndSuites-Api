@@ -225,6 +225,7 @@ public class HealthController : ControllerBase
         !string.IsNullOrWhiteSpace(evidence.CredentialRotationReference);
 
     [HttpGet("~/health/ready")]
+    [HttpHead("~/health/ready")]
     [AllowAnonymous]
     public async Task<IActionResult> Ready(CancellationToken cancellationToken)
     {
