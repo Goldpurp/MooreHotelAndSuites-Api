@@ -68,6 +68,17 @@ public sealed class FirstFiveProductionFixTests
         }
     }
 
+    [Theory]
+    [InlineData("/health/live")]
+    [InlineData("/health/ready")]
+    public async Task Health_endpoints_accept_head_requests_for_external_monitors(string path)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Head, path);
+        using var response = await _fixture.Client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     [Fact]
     public async Task Booking_verification_is_throttled_single_use_and_consumed_with_the_booking()
     {

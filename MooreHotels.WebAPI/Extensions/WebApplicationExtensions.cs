@@ -448,7 +448,7 @@ public static class WebApplicationExtensions
             .AllowAnonymous()
             .ExcludeFromDescription();
 
-        app.MapGet("/health/live", () => Results.Ok(new
+        app.MapMethods("/health/live", [HttpMethods.Get, HttpMethods.Head], () => Results.Ok(new
         {
             status = "Healthy",
             timestamp = DateTimeOffset.UtcNow,
