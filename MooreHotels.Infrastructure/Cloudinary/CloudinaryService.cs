@@ -1,6 +1,7 @@
 using CloudinaryDotNet;
 using CloudinaryDotNet.Actions;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using MyImageResult = MooreHotels.Application.DTOs.ImageUploadResult;
 using MooreHotels.Application.Exceptions;
@@ -12,17 +13,22 @@ public class CloudinaryService : IImageService
 {
     private const long MaximumImageBytes = 8 * 1024 * 1024;
     private const int MaximumFilesPerRequest = 10;
+    private static readonly TimeSpan UploadTimeout = TimeSpan.FromSeconds(90);
     private static readonly HashSet<string> AllowedFolders =
         new(StringComparer.OrdinalIgnoreCase)
         {
             "avatars", "general", "rooms", "website-assets"
         };
     private readonly Cloudinary _cloudinary;
+    private readonly ILogger<CloudinaryService> _logger;
 
-    public CloudinaryService(IOptions<CloudinarySettings> config)
+    public CloudinaryService(
+        IOptions<CloudinarySettings> config,
+        ILogger<CloudinaryService> logger)
     {
         var settings = config.Value;
         _cloudinary = new Cloudinary(new Account(settings.CloudName, settings.ApiKey, settings.ApiSecret));
+        _logger = logger;
     }
 
     public async Task<MyImageResult?> UploadImageAsync(IFormFile file, string folder = "general")
@@ -60,7 +66,26 @@ public class CloudinaryService : IImageService
             EagerAsync = true
         };
 
-        var result = await _cloudinary.UploadAsync(uploadParams);
+        using var timeout = new CancellationTokenSource(UploadTimeout);
+        ImageUploadResult result;
+        try
+        {
+            result = await _cloudinary.UploadAsync(uploadParams, timeout.Token);
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            _logger.LogWarning(
+                "Cloudinary image upload exceeded the {TimeoutSeconds}-second provider timeout.",
+                UploadTimeout.TotalSeconds);
+            throw new ServiceUnavailableException("Image storage did not respond in time.");
+        }
+        catch (HttpRequestException exception)
+        {
+            _logger.LogWarning(
+                "Cloudinary image upload failed with {ExceptionType}.",
+                exception.GetType().FullName);
+            throw new ServiceUnavailableException("Image storage could not be reached.", exception);
+        }
 
         if (result.Error != null ||
             string.IsNullOrWhiteSpace(result.PublicId) ||
