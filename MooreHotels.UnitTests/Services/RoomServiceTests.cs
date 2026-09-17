@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Moq;
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Application.Services;
@@ -132,4 +133,84 @@ public class RoomServiceTests
         result.Available.Should().BeTrue();
         result.Message.Should().Contain("Available");
     }
+
+    [Fact]
+    public async Task CreateRoomAsync_BootstrapsRoomType_WhenCategoryHasNone()
+    {
+        var actorId = Guid.NewGuid();
+        var request = CreateValidRoomRequest();
+        RoomType? addedType = null;
+        Room? addedRoom = null;
+        _roomRepoMock.Setup(repository => repository.GetByRoomNumberAsync(request.RoomNumber))
+            .ReturnsAsync((Room?)null);
+        _roomRepoMock.Setup(repository => repository.GetDefaultRoomTypeForCategoryAsync(request.Category))
+            .ReturnsAsync((RoomType?)null);
+        _roomRepoMock.Setup(repository => repository.GetAnyRoomTypeForCategoryAsync(request.Category))
+            .ReturnsAsync((RoomType?)null);
+        _roomRepoMock.Setup(repository => repository.AddRoomTypeAsync(It.IsAny<RoomType>()))
+            .Callback<RoomType>(type => addedType = type)
+            .Returns(Task.CompletedTask);
+        _roomRepoMock.Setup(repository => repository.AddAsync(It.IsAny<Room>()))
+            .Callback<Room>(room => addedRoom = room)
+            .Returns(Task.CompletedTask);
+
+        var result = await _service.CreateRoomAsync(request, actorId);
+
+        addedType.Should().NotBeNull();
+        addedType!.Code.Should().Be("DELUXE");
+        addedType.Name.Should().Be("Deluxe");
+        addedType.Category.Should().Be(RoomCategory.Deluxe);
+        addedType.BaseOccupancy.Should().Be(2);
+        addedType.MaxOccupancy.Should().Be(request.Capacity);
+        addedType.BasePricePerNight.Should().Be(request.PricePerNight);
+        addedType.IsActive.Should().BeTrue();
+        addedRoom.Should().NotBeNull();
+        addedRoom!.RoomTypeId.Should().Be(addedType.Id);
+        result.RoomTypeId.Should().Be(addedType.Id);
+        _auditServiceMock.Verify(service => service.LogActionAsync(
+            actorId,
+            "ROOM_TYPE_CREATED",
+            "RoomType",
+            addedType.Id.ToString(),
+            null,
+            It.IsAny<object>()), Times.Once);
+    }
+
+    [Fact]
+    public async Task CreateRoomAsync_RejectsInactiveExistingType_WithoutBootstrappingReplacement()
+    {
+        var actorId = Guid.NewGuid();
+        var request = CreateValidRoomRequest();
+        _roomRepoMock.Setup(repository => repository.GetByRoomNumberAsync(request.RoomNumber))
+            .ReturnsAsync((Room?)null);
+        _roomRepoMock.Setup(repository => repository.GetDefaultRoomTypeForCategoryAsync(request.Category))
+            .ReturnsAsync((RoomType?)null);
+        _roomRepoMock.Setup(repository => repository.GetAnyRoomTypeForCategoryAsync(request.Category))
+            .ReturnsAsync(new RoomType
+            {
+                Id = Guid.NewGuid(),
+                Category = request.Category,
+                IsActive = false
+            });
+
+        var action = () => _service.CreateRoomAsync(request, actorId);
+
+        await action.Should().ThrowAsync<BadRequestException>()
+            .WithMessage("Select an active room type.");
+        _roomRepoMock.Verify(repository => repository.AddRoomTypeAsync(It.IsAny<RoomType>()), Times.Never);
+        _roomRepoMock.Verify(repository => repository.AddAsync(It.IsAny<Room>()), Times.Never);
+    }
+
+    private static CreateRoomRequest CreateValidRoomRequest() => new(
+        "001",
+        "James",
+        RoomCategory.Deluxe,
+        PropertyFloor.FirstFloor,
+        RoomStatus.Available,
+        35000m,
+        2,
+        "35 sqm",
+        "A comfortable deluxe room.",
+        ["Wi-Fi", "Air conditioning"],
+        false);
 }

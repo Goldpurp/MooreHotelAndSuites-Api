@@ -29,6 +29,12 @@ public class RoomRepository : IRoomRepository
             .OrderBy(type => type.Code)
             .FirstOrDefaultAsync();
 
+    public async Task<RoomType?> GetAnyRoomTypeForCategoryAsync(RoomCategory category) =>
+        await _db.RoomTypes
+            .Where(type => type.Category == category)
+            .OrderBy(type => type.Code)
+            .FirstOrDefaultAsync();
+
     public async Task<IEnumerable<Room>> GetAllAsync(bool onlyOnline = true)
     {
         var query = _db.Rooms.Include(r => r.Images).Include(r => r.RoomType).AsNoTracking().AsQueryable();
@@ -105,6 +111,11 @@ public class RoomRepository : IRoomRepository
     public async Task AddAsync(Room room)
     {
         await _db.Rooms.AddAsync(room);
+    }
+
+    public async Task AddRoomTypeAsync(RoomType roomType)
+    {
+        await _db.RoomTypes.AddAsync(roomType);
     }
 
     public Task UpdateAsync(Room room)
