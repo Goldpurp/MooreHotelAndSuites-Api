@@ -10,6 +10,7 @@ public interface IRoomRepository
     Task<Room?> GetByRoomNumberAsync(string roomNumber);
     Task<RoomType?> GetRoomTypeByIdAsync(Guid id);
     Task<RoomType?> GetDefaultRoomTypeForCategoryAsync(RoomCategory category);
+    Task<RoomType?> GetAnyRoomTypeForCategoryAsync(RoomCategory category);
     Task<IEnumerable<Room>> GetAllAsync(bool onlyOnline = true);
     Task<IEnumerable<Room>> SearchAsync(
         DateTime? checkIn,
@@ -19,6 +20,7 @@ public interface IRoomRepository
         string? roomNumber,
         string? amenity);
     Task AddAsync(Room room);
+    Task AddRoomTypeAsync(RoomType roomType);
     Task UpdateAsync(Room room);
     void RemoveInventoryPeriod(RoomInventoryPeriod period);
     Task DeleteAsync(Room room);

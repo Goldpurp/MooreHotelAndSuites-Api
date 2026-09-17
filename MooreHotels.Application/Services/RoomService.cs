@@ -148,7 +148,13 @@ public class RoomService : IRoomService
 
         var roomType = request.RoomTypeId.HasValue
             ? await _roomRepo.GetRoomTypeByIdAsync(request.RoomTypeId.Value)
-            : await _roomRepo.GetDefaultRoomTypeForCategoryAsync(request.Category);
+            : await ResolveOrCreateInitialRoomTypeAsync(
+                request.Category,
+                request.Capacity,
+                request.PricePerNight,
+                description,
+                amenities,
+                actorId);
         if (roomType is null || !roomType.IsActive)
             throw new BadRequestException("Select an active room type.");
         if (roomType.Category != request.Category)
@@ -203,6 +209,77 @@ public class RoomService : IRoomService
             });
         return MapToDto(room);
     }
+
+    private async Task<RoomType?> ResolveOrCreateInitialRoomTypeAsync(
+        RoomCategory category,
+        int capacity,
+        decimal pricePerNight,
+        string description,
+        List<string> amenities,
+        Guid actorId)
+    {
+        var activeType = await _roomRepo.GetDefaultRoomTypeForCategoryAsync(category);
+        if (activeType is not null) return activeType;
+
+        // An inactive type is an intentional inventory configuration. Require an
+        // administrator to reactivate or replace it instead of silently bypassing it.
+        if (await _roomRepo.GetAnyRoomTypeForCategoryAsync(category) is not null)
+            return null;
+
+        var now = DateTime.UtcNow;
+        var roomType = new RoomType
+        {
+            Id = Guid.NewGuid(),
+            Code = GetInitialRoomTypeCode(category),
+            Name = GetInitialRoomTypeName(category),
+            Category = category,
+            BaseOccupancy = Math.Min(2, capacity),
+            MaxOccupancy = capacity,
+            BasePricePerNight = pricePerNight,
+            Description = description,
+            Amenities = [.. amenities],
+            IsActive = true,
+            CreatedAtUtc = now,
+            UpdatedAtUtc = now
+        };
+
+        await _roomRepo.AddRoomTypeAsync(roomType);
+        await _auditService.LogActionAsync(
+            actorId,
+            "ROOM_TYPE_CREATED",
+            "RoomType",
+            roomType.Id.ToString(),
+            newData: new
+            {
+                roomType.Code,
+                roomType.Name,
+                roomType.Category,
+                roomType.BaseOccupancy,
+                roomType.MaxOccupancy,
+                roomType.BasePricePerNight,
+                roomType.IsActive,
+                Source = "FIRST_PHYSICAL_ROOM"
+            });
+        return roomType;
+    }
+
+    private static string GetInitialRoomTypeCode(RoomCategory category) => category switch
+    {
+        RoomCategory.Standard => "STANDARD",
+        RoomCategory.Deluxe => "DELUXE",
+        RoomCategory.Executive => "EXECUTIVE",
+        RoomCategory.PresidentialSuite => "PRESIDENTIAL-SUITE",
+        _ => throw new BadRequestException("Room category is invalid.")
+    };
+
+    private static string GetInitialRoomTypeName(RoomCategory category) => category switch
+    {
+        RoomCategory.Standard => "Standard",
+        RoomCategory.Deluxe => "Deluxe",
+        RoomCategory.Executive => "Executive",
+        RoomCategory.PresidentialSuite => "Presidential Suite",
+        _ => throw new BadRequestException("Room category is invalid.")
+    };
 
     public async Task UpdateRoomAsync(Guid id, UpdateRoomRequest request, Guid actorId)
     {
