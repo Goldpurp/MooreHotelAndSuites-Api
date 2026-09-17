@@ -142,7 +142,14 @@ public class BookingsController : ControllerBase
         var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (Guid.TryParse(userId, out var parsedUserId)) accountUserId = parsedUserId;
 
-        var dto = await _bookingService.CreateBookingAsync(request, accountUserId);
+        var isStaffManagedBooking = (await _authorizationService.AuthorizeAsync(
+            User,
+            HotelAuthorization.ReservationsManage)).Succeeded;
+
+        var dto = await _bookingService.CreateBookingAsync(
+            request,
+            accountUserId,
+            isStaffManagedBooking);
         return Ok(ToPublicBooking(dto));
     }
 

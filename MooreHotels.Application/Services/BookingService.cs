@@ -106,7 +106,10 @@ public class BookingService : IBookingService
             cancellationToken);
     }
 
-    public async Task<BookingDto> CreateBookingAsync(CreateBookingRequest request, Guid? accountUserId = null)
+    public async Task<BookingDto> CreateBookingAsync(
+        CreateBookingRequest request,
+        Guid? accountUserId = null,
+        bool isStaffManagedBooking = false)
     {
         // 1. Validation Logic
         var normalizedEmail = RequireEmail(request.GuestEmail);
@@ -187,6 +190,7 @@ public class BookingService : IBookingService
 
         BookingEmailVerificationProof? emailVerification = null;
         if (!linkedClientBooking &&
+            !isStaffManagedBooking &&
             _config.GetValue("Runtime:RequirePublicBookingEmailVerification", true))
         {
             var token = request.EmailVerificationToken?.Trim();
