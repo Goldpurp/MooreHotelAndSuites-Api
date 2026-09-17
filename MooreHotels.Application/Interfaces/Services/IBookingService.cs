@@ -5,7 +5,10 @@ namespace MooreHotels.Application.Interfaces.Services;
 
 public interface IBookingService
 {
-    Task<BookingDto> CreateBookingAsync(CreateBookingRequest request, Guid? accountUserId = null);
+    Task<BookingDto> CreateBookingAsync(
+        CreateBookingRequest request,
+        Guid? accountUserId = null,
+        bool isStaffManagedBooking = false);
     Task RequestBookingEmailVerificationAsync(
         string email,
         CancellationToken cancellationToken = default);

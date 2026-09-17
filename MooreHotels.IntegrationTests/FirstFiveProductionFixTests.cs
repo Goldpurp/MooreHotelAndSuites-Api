@@ -156,6 +156,34 @@ public sealed class FirstFiveProductionFixTests
     }
 
     [Fact]
+    public async Task Authorized_reservations_staff_can_create_a_booking_without_public_email_challenge()
+    {
+        var configuration = _fixture.Services.GetRequiredService<IConfiguration>();
+        var previous = configuration["Runtime:RequirePublicBookingEmailVerification"];
+        configuration["Runtime:RequirePublicBookingEmailVerification"] = "true";
+
+        try
+        {
+            var room = await _fixture.CreateRoomAsync();
+            using var request = BookingRequest(
+                room.Id,
+                $"staff-booking-{Guid.NewGuid():N}@example.test",
+                null);
+            request.Headers.Authorization = new AuthenticationHeaderValue(
+                "Bearer",
+                _fixture.Admin.Token);
+
+            using var response = await _fixture.Client.SendAsync(request);
+
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        }
+        finally
+        {
+            configuration["Runtime:RequirePublicBookingEmailVerification"] = previous;
+        }
+    }
+
+    [Fact]
     public async Task Registration_responses_do_not_reveal_existing_email_addresses()
     {
         var existingEmail = await _fixture.WithDbAsync(db => db.Users
