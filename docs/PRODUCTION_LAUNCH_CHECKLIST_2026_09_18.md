@@ -44,9 +44,14 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 - [x] Add access-control, launch-gate, HEAD and degraded-queue integration tests.
 - [x] Run the complete local API test suite: 293 integration tests and 21 unit
   tests passed on 18 September 2026. CI must repeat these checks on the PR.
-- [ ] Deploy the endpoint while the launch gate remains enabled.
+- [x] Deploy the endpoint while the launch gate remains enabled. Render deploy
+  `dep-damh33ad0e5s73fe0rn0` released merge commit `5316a05` on 18 September
+  2026; `/health/operations` returned HTTP 200 with every check operational.
 - [ ] Add a free UptimeRobot monitor for `/health/operations`, route alerts to
   the release-owner mailbox and perform a test notification.
+- [ ] Enable the free GitHub synthetic monitor on the default branch. It checks
+  the sanitized operational response and samples p95 latency against the
+  two-second production threshold every ten minutes.
 - [ ] Record the monitor/test reference and then enable the four
   `OperationalReadiness__*AlertsEnabled` declarations plus
   `OperationalReadiness__AlertRoutingEvidenceReference`.
