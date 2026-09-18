@@ -236,7 +236,7 @@ public class HealthController : ControllerBase
         try
         {
             if (!await _context.Database.CanConnectAsync(cancellationToken))
-                return OperationsUnavailable("Database");
+                return OperationsUnavailable();
 
             var now = DateTimeOffset.UtcNow;
             var exhaustedEmails = await _context.EmailOutboxMessages
@@ -292,16 +292,16 @@ public class HealthController : ControllerBase
         }
         catch (Exception)
         {
-            return OperationsUnavailable("Database");
+            return OperationsUnavailable();
         }
     }
 
-    private IActionResult OperationsUnavailable(string failedCheck) =>
+    private ObjectResult OperationsUnavailable() =>
         StatusCode(StatusCodes.Status503ServiceUnavailable, new
         {
             Status = "AttentionRequired",
             Timestamp = DateTimeOffset.UtcNow,
-            Checks = new { Database = failedCheck == "Database" ? "Disconnected" : "AttentionRequired" }
+            Checks = new { Database = "Disconnected" }
         });
 
     [HttpGet("~/health/ready")]
