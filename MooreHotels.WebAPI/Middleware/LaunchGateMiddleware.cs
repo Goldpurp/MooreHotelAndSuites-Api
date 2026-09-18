@@ -23,8 +23,37 @@ public sealed class LaunchGateMiddleware
 
     public async Task InvokeAsync(HttpContext context)
     {
-        if (!_settings.Enabled || IsPublicPreLaunchPath(context) ||
-            context.User.Identity?.IsAuthenticated == true || HasValidKey(context))
+        if (!_settings.Enabled || IsPublicPreLaunchPath(context))
+        {
+            await _next(context);
+            return;
+        }
+
+        // Authentication runs before this middleware. A rejected bearer token
+        // represents a stale/invalid session, not anonymous pre-launch traffic.
+        // Return 401 so clients can clear the session and prompt for sign-in.
+        if (HasBearerAuthenticationAttempt(context) &&
+            context.User.Identity?.IsAuthenticated != true)
+        {
+            context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+            context.Response.ContentType = "application/problem+json";
+            context.Response.Headers.WWWAuthenticate = "Bearer";
+            await context.Response.WriteAsJsonAsync(new ProblemDetails
+            {
+                Status = StatusCodes.Status401Unauthorized,
+                Title = "Authentication required",
+                Detail = "Your session is invalid or has expired. Sign in again.",
+                Instance = context.Request.Path,
+                Extensions =
+                {
+                    ["errorCode"] = "SESSION_EXPIRED",
+                    ["traceId"] = context.TraceIdentifier
+                }
+            });
+            return;
+        }
+
+        if (context.User.Identity?.IsAuthenticated == true || HasValidKey(context))
         {
             await _next(context);
             return;
@@ -41,6 +70,12 @@ public sealed class LaunchGateMiddleware
             Instance = context.Request.Path,
             Extensions = { ["traceId"] = context.TraceIdentifier }
         });
+    }
+
+    private static bool HasBearerAuthenticationAttempt(HttpContext context)
+    {
+        var authorization = context.Request.Headers.Authorization.ToString();
+        return authorization.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase);
     }
 
     private bool HasValidKey(HttpContext context)
