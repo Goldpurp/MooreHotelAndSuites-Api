@@ -1,0 +1,31 @@
+name: Production API synthetic monitor
+
+on:
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+    inputs:
+      latency_limit_seconds:
+        description: Fail when sampled p95 latency exceeds this value
+        required: true
+        default: '2.0'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-api-synthetic-monitor
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Check operational status and latency
+        env:
+          LATENCY_LIMIT_SECONDS: ${{ inputs.latency_limit_seconds || '2.0' }}
+        run: ./scripts/check-production-api.sh https://api.moorehotelandsuites.com/health/operations "$LATENCY_LIMIT_SECONDS" 5

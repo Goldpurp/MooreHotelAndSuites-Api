@@ -40,6 +40,14 @@ actually passed.
    the cloud secret/configuration manager. Evidence references may be ticket or
    vault record IDs; never put credentials or guest data in them.
 
+The free launch profile uses UptimeRobot for five-minute availability and
+operations checks. The default-branch `production-api-monitor.yml` workflow
+adds an independent ten-minute synthetic check for HTTP failures and p95
+latency above two seconds. The workflow excludes one warm-up request so a
+Render Free cold start is reported by availability monitoring without
+distorting warm-service latency. Treat a failed scheduled workflow as an API
+alert and investigate it using the same response procedure below.
+
 ## Quarterly restore drill
 
 1. Choose a recovery point within the RPO and record the production booking,
