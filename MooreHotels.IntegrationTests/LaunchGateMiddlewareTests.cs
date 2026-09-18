@@ -71,8 +71,10 @@ public sealed class LaunchGateMiddlewareTests
     [Theory]
     [InlineData("GET", "/health/live")]
     [InlineData("GET", "/health/ready")]
+    [InlineData("GET", "/health/operations")]
     [InlineData("HEAD", "/health/live")]
     [InlineData("HEAD", "/health/ready")]
+    [InlineData("HEAD", "/health/operations")]
     [InlineData("OPTIONS", "/api/bookings")]
     public async Task Enabled_gate_allows_safe_public_operational_requests(string method, string path)
     {

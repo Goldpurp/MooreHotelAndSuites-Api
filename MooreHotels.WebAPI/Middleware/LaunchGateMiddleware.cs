@@ -54,6 +54,7 @@ public sealed class LaunchGateMiddleware
         HttpMethods.IsOptions(context.Request.Method) ||
         context.Request.Path.Equals("/health/live", StringComparison.OrdinalIgnoreCase) ||
         context.Request.Path.Equals("/health/ready", StringComparison.OrdinalIgnoreCase) ||
+        context.Request.Path.Equals("/health/operations", StringComparison.OrdinalIgnoreCase) ||
         (HttpMethods.IsPost(context.Request.Method) &&
          context.Request.Path.Equals("/api/auth/login", StringComparison.OrdinalIgnoreCase));
 }

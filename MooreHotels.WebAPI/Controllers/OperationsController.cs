@@ -67,7 +67,7 @@ public class OperationsController : ControllerBase
         // This metric describes outbound delivery, not audit-log integrity.
         var unhandledFailures = await _dbContext.EmailOutboxMessages
             .AsNoTracking()
-            .CountAsync(m => m.AttemptCount >= 12, cancellationToken);
+            .CountAsync(m => m.DeliveredAtUtc == null && m.AttemptCount >= 12, cancellationToken);
 
         return Ok(new
         {
