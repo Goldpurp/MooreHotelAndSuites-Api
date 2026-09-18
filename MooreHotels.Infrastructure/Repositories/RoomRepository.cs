@@ -120,9 +120,22 @@ public class RoomRepository : IRoomRepository
 
     public Task UpdateAsync(Room room)
     {
-        _db.Rooms.Update(room);
+        // Service operations load rooms as tracked aggregates. Calling Update on
+        // that aggregate recursively marks newly-added inventory periods as
+        // Modified. Publishing an offline room then issues an UPDATE for a period
+        // that has not been inserted yet and EF reports a concurrency conflict.
+        // Preserve the states already assigned by change tracking. Detached
+        // aggregates retain the repository's existing graph-update behavior.
+        var entry = _db.Entry(room);
+        if (entry.State == EntityState.Detached)
+        {
+            _db.Rooms.Update(room);
+        }
         return Task.CompletedTask;
     }
+
+    public void AddInventoryPeriod(RoomInventoryPeriod period) =>
+        _db.RoomInventoryPeriods.Add(period);
 
     public void RemoveInventoryPeriod(RoomInventoryPeriod period) =>
         _db.RoomInventoryPeriods.Remove(period);

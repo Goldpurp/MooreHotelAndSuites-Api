@@ -6,9 +6,11 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 
 ## Completed
 
-- [x] API release `32e5926` deployed and `/health/ready` returns HTTP 200 with
+- [x] API release `5316a05` deployed and `/health/ready` returns HTTP 200 with
   the production database connected.
-- [x] Dashboard release `c69a190` deployed.
+- [x] Dashboard release `36a8d6a` deployed. It preserves the API's saved room
+  category and floor values in the editor; PR #14 passed all three required
+  checks before merge.
 - [x] Guest release `b85282f` deployed.
 - [x] Production schema contains 29 EF migrations, ending at
   `20260912174325_AddEmailOutboxDeliveredMarker`.
@@ -31,9 +33,10 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 - [x] The 9 September 2026 isolated PostgreSQL 17 restore drill passed the
   48-table source/restore manifest comparison. Evidence:
   `docs/LIVE_RELEASE_PROGRESS_2026_09_09.md#production-backup-restore-rehearsal-completed`.
-- [ ] Set `OperationalReadiness__EncryptedOffProviderBackupsEnabled=true`,
+- [x] Set `OperationalReadiness__EncryptedOffProviderBackupsEnabled=true`,
   `OperationalReadiness__LastRestoreDrillAtUtc`, and
-  `OperationalReadiness__RestoreDrillEvidenceReference` only from that evidence.
+  `OperationalReadiness__RestoreDrillEvidenceReference` from that evidence in
+  the Moore API Render service.
 
 ## Gate 2 — free operational monitoring
 
@@ -47,41 +50,79 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 - [x] Deploy the endpoint while the launch gate remains enabled. Render deploy
   `dep-damh33ad0e5s73fe0rn0` released merge commit `5316a05` on 18 September
   2026; `/health/operations` returned HTTP 200 with every check operational.
-- [ ] Add a free UptimeRobot monitor for `/health/operations`, route alerts to
-  the release-owner mailbox and perform a test notification.
-- [ ] Enable the free GitHub synthetic monitor on the default branch. It checks
+- [x] Added free UptimeRobot monitor `803981994` for `/health/operations`,
+  routed alerts to `moorehotelsandsuites@gmail.com`, and confirmed both DOWN
+  and UP test notifications on 18 September 2026.
+- [x] Enabled the free GitHub synthetic monitor on the default branch. It checks
   the sanitized operational response and samples p95 latency against the
-  two-second production threshold every ten minutes.
-- [ ] Record the monitor/test reference and then enable the four
+  two-second production threshold every ten minutes. Manual run `35337786213`
+  passed with p95 `0.419794s`.
+- [x] Recorded the monitor/test reference and enabled the four
   `OperationalReadiness__*AlertsEnabled` declarations plus
-  `OperationalReadiness__AlertRoutingEvidenceReference`.
+  `OperationalReadiness__AlertRoutingEvidenceReference` in Render. Deploy
+  `dep-damitptbedkc73bu7ki0` then succeeded and both readiness endpoints stayed
+  HTTP 200.
 
 ## Gate 3 — Brevo acceptance
 
-- [ ] Verify the exact sender and domain authentication remain active.
+- [x] Verified the exact sender `info@moorehotelandsuites.com` and authenticated
+  `moorehotelandsuites.com` domain remain active in Brevo on 18 September 2026.
+- [x] Replaced the unused malformed Brevo credential with
+  `Moore Render Production 2026-09-18`, configured both API credential settings
+  in Render, and released deploy `dep-damk88u1egvs73cit9sg`.
+- [x] Delivered a production password-reset message and a booking
+  email-verification message to `moorehotelsandsuites@gmail.com` at 15:03 WAT
+  on 18 September 2026. Brevo records both `Sent` and `Delivered` events and the
+  mailbox received both messages. No message link was opened.
+- [x] Confirmed the replacement credential is active, expires on 18 September
+  2027, and its provider record shows production use on 18 September 2026.
 - [ ] Deliver representative booking, cancellation, expiry, password-reset and
   secure-link messages using the replacement production credential.
-- [ ] Confirm matching accepted/delivered events and receipt in the destination
-  mailbox without secrets or unexpected personal data.
-- [ ] Verify retry and exhausted-message recovery behavior.
+- [x] Confirm matching accepted/delivered events and receipt in the destination
+  mailbox for the two non-booking acceptance messages without exposing secrets.
+- [x] Verified retry and exhausted-message behavior when the prior malformed
+  credential was rejected; delivery recovered after the replacement credential
+  was deployed and fresh messages were queued.
 - [ ] Revoke the superseded credential and confirm it fails.
 - [ ] Record the rotation reference, acceptance timestamp and delivery-test
   reference in the three `ProviderAcceptance__Brevo__*` variables.
 
 ## Gate 4 — Cloudinary acceptance
 
-- [ ] Verify allowed room images upload and invalid/oversized content is rejected.
-- [ ] Replace a room image and confirm the old managed asset is queued and deleted
-  only after the database update commits.
-- [ ] Verify deletion retry/idempotency and provider identifiers remain server-side.
-- [ ] Revoke the superseded credential and confirm it fails.
-- [ ] Record the rotation reference, acceptance timestamp and lifecycle-test
-  reference in the three `ProviderAcceptance__Cloudinary__*` variables.
+- [x] Verified against production on 18 September 2026 that a valid PNG uploads
+  and persists, an 8,388,609-byte image is rejected before submission, and a
+  file named `.png` with invalid contents is rejected by the API's magic-byte
+  validation.
+- [x] Added a temporary third image to room `001`, confirmed it persisted after
+  reopening the editor, removed only that test image, and confirmed the room
+  returned to its two original images. The public operations probe reported the
+  media-deletion queue `Operational` after the deletion worker processed it.
+  `DataAndImageUpdateTests.Room_update_replaces_all_images_clears_amenities_and_honours_offline_state`
+  also verifies that the old managed asset remains until the database update
+  commits and is then removed by the worker.
+- [x] Verified deletion durability, retry and idempotency on 18 September 2026.
+  Room-image replacement and general-media integration tests prove that the
+  database detach and deletion job commit together before provider deletion.
+  `MediaDeletionWorker` leases jobs, retries failures with bounded exponential
+  backoff for up to 12 attempts, and removes a job only after provider success;
+  Cloudinary treats both `ok` and `not found` as successful deletion. Public IDs
+  remain server-side and are not accepted as room-image ownership evidence.
+- [x] Disabled the superseded Cloudinary `Root` credential on 18 September
+  2026; the replacement `moore-hotels-render-prod-2026-09-13` credential
+  remains active.
+- [x] Recorded the rotation reference, acceptance timestamp
+  (`2026-09-18T16:19:58Z`) and this lifecycle-test reference in the three
+  `ProviderAcceptance__Cloudinary__*` variables. Render deployment
+  `dep-damm9pgu01pc73aq8tig` succeeded and became live.
 
 ## Gate 5 — staged production opening
 
-- [ ] Deploy the accepted Render configuration with
-  `LaunchGate__Enabled=true`; confirm startup, readiness and operations probes.
+- [x] Deployed the accepted Render configuration with
+  `LaunchGate__Enabled=true`; deployment `dep-damm9pgu01pc73aq8tig` started in
+  Production and passed Render's `/health/ready` check. The live readiness
+  probe returned `Ready` with the database connected, and the operations probe
+  returned `Operational` for the database, email queue, media-deletion queue
+  and payments.
 - [ ] Publish room `001` (`James`). It is currently `Available`, has active room
   type `DELUXE`, capacity 2 and price NGN 35,000, but `IsOnline=false`.
 - [ ] Set `LaunchGate__Enabled=false` and redeploy.
@@ -93,7 +134,9 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 
 ## Gate 6 — final acceptance
 
-- [ ] Verify trusted and untrusted CORS origins.
+- [x] Verified trusted and untrusted CORS origins on 18 September 2026. The
+  production admin origin received `Access-Control-Allow-Origin`; an untrusted
+  origin did not, including for preflight requests.
 - [ ] Verify Admin, Manager, department Staff and Client permissions.
 - [ ] Verify room creation/update/image replacement and offline/online behavior.
 - [ ] Verify free and late cancellation policy boundaries and no-show handling.

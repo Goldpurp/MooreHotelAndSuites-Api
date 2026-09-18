@@ -97,6 +97,39 @@ public sealed class DataAndImageUpdateTests
     }
 
     [Fact]
+    public async Task Offline_room_can_be_published_and_opens_inventory_once()
+    {
+        var room = await _fixture.CreateRoomAsync();
+        await _fixture.WithDbAsync(async db =>
+        {
+            var stored = await db.Rooms
+                .Include(item => item.InventoryPeriods)
+                .SingleAsync(item => item.Id == room.Id);
+            stored.IsOnline = false;
+            db.RoomInventoryPeriods.RemoveRange(stored.InventoryPeriods);
+            await db.SaveChangesAsync();
+            return true;
+        });
+
+        using var update = CreateAuthorizedFormRequest(
+            HttpMethod.Put,
+            $"/api/rooms/{room.Id}",
+            _fixture.Admin);
+        AddText(update.Content!, "IsOnline", "true");
+
+        var response = await _fixture.Client.SendAsync(update);
+
+        var responseBody = await response.Content.ReadAsStringAsync();
+        Assert.True(response.StatusCode == HttpStatusCode.OK, responseBody);
+        var stored = await _fixture.WithDbAsync(db => db.Rooms
+            .AsNoTracking()
+            .Include(item => item.InventoryPeriods)
+            .SingleAsync(item => item.Id == room.Id));
+        Assert.True(stored.IsOnline);
+        Assert.Single(stored.InventoryPeriods, period => !period.EndDate.HasValue);
+    }
+
+    [Fact]
     public async Task Room_update_rejects_an_image_url_not_owned_by_the_room()
     {
         var room = await _fixture.CreateRoomAsync();
