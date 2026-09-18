@@ -48,7 +48,7 @@ public sealed class ControllerSecurityMetadataTests
 
                 if (allowsAnonymous &&
                     !(controllerType == typeof(HealthController) &&
-                      action.Name == nameof(HealthController.Ready)))
+                      action.Name is nameof(HealthController.Ready) or nameof(HealthController.Operations)))
                 {
                     Assert.True(
                         action.IsDefined(typeof(EnableRateLimitingAttribute), true),

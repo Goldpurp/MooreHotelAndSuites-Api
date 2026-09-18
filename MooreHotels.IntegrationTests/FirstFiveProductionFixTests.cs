@@ -55,6 +55,60 @@ public sealed class FirstFiveProductionFixTests
 
             using var readiness = await _fixture.Client.GetAsync("/health/ready");
             Assert.Equal(HttpStatusCode.OK, readiness.StatusCode);
+
+            using var operations = await _fixture.Client.GetAsync("/health/operations");
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, operations.StatusCode);
+            using var operationsPayload = JsonDocument.Parse(await operations.Content.ReadAsStringAsync());
+            Assert.Equal("AttentionRequired", operationsPayload.RootElement.GetProperty("status").GetString());
+            Assert.Equal(
+                "AttentionRequired",
+                operationsPayload.RootElement.GetProperty("checks").GetProperty("emailQueue").GetString());
+        }
+        finally
+        {
+            await _fixture.WithDbAsync(async db =>
+            {
+                await db.EmailOutboxMessages
+                    .Where(message => message.Id == messageId)
+                    .ExecuteDeleteAsync();
+                return true;
+            });
+        }
+    }
+
+    [Fact]
+    public async Task Delivered_email_awaiting_cleanup_does_not_degrade_operational_health()
+    {
+        var messageId = Guid.NewGuid();
+        await _fixture.WithDbAsync(async db =>
+        {
+            db.EmailOutboxMessages.Add(new EmailOutboxMessage
+            {
+                Id = messageId,
+                Template = TransactionalEmailTemplates.PasswordReset,
+                Recipient = "delivered-cleanup@example.test",
+                ProtectedPayload = "{}",
+                AttemptCount = 12,
+                NextAttemptAtUtc = DateTime.UtcNow.AddDays(-2),
+                LockedUntilUtc = DateTime.UtcNow.AddHours(1),
+                CreatedAtUtc = DateTime.UtcNow.AddDays(-2),
+                DeliveredAtUtc = DateTime.UtcNow.AddMinutes(-5)
+            });
+            await db.SaveChangesAsync();
+            return true;
+        });
+
+        try
+        {
+            using var operations = await _fixture.Client.GetAsync("/health/operations");
+            Assert.Equal(HttpStatusCode.OK, operations.StatusCode);
+
+            using var diagnosticsRequest = AuthorizedRequest(HttpMethod.Get, "/api/health");
+            using var diagnostics = await _fixture.Client.SendAsync(diagnosticsRequest);
+            using var payload = JsonDocument.Parse(await diagnostics.Content.ReadAsStringAsync());
+            Assert.Equal(
+                0,
+                payload.RootElement.GetProperty("emailQueue").GetProperty("exhausted").GetInt32());
         }
         finally
         {
@@ -71,6 +125,7 @@ public sealed class FirstFiveProductionFixTests
     [Theory]
     [InlineData("/health/live")]
     [InlineData("/health/ready")]
+    [InlineData("/health/operations")]
     public async Task Health_endpoints_accept_head_requests_for_external_monitors(string path)
     {
         using var request = new HttpRequestMessage(HttpMethod.Head, path);

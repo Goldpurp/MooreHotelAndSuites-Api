@@ -6,6 +6,8 @@ using MooreHotels.WebAPI.Services;
 using Microsoft.Extensions.Options;
 using MooreHotels.WebAPI.Configuration;
 using MooreHotels.Domain.Common;
+using Microsoft.AspNetCore.RateLimiting;
+using MooreHotels.WebAPI.Extensions;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -52,10 +54,10 @@ public class HealthController : ControllerBase
 
             var pendingEmails = await _context.EmailOutboxMessages
                 .AsNoTracking()
-                .CountAsync(message => message.AttemptCount < 12);
+                .CountAsync(message => message.DeliveredAtUtc == null && message.AttemptCount < 12);
             var exhaustedEmails = await _context.EmailOutboxMessages
                 .AsNoTracking()
-                .CountAsync(message => message.AttemptCount >= 12);
+                .CountAsync(message => message.DeliveredAtUtc == null && message.AttemptCount >= 12);
             var pendingMediaDeletions = await _context.MediaDeletionJobs
                 .AsNoTracking()
                 .CountAsync(job => job.AttemptCount < MediaDeletionWorker.MaximumAttempts);
@@ -64,7 +66,7 @@ public class HealthController : ControllerBase
                 .CountAsync(job => job.AttemptCount >= MediaDeletionWorker.MaximumAttempts);
             var oldestPendingEmailAtUtc = await _context.EmailOutboxMessages
                 .AsNoTracking()
-                .Where(message => message.AttemptCount < 12)
+                .Where(message => message.DeliveredAtUtc == null && message.AttemptCount < 12)
                 .MinAsync(message => (DateTime?)message.CreatedAtUtc);
             var oldestPendingMediaDeletionAtUtc = await _context.MediaDeletionJobs
                 .AsNoTracking()
@@ -96,7 +98,8 @@ public class HealthController : ControllerBase
             var mediaQueueHealthy = exhaustedMediaDeletions == 0 &&
                                     mediaQueueAgeMinutes.GetValueOrDefault() <=
                                     _operations.QueueAgeWarningMinutes;
-            var paymentHealth = failedPaymentsLastDay == 0 && stalePendingPayments == 0;
+            var paymentHealth = !_monnify.Enabled ||
+                                (failedPaymentsLastDay == 0 && stalePendingPayments == 0);
             var alertsAccepted = _operations.UptimeAlertsEnabled &&
                                  _operations.ApiErrorAndLatencyAlertsEnabled &&
                                  _operations.QueueAgeAlertsEnabled &&
@@ -223,6 +226,83 @@ public class HealthController : ControllerBase
         evidence.AcceptedAtUtc.HasValue &&
         !string.IsNullOrWhiteSpace(evidence.EvidenceReference) &&
         !string.IsNullOrWhiteSpace(evidence.CredentialRotationReference);
+
+    [HttpGet("~/health/operations")]
+    [HttpHead("~/health/operations")]
+    [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
+    public async Task<IActionResult> Operations(CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!await _context.Database.CanConnectAsync(cancellationToken))
+                return OperationsUnavailable();
+
+            var now = DateTimeOffset.UtcNow;
+            var exhaustedEmails = await _context.EmailOutboxMessages
+                .AsNoTracking()
+                .AnyAsync(
+                    message => message.DeliveredAtUtc == null && message.AttemptCount >= 12,
+                    cancellationToken);
+            var oldestPendingEmailAtUtc = await _context.EmailOutboxMessages
+                .AsNoTracking()
+                .Where(message => message.DeliveredAtUtc == null && message.AttemptCount < 12)
+                .MinAsync(message => (DateTime?)message.CreatedAtUtc, cancellationToken);
+            var exhaustedMediaDeletions = await _context.MediaDeletionJobs
+                .AsNoTracking()
+                .AnyAsync(job => job.AttemptCount >= MediaDeletionWorker.MaximumAttempts, cancellationToken);
+            var oldestPendingMediaDeletionAtUtc = await _context.MediaDeletionJobs
+                .AsNoTracking()
+                .Where(job => job.AttemptCount < MediaDeletionWorker.MaximumAttempts)
+                .MinAsync(job => (DateTime?)job.CreatedAtUtc, cancellationToken);
+            var paymentAttentionRequired = _monnify.Enabled &&
+                                           await _context.MonnifyTransactions
+                                               .AsNoTracking()
+                                               .AnyAsync(transaction =>
+                                                       (transaction.Status == "FAILED" &&
+                                                        transaction.CreatedAt >= DateTime.UtcNow.AddDays(-1)) ||
+                                                       (transaction.Status == "PENDING" &&
+                                                        transaction.CreatedAt <= DateTime.UtcNow.AddMinutes(
+                                                            -_operations.PaymentPendingWarningMinutes)),
+                                                   cancellationToken);
+
+            var emailQueueHealthy = !exhaustedEmails &&
+                                    GetAgeMinutes(oldestPendingEmailAtUtc, now).GetValueOrDefault() <=
+                                    _operations.QueueAgeWarningMinutes;
+            var mediaQueueHealthy = !exhaustedMediaDeletions &&
+                                    GetAgeMinutes(oldestPendingMediaDeletionAtUtc, now).GetValueOrDefault() <=
+                                    _operations.QueueAgeWarningMinutes;
+            var operational = emailQueueHealthy && mediaQueueHealthy && !paymentAttentionRequired;
+            var payload = new
+            {
+                Status = operational ? "Operational" : "AttentionRequired",
+                Timestamp = now,
+                Checks = new
+                {
+                    Database = "Connected",
+                    EmailQueue = emailQueueHealthy ? "Operational" : "AttentionRequired",
+                    MediaDeletionQueue = mediaQueueHealthy ? "Operational" : "AttentionRequired",
+                    Payments = paymentAttentionRequired ? "AttentionRequired" : "Operational"
+                }
+            };
+
+            return operational
+                ? Ok(payload)
+                : StatusCode(StatusCodes.Status503ServiceUnavailable, payload);
+        }
+        catch (Exception)
+        {
+            return OperationsUnavailable();
+        }
+    }
+
+    private ObjectResult OperationsUnavailable() =>
+        StatusCode(StatusCodes.Status503ServiceUnavailable, new
+        {
+            Status = "AttentionRequired",
+            Timestamp = DateTimeOffset.UtcNow,
+            Checks = new { Database = "Disconnected" }
+        });
 
     [HttpGet("~/health/ready")]
     [HttpHead("~/health/ready")]

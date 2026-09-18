@@ -25,7 +25,7 @@ public sealed class EmailOutboxController : ControllerBase
     {
         var messages = await _db.EmailOutboxMessages
             .AsNoTracking()
-            .Where(message => message.AttemptCount >= MaximumAttempts)
+            .Where(message => message.DeliveredAtUtc == null && message.AttemptCount >= MaximumAttempts)
             .OrderByDescending(message => message.CreatedAtUtc)
             .Take(Math.Clamp(limit, 1, 100))
             .Select(message => new
