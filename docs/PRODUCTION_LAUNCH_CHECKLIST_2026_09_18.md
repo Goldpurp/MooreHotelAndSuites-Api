@@ -76,14 +76,25 @@ exists. Placeholder evidence must never be used to make startup validation pass.
   mailbox received both messages. No message link was opened.
 - [x] Confirmed the replacement credential is active, expires on 18 September
   2027, and its provider record shows production use on 18 September 2026.
-- [ ] Deliver representative booking, cancellation, expiry, password-reset and
-  secure-link messages using the replacement production credential.
+- [x] Delivered representative booking and cancellation messages for production
+  test reservation `MHS675472` using the replacement credential on 18 September
+  2026. The reservation held Room 001 inventory, cancellation restored it, and
+  both outbox entries cleared with zero exhausted messages.
+- [x] Delivered password-reset and secure-link messages using the replacement
+  production credential. After revoking the old key, a fresh authenticated
+  booking-verification request returned HTTP 202 and its outbox entry cleared
+  from one pending message to zero with no exhausted messages.
+- [ ] Deliver a representative automatic payment-expiry message using the
+  replacement production credential.
 - [x] Confirm matching accepted/delivered events and receipt in the destination
   mailbox for the two non-booking acceptance messages without exposing secrets.
 - [x] Verified retry and exhausted-message behavior when the prior malformed
   credential was rejected; delivery recovered after the replacement credential
   was deployed and fresh messages were queued.
-- [ ] Revoke the superseded credential and confirm it fails.
+- [x] Deactivated the superseded Brevo API key `Moore Hotel` on 18 September
+  2026. Brevo shows it as `Deactivated`; the replacement key
+  `Moore Render Production 2026-09-18` remains active and delivered a fresh
+  secure-link message after the revocation.
 - [ ] Record the rotation reference, acceptance timestamp and delivery-test
   reference in the three `ProviderAcceptance__Brevo__*` variables.
 
