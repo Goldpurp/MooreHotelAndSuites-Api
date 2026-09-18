@@ -371,13 +371,15 @@ public class RoomService : IRoomService
             {
                 if (openPeriod is null)
                 {
-                    room.InventoryPeriods.Add(new RoomInventoryPeriod
+                    var inventoryPeriod = new RoomInventoryPeriod
                     {
                         Id = Guid.NewGuid(),
                         RoomId = room.Id,
                         StartDate = _hotelTime.Today,
                         RecordedAtUtc = DateTime.UtcNow
-                    });
+                    };
+                    room.InventoryPeriods.Add(inventoryPeriod);
+                    _roomRepo.AddInventoryPeriod(inventoryPeriod);
                 }
             }
             else if (openPeriod is not null)
