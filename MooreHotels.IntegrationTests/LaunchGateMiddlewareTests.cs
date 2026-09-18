@@ -30,6 +30,28 @@ public sealed class LaunchGateMiddlewareTests
     }
 
     [Fact]
+    public async Task Rejected_bearer_token_returns_unauthorized_instead_of_launch_unavailable()
+    {
+        var called = false;
+        var middleware = CreateMiddleware(_ =>
+        {
+            called = true;
+            return Task.CompletedTask;
+        });
+        var context = Context("POST", "/api/bookings");
+        context.Request.Headers.Authorization = "Bearer expired-or-invalid-token";
+
+        await middleware.InvokeAsync(context);
+
+        Assert.False(called);
+        Assert.Equal((int)HttpStatusCode.Unauthorized, context.Response.StatusCode);
+        Assert.Equal("Bearer", context.Response.Headers.WWWAuthenticate);
+        context.Response.Body.Position = 0;
+        var responseBody = await new StreamReader(context.Response.Body).ReadToEndAsync();
+        Assert.Contains("SESSION_EXPIRED", responseBody, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Enabled_gate_allows_the_exact_validation_key()
     {
         var called = false;
