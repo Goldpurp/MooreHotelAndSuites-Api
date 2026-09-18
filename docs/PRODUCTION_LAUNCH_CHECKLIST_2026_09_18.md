@@ -22,10 +22,15 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 
 ## Gate 1 — recovery evidence
 
-- [ ] Confirm the latest encrypted off-provider backup workflow succeeded and
-  record its retained artifact/run identifier.
-- [ ] Confirm the most recent isolated restore drill is within 100 days and
-  record its timestamp and evidence reference.
+- [x] Encrypted off-provider backup run
+  [`35319130558`](https://github.com/Goldpurp/MooreHotelAndSuites-Api/actions/runs/35319130558)
+  succeeded on 18 September 2026. Artifact
+  `production-backup-35319130558-1` is 181,009 bytes, has SHA-256 digest
+  `ff5f72382daecf450f76466e66ec28f561430fc92a5d793009dbf7a37cfd7f9a`,
+  and is retained through 18 October 2026.
+- [x] The 9 September 2026 isolated PostgreSQL 17 restore drill passed the
+  48-table source/restore manifest comparison. Evidence:
+  `docs/LIVE_RELEASE_PROGRESS_2026_09_09.md#production-backup-restore-rehearsal-completed`.
 - [ ] Set `OperationalReadiness__EncryptedOffProviderBackupsEnabled=true`,
   `OperationalReadiness__LastRestoreDrillAtUtc`, and
   `OperationalReadiness__RestoreDrillEvidenceReference` only from that evidence.
