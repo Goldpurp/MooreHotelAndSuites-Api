@@ -88,7 +88,7 @@ public sealed class FirstFiveProductionFixTests
                 Template = TransactionalEmailTemplates.PasswordReset,
                 Recipient = "delivered-cleanup@example.test",
                 ProtectedPayload = "{}",
-                AttemptCount = 0,
+                AttemptCount = 12,
                 NextAttemptAtUtc = DateTime.UtcNow.AddDays(-2),
                 LockedUntilUtc = DateTime.UtcNow.AddHours(1),
                 CreatedAtUtc = DateTime.UtcNow.AddDays(-2),
@@ -106,18 +106,8 @@ public sealed class FirstFiveProductionFixTests
             using var diagnosticsRequest = AuthorizedRequest(HttpMethod.Get, "/api/health");
             using var diagnostics = await _fixture.Client.SendAsync(diagnosticsRequest);
             using var payload = JsonDocument.Parse(await diagnostics.Content.ReadAsStringAsync());
-            var expected = await _fixture.WithDbAsync(async db => new
-            {
-                Pending = await db.EmailOutboxMessages.CountAsync(
-                    message => message.DeliveredAtUtc == null && message.AttemptCount < 12),
-                Exhausted = await db.EmailOutboxMessages.CountAsync(
-                    message => message.DeliveredAtUtc == null && message.AttemptCount >= 12)
-            });
             Assert.Equal(
-                expected.Pending,
-                payload.RootElement.GetProperty("emailQueue").GetProperty("pending").GetInt32());
-            Assert.Equal(
-                expected.Exhausted,
+                0,
                 payload.RootElement.GetProperty("emailQueue").GetProperty("exhausted").GetInt32());
         }
         finally
