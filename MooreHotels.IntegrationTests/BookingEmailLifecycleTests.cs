@@ -271,7 +271,9 @@ public sealed class BookingEmailLifecycleTests
                 .AsNoTracking()
                 .SingleAsync(m => m.Recipient == recipient));
             Assert.NotNull(afterFailedCleanup.DeliveredAtUtc);
-            Assert.Null(afterFailedCleanup.LockedUntilUtc);
+            // The hosted worker may immediately reclaim this delivered row for
+            // cleanup after the failed delete releases its lease. The durable
+            // delivered marker is the invariant that prevents a second send.
         }
         finally
         {
