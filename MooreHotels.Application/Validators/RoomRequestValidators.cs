@@ -8,7 +8,6 @@ public class CreateRoomRequestValidator : AbstractValidator<CreateRoomRequest>
     public CreateRoomRequestValidator()
     {
         RuleFor(x => x.RoomNumber)
-            .NotEmpty().WithMessage("Room number is required.")
             .MaximumLength(30).WithMessage("Room number cannot exceed 30 characters.");
 
         RuleFor(x => x.Name)
@@ -32,11 +31,9 @@ public class CreateRoomRequestValidator : AbstractValidator<CreateRoomRequest>
             .IsInEnum().WithMessage("Invalid room status.");
 
         RuleFor(x => x.Size)
-            .NotEmpty()
             .MaximumLength(50);
 
         RuleFor(x => x.Description)
-            .NotEmpty()
             .MaximumLength(4000);
 
         RuleFor(x => x.Amenities)
@@ -81,7 +78,6 @@ public class UpdateRoomRequestValidator : AbstractValidator<UpdateRoomRequest>
             .WithMessage("Invalid room status.");
 
         RuleFor(x => x.Size)
-            .NotEmpty()
             .MaximumLength(50)
             .When(x => x.Size is not null);
 

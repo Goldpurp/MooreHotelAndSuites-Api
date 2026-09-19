@@ -7,6 +7,7 @@ namespace MooreHotels.Application.Interfaces.Repositories;
 public interface IRoomRepository
 {
     Task<Room?> GetByIdAsync(Guid id);
+    Task<Room?> GetByNameAsync(string name);
     Task<Room?> GetByRoomNumberAsync(string roomNumber);
     Task<RoomType?> GetRoomTypeByIdAsync(Guid id);
     Task<RoomType?> GetDefaultRoomTypeForCategoryAsync(RoomCategory category);

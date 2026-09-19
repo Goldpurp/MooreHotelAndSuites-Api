@@ -17,6 +17,13 @@ public class RoomRepository : IRoomRepository
         .Include(room => room.RoomType)
         .FirstOrDefaultAsync(room => room.Id == id);
 
+    public async Task<Room?> GetByNameAsync(string name) =>
+        // Use the same PostgreSQL normalization as the unique name index. The
+        // interpolated name is a SQL parameter, not part of the query text.
+        await _db.Rooms.FromSqlInterpolated(
+            $"SELECT * FROM rooms WHERE lower(btrim(\"Name\")) = lower(btrim({name}))")
+            .FirstOrDefaultAsync();
+
     public async Task<Room?> GetByRoomNumberAsync(string roomNumber) =>
         await _db.Rooms.FirstOrDefaultAsync(r => r.RoomNumber == roomNumber);
 
@@ -41,7 +48,7 @@ public class RoomRepository : IRoomRepository
         if (onlyOnline) query = query.Where(r => r.IsOnline && r.RoomType != null &&
             r.RoomType.IsActive && r.Status != RoomStatus.Maintenance &&
             r.Status != RoomStatus.OutOfOrder);
-        return await query.OrderBy(room => room.RoomNumber).ToListAsync();
+        return await query.OrderBy(room => room.Name).ToListAsync();
     }
 
     public async Task<IEnumerable<Room>> SearchAsync(

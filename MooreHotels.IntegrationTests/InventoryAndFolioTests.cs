@@ -456,7 +456,7 @@ public sealed class InventoryAndFolioTests
             Id = Guid.NewGuid(),
             RoomTypeId = type.Id,
             RoomNumber = $"G-{unique[..5]}-{index}",
-            Name = $"Group Room {index}",
+            Name = $"Group Room {unique} {index}",
             Category = RoomCategory.Standard,
             Floor = PropertyFloor.FirstFloor,
             Status = RoomStatus.Available,

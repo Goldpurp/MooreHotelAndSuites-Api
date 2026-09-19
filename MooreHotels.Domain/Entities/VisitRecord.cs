@@ -7,6 +7,7 @@ public class VisitRecord
     public string GuestId { get; set; } = string.Empty;
     public string GuestName { get; set; } = string.Empty;
     public Guid RoomId { get; set; }
+    public string RoomName { get; set; } = string.Empty;
     public string RoomNumber { get; set; } = string.Empty;
     public string BookingCode { get; set; } = string.Empty;
     public string Action { get; set; } = string.Empty;

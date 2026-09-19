@@ -37,6 +37,7 @@ public class VisitRecordRepository : IVisitRecordRepository
                 EF.Functions.ILike(v.GuestName, $"%{s}%") ||
                 EF.Functions.ILike(v.GuestId, $"%{s}%") ||
                 EF.Functions.ILike(v.BookingCode, $"%{s}%") ||
+                v.RoomName.Contains(s) ||
                 v.RoomNumber.Contains(s) ||
                 v.AuthorizedBy.Contains(s));
         }

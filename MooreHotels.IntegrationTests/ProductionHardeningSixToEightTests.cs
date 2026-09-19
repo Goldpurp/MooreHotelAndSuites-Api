@@ -821,7 +821,7 @@ public sealed class ProductionHardeningSixToEightTests
                 Id = Guid.NewGuid(),
                 RoomTypeId = roomType.Id,
                 RoomNumber = $"H-{unique[..8]}",
-                Name = "Hardening Room",
+                Name = $"Hardening Room {unique}",
                 Category = RoomCategory.Standard,
                 Floor = PropertyFloor.GroundFloor,
                 Status = RoomStatus.Available,

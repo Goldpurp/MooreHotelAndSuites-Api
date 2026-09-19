@@ -141,7 +141,7 @@ public class RoomServiceTests
         var request = CreateValidRoomRequest();
         RoomType? addedType = null;
         Room? addedRoom = null;
-        _roomRepoMock.Setup(repository => repository.GetByRoomNumberAsync(request.RoomNumber))
+        _roomRepoMock.Setup(repository => repository.GetByRoomNumberAsync(request.RoomNumber!))
             .ReturnsAsync((Room?)null);
         _roomRepoMock.Setup(repository => repository.GetDefaultRoomTypeForCategoryAsync(request.Category))
             .ReturnsAsync((RoomType?)null);
@@ -181,7 +181,7 @@ public class RoomServiceTests
     {
         var actorId = Guid.NewGuid();
         var request = CreateValidRoomRequest();
-        _roomRepoMock.Setup(repository => repository.GetByRoomNumberAsync(request.RoomNumber))
+        _roomRepoMock.Setup(repository => repository.GetByRoomNumberAsync(request.RoomNumber!))
             .ReturnsAsync((Room?)null);
         _roomRepoMock.Setup(repository => repository.GetDefaultRoomTypeForCategoryAsync(request.Category))
             .ReturnsAsync((RoomType?)null);
@@ -198,6 +198,35 @@ public class RoomServiceTests
         await action.Should().ThrowAsync<BadRequestException>()
             .WithMessage("Select an active room type.");
         _roomRepoMock.Verify(repository => repository.AddRoomTypeAsync(It.IsAny<RoomType>()), Times.Never);
+        _roomRepoMock.Verify(repository => repository.AddAsync(It.IsAny<Room>()), Times.Never);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task CreateRoomAsync_AllowsMissingOptionalDetails(string? optional)
+    {
+        var request = CreateValidRoomRequest() with { RoomNumber = optional, Size = optional, Description = optional };
+        var validation = new MooreHotels.Application.Validators.CreateRoomRequestValidator().Validate(request);
+        validation.IsValid.Should().BeTrue();
+
+        var result = await _service.CreateRoomAsync(request, Guid.NewGuid());
+
+        result.Name.Should().Be("James");
+        result.RoomNumber.Should().BeEmpty();
+        result.Size.Should().BeEmpty();
+        result.Description.Should().BeEmpty();
+        _roomRepoMock.Verify(repository => repository.GetByRoomNumberAsync(It.IsAny<string>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateRoomAsync_RejectsDuplicateName_BeforeWritingRoom()
+    {
+        _roomRepoMock.Setup(repository => repository.GetByNameAsync("James"))
+            .ReturnsAsync(new Room { Id = Guid.NewGuid(), Name = "James" });
+        var action = () => _service.CreateRoomAsync(CreateValidRoomRequest(), Guid.NewGuid());
+        await action.Should().ThrowAsync<BadRequestException>().WithMessage("*room name is already registered*");
         _roomRepoMock.Verify(repository => repository.AddAsync(It.IsAny<Room>()), Times.Never);
     }
 

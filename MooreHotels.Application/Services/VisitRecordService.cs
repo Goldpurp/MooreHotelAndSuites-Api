@@ -23,7 +23,7 @@ public class VisitRecordService : IVisitRecordService
         var records = await _visitRepo.GetAllAsync();
         return records.Select(v => new VisitRecordDto(
             v.Id, v.GuestId, v.GuestName, v.RoomNumber, v.BookingCode,
-            v.Action, v.Timestamp, v.AuthorizedBy));
+            v.Action, v.Timestamp, v.AuthorizedBy, v.RoomName, v.RoomId));
     }
 
     public async Task<PagedResult<VisitRecordDto>> GetPagedRecordsAsync(int pageNumber = 1, int pageSize = 20, string? search = null)
@@ -31,7 +31,7 @@ public class VisitRecordService : IVisitRecordService
         var paged = await _visitRepo.GetPagedRecordsAsync(pageNumber, pageSize, search);
         var mapped = paged.Items.Select(v => new VisitRecordDto(
             v.Id, v.GuestId, v.GuestName, v.RoomNumber, v.BookingCode,
-            v.Action, v.Timestamp, v.AuthorizedBy)).ToList();
+            v.Action, v.Timestamp, v.AuthorizedBy, v.RoomName, v.RoomId)).ToList();
         return PagedResult<VisitRecordDto>.Create(mapped, paged.TotalCount, paged.PageNumber, paged.PageSize);
     }
 
@@ -56,6 +56,7 @@ public class VisitRecordService : IVisitRecordService
             GuestId = booking.GuestId,
             GuestName = $"{booking.Guest?.FirstName} {booking.Guest?.LastName}",
             RoomId = roomId.Value,
+            RoomName = assignedUnit?.AssignedRoom?.Name ?? booking.Room?.Name ?? "Room not assigned",
             RoomNumber = assignedUnit?.AssignedRoom?.RoomNumber ?? booking.Room?.RoomNumber ?? "N/A",
             Action = normalizedAction,
             Timestamp = DateTime.UtcNow,
