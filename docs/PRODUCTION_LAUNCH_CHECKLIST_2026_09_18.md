@@ -21,6 +21,12 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 - [x] Monnify remains disabled for the direct-transfer-only launch.
 - [x] Production privacy and booking-terms configuration passes API startup
   validation.
+- [x] Default-branch release gate run `35408787862` passed on 19 September
+  2026: formatting, build, 21 unit tests, 293 integration tests, analyzers,
+  dependency and migration checks, database-boundary rehearsals, restore,
+  container, secret scans and CodeQL.
+- [x] The guest app and admin dashboard each passed their 12-test frontend
+  suite and TypeScript typecheck against the launch release.
 
 ## Gate 1 — recovery evidence
 
@@ -84,8 +90,11 @@ exists. Placeholder evidence must never be used to make startup validation pass.
   production credential. After revoking the old key, a fresh authenticated
   booking-verification request returned HTTP 202 and its outbox entry cleared
   from one pending message to zero with no exhausted messages.
-- [ ] Deliver a representative automatic payment-expiry message using the
-  replacement production credential.
+- [x] Delivered the automatic payment-expiry message for production reservation
+  `MHS843813` at 01:45 WAT on 19 September 2026 using the replacement
+  credential. The worker cancelled the unpaid reservation, balanced its folio,
+  restored Room 001 availability, cleared the email queue with zero exhausted
+  messages, and the destination mailbox received the cancellation notice.
 - [x] Confirm matching accepted/delivered events and receipt in the destination
   mailbox for the two non-booking acceptance messages without exposing secrets.
 - [x] Verified retry and exhausted-message behavior when the prior malformed
@@ -95,8 +104,10 @@ exists. Placeholder evidence must never be used to make startup validation pass.
   2026. Brevo shows it as `Deactivated`; the replacement key
   `Moore Render Production 2026-09-18` remains active and delivered a fresh
   secure-link message after the revocation.
-- [ ] Record the rotation reference, acceptance timestamp and delivery-test
-  reference in the three `ProviderAcceptance__Brevo__*` variables.
+- [x] Saved the rotation reference, acceptance timestamp and delivery-test
+  reference in the three `ProviderAcceptance__Brevo__*` Render variables on
+  19 September 2026. Their activation is verified in Gate 5 with the launch
+  deployment.
 
 ## Gate 4 — Cloudinary acceptance
 
@@ -134,14 +145,23 @@ exists. Placeholder evidence must never be used to make startup validation pass.
   probe returned `Ready` with the database connected, and the operations probe
   returned `Operational` for the database, email queue, media-deletion queue
   and payments.
-- [ ] Publish room `001` (`James`). It is currently `Available`, has active room
-  type `DELUXE`, capacity 2 and price NGN 35,000, but `IsOnline=false`.
-- [ ] Set `LaunchGate__Enabled=false` and redeploy.
-- [ ] Confirm public rooms, quotes, availability and policies return HTTP 200.
-- [ ] Confirm anonymous booking requires a valid single-use email-verification
-  token and direct-transfer booking creates the reservation and folio once.
-- [ ] Change the guest deployment to `SITEMAP_REQUIRE_ROOMS_API=true`, rebuild
-  and confirm the live sitemap contains the published room.
+- [x] Published room `001` (`James`). It is `Available`, uses active room type
+  `DELUXE`, has capacity 2 and price NGN 35,000, and appears in the live admin
+  room ledger with its production images.
+- [x] Set `LaunchGate__Enabled=false`. Render deployment
+  `dep-damtr0egekts73evft40` deployed verified main commit `85dcb69` and became
+  live on 19 September 2026.
+- [x] Confirmed anonymous production access returns HTTP 200 for Room 001,
+  room-type search, Room 001 availability, the current privacy/booking-policy
+  metadata and a one-night Deluxe pricing quote for NGN 35,000.
+- [x] Confirmed with production reservation `MHS675472` that anonymous booking
+  requires a valid single-use email-verification token and direct transfer
+  creates the reservation and folio once. The reservation held Room 001,
+  delivered guest/admin messages, and cancellation restored inventory.
+- [x] Changed the guest deployment to `SITEMAP_REQUIRE_ROOMS_API=true` and
+  rebuilt successfully as `dep-damtt9qjnfac73ekvsbg`. The build generated and
+  verified ten canonical URLs including the published Room 001 detail URL;
+  the live sitemap and room-detail page expose that room and its booking rate.
 
 ## Gate 6 — final acceptance
 
@@ -153,8 +173,11 @@ exists. Placeholder evidence must never be used to make startup validation pass.
 - [ ] Verify free and late cancellation policy boundaries and no-show handling.
 - [ ] Verify privacy acceptance, export/request flows and audit records.
 - [ ] Verify dashboard and guest flows on desktop and mobile widths.
-- [ ] Confirm `/health/live`, `/health/ready` and `/health/operations` remain
-  green after a restart and that an alert test reaches the release owner.
+- [x] Confirmed `/health/live`, `/health/ready` and `/health/operations` remain
+  green after the final API restart. Readiness reports the database connected;
+  operations reports the database, email queue, media-deletion queue and
+  payments operational. UptimeRobot alert delivery to the release owner was
+  previously exercised and both production monitors are green.
 
 ## Explicitly deferred by the release owner
 
