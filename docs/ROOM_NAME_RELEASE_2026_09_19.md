@@ -26,7 +26,8 @@ Cleared numbers and sizes require a pre-deployment backup if they must be recove
 - Full integration suite: 296 passed against isolated local PostgreSQL, including room creation without optional fields and clearing a description.
 - Dashboard and guest TypeScript checks and 12 tests each passed.
 - Both production frontend builds passed; guest sitemap verified.
-- Final targeted integration verification includes duplicate case-insensitive room-name rejection.
+- Final targeted integration verification passed, including duplicate case-insensitive room-name rejection.
+- A populated local migration rehearsal preserved two room IDs/names, rates, descriptions, and an activity link while clearing both room numbers and sizes.
 
 ## Release status
 
