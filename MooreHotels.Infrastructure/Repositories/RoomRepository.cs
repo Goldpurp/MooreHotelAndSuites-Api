@@ -18,7 +18,11 @@ public class RoomRepository : IRoomRepository
         .FirstOrDefaultAsync(room => room.Id == id);
 
     public async Task<Room?> GetByNameAsync(string name) =>
-        await _db.Rooms.FirstOrDefaultAsync(r => r.Name.ToLower() == name.ToLower());
+        // Use the same PostgreSQL normalization as the unique name index. The
+        // interpolated name is a SQL parameter, not part of the query text.
+        await _db.Rooms.FromSqlInterpolated(
+            $"SELECT * FROM rooms WHERE lower(btrim(\"Name\")) = lower(btrim({name}))")
+            .FirstOrDefaultAsync();
 
     public async Task<Room?> GetByRoomNumberAsync(string roomNumber) =>
         await _db.Rooms.FirstOrDefaultAsync(r => r.RoomNumber == roomNumber);
