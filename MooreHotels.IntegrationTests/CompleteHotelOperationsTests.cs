@@ -229,20 +229,21 @@ public sealed class CompleteHotelOperationsTests
     [Fact]
     public async Task Operational_report_uses_hotel_day_and_night_audit_is_idempotent()
     {
-        await _fixture.CreateBookingAsync(
-            paymentStatus: PaymentStatus.Paid,
-            bookingStatus: BookingStatus.CheckedOut,
-            checkInUtc: DateTime.UtcNow.Date.AddDays(-2).AddHours(14),
-            checkOutUtc: DateTime.UtcNow.Date.AddHours(12));
         await using var scope = _fixture.Services.CreateAsyncScope();
         var reporting = scope.ServiceProvider.GetRequiredService<IOperationalReportingService>();
         var time = scope.ServiceProvider.GetRequiredService<IHotelTimeService>();
-        var report = await reporting.GetReportAsync(time.Today.AddDays(-2), time.Today);
+        var today = time.Today;
+        await _fixture.CreateBookingAsync(
+            paymentStatus: PaymentStatus.Paid,
+            bookingStatus: BookingStatus.CheckedOut,
+            checkInUtc: time.GetCheckInUtc(today.AddDays(-2).ToDateTime(TimeOnly.MinValue)),
+            checkOutUtc: time.GetCheckOutUtc(today.ToDateTime(TimeOnly.MinValue)));
+        var report = await reporting.GetReportAsync(today.AddDays(-2), today);
         Assert.True(report.OccupiedRoomNights >= 2);
         Assert.True(report.RoomRevenue > 0);
         Assert.True(report.Adr > 0);
-        var first = await reporting.CloseNightAuditAsync(time.Today.AddDays(-1), _fixture.Manager.Id);
-        var repeated = await reporting.CloseNightAuditAsync(time.Today.AddDays(-1), _fixture.Manager.Id);
+        var first = await reporting.CloseNightAuditAsync(today.AddDays(-1), _fixture.Manager.Id);
+        var repeated = await reporting.CloseNightAuditAsync(today.AddDays(-1), _fixture.Manager.Id);
         Assert.Equal(first.Id, repeated.Id);
     }
 
