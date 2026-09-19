@@ -98,6 +98,9 @@ public class ExceptionHandlingMiddleware
             Extensions = { ["traceId"] = context.TraceIdentifier }
         };
 
+        if (exception is ServiceUnavailableException { ErrorCode: "image_upload_unavailable" })
+            problem.Extensions["code"] = "image_upload_unavailable";
+
         var json = JsonSerializer.Serialize(problem, JsonOptions);
 
         await context.Response.WriteAsync(json);

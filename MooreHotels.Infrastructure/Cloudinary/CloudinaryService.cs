@@ -41,30 +41,7 @@ public class CloudinaryService : IImageService
         var safeFileName = Path.GetFileName(file.FileName);
         if (string.IsNullOrWhiteSpace(safeFileName) || safeFileName.Length > 200)
             safeFileName = "upload";
-        var uploadParams = new ImageUploadParams
-        {
-            File = new FileDescription(safeFileName, stream),
-            Folder = $"MooreHotels/{folder.ToLowerInvariant()}",
-
-            // 1. PRIMARY TRANSFORMATION (Main high-res view)
-            // f_auto: best format (WebP/AVIF), q_auto: smart compression
-            Transformation = new Transformation()
-                .Width(1200).Height(800).Crop("limit")
-                .Quality("auto").FetchFormat("auto"),
-
-            // 2. EAGER TRANSFORMATIONS (Generated instantly in the background)
-            EagerTransforms = new List<Transformation>
-            {
-                // Dashboard Thumbnail: 300x300 square crop, AI-centered on the subject
-                new Transformation().Width(300).Height(300).Crop("fill").Gravity("auto").Quality("auto"),
-                
-                // Mobile Version: Optimized for smaller screens
-                new Transformation().Width(640).Crop("scale").Quality("auto")
-            },
-
-            // 3. PERFORMANCE: Don't wait for thumbnails to finish to return the main URL
-            EagerAsync = true
-        };
+        var uploadParams = BuildUploadParameters(safeFileName, stream, folder);
 
         using var timeout = new CancellationTokenSource(UploadTimeout);
         ImageUploadResult result;
@@ -77,14 +54,14 @@ public class CloudinaryService : IImageService
             _logger.LogWarning(
                 "Cloudinary image upload exceeded the {TimeoutSeconds}-second provider timeout.",
                 UploadTimeout.TotalSeconds);
-            throw new ServiceUnavailableException("Image storage did not respond in time.");
+            throw new ServiceUnavailableException("Image storage did not respond in time.") { ErrorCode = "image_upload_unavailable" };
         }
         catch (HttpRequestException exception)
         {
             _logger.LogWarning(
                 "Cloudinary image upload failed with {ExceptionType}.",
                 exception.GetType().FullName);
-            throw new ServiceUnavailableException("Image storage could not be reached.", exception);
+            throw new ServiceUnavailableException("Image storage could not be reached.", exception) { ErrorCode = "image_upload_unavailable" };
         }
 
         if (result.Error != null ||
@@ -93,9 +70,46 @@ public class CloudinaryService : IImageService
             result.SecureUrl is null ||
             !Uri.TryCreate(result.SecureUrl.ToString(), UriKind.Absolute, out var secureUrl) ||
             secureUrl.Scheme != Uri.UriSchemeHttps)
-            throw new ServiceUnavailableException("Image storage rejected the upload.");
+        {
+            // Provider messages can contain account identifiers or signed parameters.
+            // Record only structured status and response validity, never raw messages.
+            _logger.LogWarning(
+                "Cloudinary upload rejected: HTTP {ProviderStatus}; provider error {HasProviderError}; public ID present {HasPublicId}; secure URL present {HasSecureUrl}.",
+                (int)result.StatusCode, result.Error is not null,
+                !string.IsNullOrWhiteSpace(result.PublicId), result.SecureUrl is not null);
+            throw new ServiceUnavailableException("Image storage rejected the upload.") { ErrorCode = "image_upload_unavailable" };
+        }
 
         return new MyImageResult(result.PublicId, secureUrl.ToString());
+    }
+
+    internal static ImageUploadParams BuildUploadParameters(string safeFileName, Stream stream, string folder)
+    {
+        return new ImageUploadParams
+        {
+            File = new FileDescription(safeFileName, stream),
+            Folder = $"MooreHotels/{folder.ToLowerInvariant()}",
+
+            // 1. PRIMARY TRANSFORMATION (Main high-res view)
+            // Automatic format selection belongs on delivery URLs, never incoming uploads.
+            Transformation = new Transformation()
+                .Width(1200).Height(800).Crop("limit")
+                .Quality("auto"),
+
+            // 2. EAGER TRANSFORMATIONS (Generated instantly in the background)
+            EagerTransforms = new List<Transformation>
+            {
+                // Dashboard Thumbnail: 300x300 square crop, AI-centered on the subject
+                new Transformation().Width(300).Height(300).Crop("fill").Gravity("auto").Quality("auto"),
+
+                // Mobile Version: Optimized for smaller screens
+                new Transformation().Width(640).Crop("scale").Quality("auto")
+            },
+
+            // 3. PERFORMANCE: Don't wait for thumbnails to finish to return the main URL
+            EagerAsync = true
+        };
+
     }
 
     public async Task<List<MyImageResult>> UploadMultipleAsync(List<IFormFile> files, string folder = "rooms")
