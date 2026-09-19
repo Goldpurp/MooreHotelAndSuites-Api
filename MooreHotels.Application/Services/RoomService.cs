@@ -136,15 +136,18 @@ public class RoomService : IRoomService
     public async Task<RoomDto> CreateRoomAsync(CreateRoomRequest request, Guid actorId)
     {
         RequireActor(actorId);
-        var roomNumber = RequireText(request.RoomNumber, "Room number", 30);
+        var roomNumber = RequireOptionalText(request.RoomNumber, "Room number", 30);
         var name = RequireText(request.Name, "Room name", 120);
-        var size = RequireText(request.Size, "Room size", 50);
-        var description = RequireText(request.Description, "Room description", 4000);
+        var size = RequireOptionalText(request.Size, "Room size", 50);
+        var description = RequireOptionalText(request.Description, "Room description", 4000);
         ValidateRoomValues(request.Category, request.Floor, request.Status,
             request.PricePerNight, request.Capacity, request.RoomTypeId);
         var amenities = NormalizeAmenities(request.Amenities);
-        var existingRoom = await _roomRepo.GetByRoomNumberAsync(roomNumber);
+        var existingRoom = roomNumber.Length == 0 ? null : await _roomRepo.GetByRoomNumberAsync(roomNumber);
         if (existingRoom != null) throw new BadRequestException("That room number is already registered.");
+
+        if (await _roomRepo.GetByNameAsync(name) is not null)
+            throw new BadRequestException("That room name is already registered. Choose a unique room name.");
 
         var roomType = request.RoomTypeId.HasValue
             ? await _roomRepo.GetRoomTypeByIdAsync(request.RoomTypeId.Value)
@@ -301,7 +304,14 @@ public class RoomService : IRoomService
             room.IsOnline
         };
 
-        if (request.Name != null) room.Name = RequireText(request.Name, "Room name", 120);
+        if (request.Name != null)
+        {
+            var name = RequireText(request.Name, "Room name", 120);
+            var duplicate = await _roomRepo.GetByNameAsync(name);
+            if (duplicate is not null && duplicate.Id != room.Id)
+                throw new BadRequestException("That room name is already registered. Choose a unique room name.");
+            room.Name = name;
+        }
         if (request.Category.HasValue && !Enum.IsDefined(request.Category.Value))
             throw new BadRequestException("Room category is invalid.");
         if (request.Floor.HasValue && !Enum.IsDefined(request.Floor.Value))
@@ -314,7 +324,7 @@ public class RoomService : IRoomService
             throw new BadRequestException("Room capacity must be between 1 and 50.");
         if (request.RoomTypeId == Guid.Empty)
             throw new BadRequestException("Room type is invalid.");
-        if (request.Size != null) _ = RequireText(request.Size, "Room size", 50);
+        if (request.Size != null) _ = RequireOptionalText(request.Size, "Room size", 50);
         if (request.Description != null) _ = RequireOptionalText(request.Description, "Room description", 4000);
         if (request.Amenities != null) _ = NormalizeAmenities(request.Amenities);
         var targetCategory = request.Category ?? room.Category;
@@ -392,7 +402,7 @@ public class RoomService : IRoomService
         }
         if (request.PricePerNight != null) room.PricePerNight = request.PricePerNight.Value;
         if (request.Capacity != null) room.Capacity = request.Capacity.Value;
-        if (request.Size != null) room.Size = RequireText(request.Size, "Room size", 50);
+        if (request.Size != null) room.Size = RequireOptionalText(request.Size, "Room size", 50);
         if (request.Description != null) room.Description = RequireOptionalText(request.Description, "Room description", 4000);
         if (request.ReplaceAmenities == true)
         {
@@ -486,9 +496,9 @@ public class RoomService : IRoomService
         return cleaned;
     }
 
-    private static string RequireOptionalText(string value, string field, int maximumLength)
+    private static string RequireOptionalText(string? value, string field, int maximumLength)
     {
-        var cleaned = value.Trim();
+        var cleaned = value?.Trim() ?? string.Empty;
         if (cleaned.Length > maximumLength || cleaned.Any(char.IsControl))
             throw new BadRequestException($"{field} is invalid or too long.");
         return cleaned;

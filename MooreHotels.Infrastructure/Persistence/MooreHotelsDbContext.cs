@@ -207,7 +207,8 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
                 table.HasCheckConstraint("CK_rooms_capacity_positive", "\"Capacity\" > 0");
                 table.HasCheckConstraint("CK_rooms_price_positive", "\"PricePerNight\" > 0");
             });
-            entity.HasIndex(room => room.RoomNumber).IsUnique();
+            entity.HasIndex(room => room.RoomNumber).IsUnique().HasFilter("\"RoomNumber\" <> ''");
+            entity.HasIndex(room => room.Name).IsUnique();
             entity.HasIndex(room => new { room.IsOnline, room.Category, room.Capacity });
             entity.Property(room => room.RoomNumber).HasMaxLength(30).IsRequired();
             entity.Property(room => room.Name).HasMaxLength(120).IsRequired();
@@ -1064,6 +1065,7 @@ public sealed class MooreHotelsDbContext : IdentityDbContext<ApplicationUser, Id
             entity.ToTable("visit_records");
             entity.Property(record => record.GuestId).HasMaxLength(20).IsRequired();
             entity.Property(record => record.GuestName).HasMaxLength(160).IsRequired();
+            entity.Property(record => record.RoomName).HasMaxLength(120).IsRequired();
             entity.Property(record => record.RoomNumber).HasMaxLength(30).IsRequired();
             entity.Property(record => record.BookingCode).HasMaxLength(30).IsRequired();
             entity.Property(record => record.Action).HasMaxLength(40).IsRequired();

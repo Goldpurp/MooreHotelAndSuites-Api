@@ -9,4 +9,6 @@ public record VisitRecordDto(
     string BookingCode,
     string Action,
     DateTime Timestamp,
-    string AuthorizedBy);
+    string AuthorizedBy,
+    string RoomName = "",
+    Guid RoomId = default);

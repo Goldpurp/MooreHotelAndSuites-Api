@@ -10,7 +10,7 @@ public record UpdateRoomRequest(
     RoomStatus? Status,
     [Range(typeof(decimal), "0.01", "100000000")] decimal? PricePerNight,
     [Range(1, 50)] int? Capacity,
-    [StringLength(50, MinimumLength = 1)] string? Size,
+    [StringLength(50)] string? Size,
     bool? IsOnline,
     [StringLength(4000)] string? Description,
     [MaxLength(50)] List<string>? Amenities,

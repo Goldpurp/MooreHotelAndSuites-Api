@@ -274,6 +274,14 @@ public class RoomsController : ControllerBase
     [ProducesResponseType(StatusCodes.Status404NotFound)]
     public async Task<IActionResult> UpdateRoom(Guid id, [FromForm] UpdateRoomRequest request, List<IFormFile> files)
     {
+        // Form binding converts empty strings to null. Preserve an explicitly
+        // supplied empty optional field so staff can clear its existing value.
+        var form = await Request.ReadFormAsync();
+        request = request with
+        {
+            Description = form.ContainsKey("Description") ? request.Description ?? string.Empty : null,
+            Size = form.ContainsKey("Size") ? request.Size ?? string.Empty : null
+        };
         var validationError = await ImageFileValidator.GetValidationErrorAsync(files);
         if (validationError is not null) return BadRequest(new { message = validationError });
 

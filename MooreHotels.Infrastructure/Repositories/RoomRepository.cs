@@ -17,6 +17,9 @@ public class RoomRepository : IRoomRepository
         .Include(room => room.RoomType)
         .FirstOrDefaultAsync(room => room.Id == id);
 
+    public async Task<Room?> GetByNameAsync(string name) =>
+        await _db.Rooms.FirstOrDefaultAsync(r => r.Name.ToLower() == name.ToLower());
+
     public async Task<Room?> GetByRoomNumberAsync(string roomNumber) =>
         await _db.Rooms.FirstOrDefaultAsync(r => r.RoomNumber == roomNumber);
 
@@ -41,7 +44,7 @@ public class RoomRepository : IRoomRepository
         if (onlyOnline) query = query.Where(r => r.IsOnline && r.RoomType != null &&
             r.RoomType.IsActive && r.Status != RoomStatus.Maintenance &&
             r.Status != RoomStatus.OutOfOrder);
-        return await query.OrderBy(room => room.RoomNumber).ToListAsync();
+        return await query.OrderBy(room => room.Name).ToListAsync();
     }
 
     public async Task<IEnumerable<Room>> SearchAsync(
