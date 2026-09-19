@@ -101,7 +101,7 @@ public class CloudinaryService : IImageService
             {
                 // Dashboard Thumbnail: 300x300 square crop, AI-centered on the subject
                 new Transformation().Width(300).Height(300).Crop("fill").Gravity("auto").Quality("auto"),
-                
+
                 // Mobile Version: Optimized for smaller screens
                 new Transformation().Width(640).Crop("scale").Quality("auto")
             },
