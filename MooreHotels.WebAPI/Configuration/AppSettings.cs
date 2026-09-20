@@ -67,7 +67,7 @@ public sealed class RuntimeSettings
     public bool ResponseCompression { get; init; } = true;
     public bool EnableBookingExpiration { get; init; } = true;
     public bool EnableRateLimiting { get; init; } = true;
-    public bool RequirePublicBookingEmailVerification { get; init; } = true;
+    public bool RequirePublicBookingEmailVerification { get; init; }
     public bool EnableMediaDeletion { get; init; } = true;
     public int ExternalRequestTimeoutSeconds { get; init; } = 20;
     public bool AllowLocalProviderTestDoubles { get; init; }
@@ -504,12 +504,6 @@ public static class ConfigurationBootstrap
         {
             errors.Add(
                 "Runtime:EnableRateLimiting must be true in Production.");
-        }
-
-        if (environment.IsDeployed() && !runtime.RequirePublicBookingEmailVerification)
-        {
-            errors.Add(
-                "Runtime:RequirePublicBookingEmailVerification must be true in Production.");
         }
 
         if (environment.IsDeployed() && !runtime.EnableMediaDeletion)

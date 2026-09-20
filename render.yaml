@@ -227,7 +227,7 @@ services:
       - key: Runtime__EnableRateLimiting
         value: true
       - key: Runtime__RequirePublicBookingEmailVerification
-        value: true
+        value: false
       - key: Runtime__EnableMediaDeletion
         value: true
       - key: Runtime__ExternalRequestTimeoutSeconds

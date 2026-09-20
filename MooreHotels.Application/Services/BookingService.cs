@@ -191,7 +191,7 @@ public class BookingService : IBookingService
         BookingEmailVerificationProof? emailVerification = null;
         if (!linkedClientBooking &&
             !isStaffManagedBooking &&
-            _config.GetValue("Runtime:RequirePublicBookingEmailVerification", true))
+            _config.GetValue("Runtime:RequirePublicBookingEmailVerification", false))
         {
             var token = request.EmailVerificationToken?.Trim();
             if (string.IsNullOrWhiteSpace(token))
