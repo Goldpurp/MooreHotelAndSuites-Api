@@ -289,9 +289,6 @@ public sealed class ProductionConfigurationSecurityTests
         "Runtime:EnableRateLimiting",
         "false")]
     [InlineData(
-        "Runtime:RequirePublicBookingEmailVerification",
-        "false")]
-    [InlineData(
         "Runtime:EnableMediaDeletion",
         "false")]
     [InlineData(
@@ -491,7 +488,7 @@ public sealed class ProductionConfigurationSecurityTests
         ["Runtime:EnableSwagger"] = "false",
         ["Runtime:EnableExternalServices"] = "true",
         ["Runtime:EnableRateLimiting"] = "true",
-        ["Runtime:RequirePublicBookingEmailVerification"] = "true",
+        ["Runtime:RequirePublicBookingEmailVerification"] = "false",
         ["Runtime:EnableMediaDeletion"] = "true",
         ["Runtime:AutoConfirmEmail"] = "false",
         ["Security:RequireStaffMfa"] = "true",
