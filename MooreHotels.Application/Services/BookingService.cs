@@ -1351,8 +1351,7 @@ public class BookingService : IBookingService
         return "Please transfer the total amount to:\n" +
                $"Bank: {bankName}\n" +
                $"Account Name: {accountName}\n" +
-               $"Account Number: {accountNumber}\n" +
-               "Ref: [Your Booking Code]";
+               $"Account Number: {accountNumber}";
     }
 
     private async Task<bool> IsAccountOwnerAsync(Booking booking, Guid? accountUserId)

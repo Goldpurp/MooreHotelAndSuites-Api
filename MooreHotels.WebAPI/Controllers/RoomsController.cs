@@ -83,6 +83,12 @@ public class RoomsController : ControllerBase
             : Ok(ToPublicRoom(room));
     }
 
+    [HttpGet("{id}")]
+    [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
+    public IActionResult GetInvalidRoom(string id) =>
+        NotFound(new { message = "Room not found." });
+
     [HttpGet("{id:guid}/availability")]
     [AllowAnonymous]
     [EnableRateLimiting(ServiceCollectionExtensions.PublicReadRateLimitPolicy)]
