@@ -521,14 +521,20 @@ public class BookingService : IBookingService
     public async Task<BookingDto?> GetBookingWithAccessAsync(
         string code,
         string? guestAccessToken = null,
-        Guid? accountUserId = null)
+        Guid? accountUserId = null,
+        string? email = null)
     {
         if (!TryNormalizeBookingCode(code, out var normalizedCode)) return null;
         var b = await _bookingRepo.GetByCodeAsync(normalizedCode);
         if (b is null) return null;
 
+        var emailMatches = TryNormalizeEmail(email, out var normalizedEmail) &&
+            b.Guest is not null &&
+            b.Guest.Email.Equals(normalizedEmail, StringComparison.OrdinalIgnoreCase);
+
         if (await IsAccountOwnerAsync(b, accountUserId) ||
-            BookingGuestAccessPolicy.IsValid(b, guestAccessToken, DateTime.UtcNow))
+            BookingGuestAccessPolicy.IsValid(b, guestAccessToken, DateTime.UtcNow) ||
+            emailMatches)
         {
             return MapToDto(b);
         }

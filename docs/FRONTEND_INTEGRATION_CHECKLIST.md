@@ -77,11 +77,14 @@ an email address or token in an API URL.
    replacement that lasts two hours. Duplicate requests within one minute are
    suppressed, so disable the action briefly after submission. Never promise
    that an older tab or link will continue working.
-3. Send the fragment token only in `X-Booking-Access-Token`. Code plus email no
-   longer authorizes lookup, invoice download, or cancellation for historical
-   bookings either. Submit `{ "code": "..." }` to
-   `POST /api/bookings/lookup`; never put a guest email, cancellation narrative,
-   or credential in a URL/query string.
+3. Send the fragment token only in `X-Booking-Access-Token`. Invoice download
+   and cancellation still require the token (or an authenticated, linked
+   account) — code plus email does not authorize either of those. Booking
+   lookup is more permissive: submit `{ "code": "...", "email": "..." }` in
+   the JSON body to `POST /api/bookings/lookup` and an exact code+email match
+   returns the booking without a token; omit `email` and send the token in
+   `X-Booking-Access-Token` instead once one is available. Never put a guest
+   email, cancellation narrative, or credential in a URL/query string.
 4. A successful guest or staff cancellation revokes the guest link.
 
 ## Staff operations

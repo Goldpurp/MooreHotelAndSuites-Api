@@ -388,8 +388,8 @@ Do not deploy the dashboard or guest website until all checks pass:
 - All required emails are delivered.
 - Secure booking links expire; an accepted rotation invalidates the old link
   and sends a two-hour replacement. Duplicate requests within one minute are
-  suppressed, cancellation revokes the link, and code-plus-email alone cannot
-  read any booking.
+  suppressed and cancellation revokes the link. An exact code-plus-email match
+  can read (but not cancel) a booking; the lookup route is rate-limited.
 - `GET /api/admin/client-guest-links/issues` is empty; every reconciliation was
   performed by an Admin with recorded evidence and an audit entry.
 - Low-value refunds require an exact amount, channel, matching evidence type and
