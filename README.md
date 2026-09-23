@@ -170,11 +170,14 @@ after 24 hours. The API stores only its hash and validity window; it does not
 retain a reversible copy, and the raw token is never written to audit logs.
 The browser sends the token in `X-Booking-Access-Token`, not an API URL, and
 email links put it in the URL fragment so it is not sent to the website host or
-CDN. Booking lookup uses `POST /api/bookings/lookup` with `{ "code": "..." }`
-in JSON; neither guest email nor the token belongs in a query string. A
+CDN. Booking lookup uses `POST /api/bookings/lookup` with `{ "code": "...",
+"email": "..." }` in JSON; neither credential belongs in a query string. A
 non-enumerating access-link request rotates the token and emails a
-two-hour replacement. Code plus email alone cannot read or cancel either new or
-historical bookings, and cancellation revokes the active link.
+two-hour replacement. An exact booking code and guest email match, an
+unexpired access token, or an authenticated Client account linked to the
+guest can each independently read a booking; matching code and email cannot
+cancel a booking, and cancellation revokes the active link. The lookup route
+is rate-limited to slow brute-force guessing of the code/email pair.
 
 Anonymous guests must first call `POST /api/bookings/verification/request` with
 their email address. The single-use token delivered by email is submitted as

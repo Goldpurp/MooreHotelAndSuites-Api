@@ -119,15 +119,17 @@ public class BookingsController : ControllerBase
         if (Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var parsedUserId))
             accountUserId = parsedUserId;
         if (string.IsNullOrWhiteSpace(accessToken) &&
-            !accountUserId.HasValue)
+            !accountUserId.HasValue &&
+            string.IsNullOrWhiteSpace(request.Email))
         {
-            return BadRequest(new { Message = "Use a secure booking link or sign in to view this reservation." });
+            return BadRequest(new { Message = "Provide the booking email, use a secure booking link, or sign in to view this reservation." });
         }
 
         var dto = await _bookingService.GetBookingWithAccessAsync(
             request.Code,
             accessToken,
-            accountUserId);
+            accountUserId,
+            request.Email);
         return dto == null
             ? NotFound(new { Message = "No booking found with the provided credentials." })
             : Ok(ToPublicBooking(dto));

@@ -16,7 +16,8 @@ public interface IBookingService
     Task<BookingDto?> GetBookingWithAccessAsync(
         string code,
         string? guestAccessToken = null,
-        Guid? accountUserId = null);
+        Guid? accountUserId = null,
+        string? email = null);
     Task RequestBookingAccessLinkAsync(string code, string email, string requestId);
     Task<IEnumerable<BookingDto>> GetAllBookingsAsync();
     Task<PagedResult<BookingDto>> GetPagedBookingsAsync(

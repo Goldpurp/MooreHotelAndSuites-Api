@@ -17,7 +17,7 @@ public sealed class GuestBookingSecurityTests
         _fixture = fixture;
 
     [Fact]
-    public async Task New_booking_uses_a_hashed_guest_token_and_rejects_code_plus_email_lookup()
+    public async Task New_booking_uses_a_hashed_guest_token_and_allows_matching_code_plus_email_lookup()
     {
         var created = await CreatePublicBookingAsync();
 
@@ -34,11 +34,25 @@ public sealed class GuestBookingSecurityTests
         using var legacyQueryResponse = await _fixture.Client.SendAsync(legacyQuery);
         Assert.Equal(HttpStatusCode.Unauthorized, legacyQueryResponse.StatusCode);
 
+        using var noCredentials = PublicJsonRequest(
+            "/api/bookings/lookup",
+            new { code = created.BookingCode });
+        using var noCredentialsResponse = await _fixture.Client.SendAsync(noCredentials);
+        Assert.Equal(HttpStatusCode.BadRequest, noCredentialsResponse.StatusCode);
+
+        using var wrongEmail = PublicJsonRequest(
+            "/api/bookings/lookup",
+            new { code = created.BookingCode, email = $"not-{created.Email}" });
+        using var wrongEmailResponse = await _fixture.Client.SendAsync(wrongEmail);
+        Assert.Equal(HttpStatusCode.NotFound, wrongEmailResponse.StatusCode);
+
         using var emailOnly = PublicJsonRequest(
             "/api/bookings/lookup",
             new { code = created.BookingCode, email = created.Email });
         using var emailOnlyResponse = await _fixture.Client.SendAsync(emailOnly);
-        Assert.Equal(HttpStatusCode.BadRequest, emailOnlyResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, emailOnlyResponse.StatusCode);
+        using var emailOnlyJson = JsonDocument.Parse(await emailOnlyResponse.Content.ReadAsStringAsync());
+        Assert.Equal(created.BookingCode, emailOnlyJson.RootElement.GetProperty("bookingCode").GetString());
 
         using var secure = PublicJsonRequest(
             "/api/bookings/lookup",
