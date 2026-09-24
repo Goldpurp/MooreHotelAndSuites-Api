@@ -12,6 +12,8 @@ if (string.Equals(environmentName, AppEnvironments.Local, StringComparison.Ordin
     Environment.SetEnvironmentVariable("EmailSettings__ApiPass", null);
     Environment.SetEnvironmentVariable("CloudinarySettings__ApiKey", null);
     Environment.SetEnvironmentVariable("CloudinarySettings__ApiSecret", null);
+    Environment.SetEnvironmentVariable("R2Settings__AccessKeyId", null);
+    Environment.SetEnvironmentVariable("R2Settings__SecretAccessKey", null);
     if (!string.Equals(
             Environment.GetEnvironmentVariable("Runtime__AllowLocalProviderTestDoubles"),
             "true",

@@ -29,7 +29,7 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get upgrade --yes \
-    && apt-get install --yes --no-install-recommends postgresql-client \
+    && apt-get install --yes --no-install-recommends postgresql-client libfontconfig1 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV ASPNETCORE_HTTP_PORTS=8080 \
