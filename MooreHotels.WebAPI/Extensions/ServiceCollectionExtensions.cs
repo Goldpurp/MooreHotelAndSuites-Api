@@ -74,6 +74,7 @@ public static class ServiceCollectionExtensions
         services.Configure<ForwardedHeadersSettings>(configuration.GetSection("ForwardedHeaders"));
         services.Configure<EmailSettings>(configuration.GetSection("EmailSettings"));
         services.Configure<CloudinarySettings>(configuration.GetSection("CloudinarySettings"));
+        services.Configure<R2Settings>(configuration.GetSection("R2Settings"));
         services.Configure<MonnifySettings>(configuration.GetSection("MonnifySettings"));
         services.Configure<HotelSettings>(configuration.GetSection("HotelSettings"));
         services.Configure<PrivacySettings>(configuration.GetSection("Privacy"));
@@ -644,7 +645,11 @@ public static class ServiceCollectionExtensions
             services.AddScoped<IMonnifyService, UnavailableMonnifyService>();
         }
 
-        if (runtime.EnableExternalServices)
+        if (runtime.EnableExternalServices && ConfigurationBootstrap.UsesR2Media(configuration))
+        {
+            services.AddScoped<IImageService, R2ImageService>();
+        }
+        else if (runtime.EnableExternalServices)
         {
             services.AddScoped<IImageService, CloudinaryService>();
         }

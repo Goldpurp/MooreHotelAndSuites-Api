@@ -20,19 +20,22 @@ public class HealthController : ControllerBase
     private readonly ProviderAcceptanceSettings _providerAcceptance;
     private readonly MonnifySettings _monnify;
     private readonly LaunchGateSettings _launchGate;
+    private readonly bool _usesR2Media;
 
     public HealthController(
         MooreHotelsDbContext context,
         IOptions<OperationalReadinessSettings> operations,
         IOptions<ProviderAcceptanceSettings> providerAcceptance,
         IOptions<MonnifySettings> monnify,
-        IOptions<LaunchGateSettings> launchGate)
+        IOptions<LaunchGateSettings> launchGate,
+        IConfiguration configuration)
     {
         _context = context;
         _operations = operations.Value;
         _providerAcceptance = providerAcceptance.Value;
         _monnify = monnify.Value;
         _launchGate = launchGate.Value;
+        _usesR2Media = ConfigurationBootstrap.UsesR2Media(configuration);
     }
 
     [HttpGet]
@@ -105,7 +108,7 @@ public class HealthController : ControllerBase
                                  _operations.QueueAgeAlertsEnabled &&
                                  _operations.PaymentAndWebhookAlertsEnabled &&
                                  !string.IsNullOrWhiteSpace(_operations.AlertRoutingEvidenceReference);
-            var providersAccepted = IsAccepted(_providerAcceptance.Cloudinary) &&
+            var providersAccepted = IsAccepted(_usesR2Media ? _providerAcceptance.R2 : _providerAcceptance.Cloudinary) &&
                                     IsAccepted(_providerAcceptance.Brevo) &&
                                     (!_monnify.Enabled ||
                                      (IsAccepted(_providerAcceptance.MonnifySandbox) &&
@@ -177,6 +180,7 @@ public class HealthController : ControllerBase
                 {
                     Brevo = ToAcceptanceStatus(_providerAcceptance.Brevo),
                     Cloudinary = ToAcceptanceStatus(_providerAcceptance.Cloudinary),
+                    R2 = ToAcceptanceStatus(_providerAcceptance.R2),
                     Monnify = new
                     {
                         Enabled = _monnify.Enabled,

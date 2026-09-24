@@ -150,6 +150,7 @@ public sealed class ProviderAcceptanceSettings
 {
     public AcceptanceEvidence Brevo { get; init; } = new();
     public AcceptanceEvidence Cloudinary { get; init; } = new();
+    public AcceptanceEvidence R2 { get; init; } = new();
     public AcceptanceEvidence MonnifySandbox { get; init; } = new();
     public AcceptanceEvidence MonnifyWebhook { get; init; } = new();
     public AcceptanceEvidence MonnifyLivePaymentAndRefund { get; init; } = new();
@@ -620,7 +621,10 @@ public static class ConfigurationBootstrap
 
                 if (string.Equals(email.DeliveryMode, "Brevo", StringComparison.OrdinalIgnoreCase))
                     RequireProviderAcceptance(providerAcceptance.Brevo, "Brevo", errors);
-                RequireProviderAcceptance(providerAcceptance.Cloudinary, "Cloudinary", errors);
+                if (UsesR2Media(configuration))
+                    RequireProviderAcceptance(providerAcceptance.R2, "R2", errors);
+                else
+                    RequireProviderAcceptance(providerAcceptance.Cloudinary, "Cloudinary", errors);
             }
             if (operations.QueueAgeWarningMinutes is < 1 or > 1440)
                 errors.Add("OperationalReadiness:QueueAgeWarningMinutes must be between 1 and 1440.");
@@ -746,9 +750,20 @@ public static class ConfigurationBootstrap
 
         if (environment.IsDeployed())
         {
-            RequireSecret(configuration, "CloudinarySettings:CloudName", errors);
-            RequireSecret(configuration, "CloudinarySettings:ApiKey", errors);
-            RequireSecret(configuration, "CloudinarySettings:ApiSecret", errors);
+            if (UsesR2Media(configuration))
+            {
+                RequireSecret(configuration, "R2Settings:AccountId", errors);
+                RequireSecret(configuration, "R2Settings:AccessKeyId", errors);
+                RequireSecret(configuration, "R2Settings:SecretAccessKey", errors);
+                RequireSecret(configuration, "R2Settings:BucketName", errors);
+                ValidateDeployedUrl(configuration, "R2Settings:PublicBaseUrl", errors);
+            }
+            else
+            {
+                RequireSecret(configuration, "CloudinarySettings:CloudName", errors);
+                RequireSecret(configuration, "CloudinarySettings:ApiKey", errors);
+                RequireSecret(configuration, "CloudinarySettings:ApiSecret", errors);
+            }
             RequireSecret(configuration, "EmailSettings:ApiPass", errors);
             RequireSecret(configuration, "EmailSettings:SenderEmail", errors);
             RequireSecret(configuration, "EmailSettings:AdminNotificationEmail", errors);
@@ -812,6 +827,9 @@ public static class ConfigurationBootstrap
                 string.Join(Environment.NewLine, errors.Select(error => $" - {error}")));
         }
     }
+
+    public static bool UsesR2Media(IConfiguration configuration) =>
+        string.Equals(configuration["Media:Provider"], "R2", StringComparison.OrdinalIgnoreCase);
 
     private static void RequireProviderAcceptance(
         AcceptanceEvidence evidence,

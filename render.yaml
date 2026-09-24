@@ -70,6 +70,18 @@ services:
         value: 1
       - key: ForwardedHeaders__TrustRenderEdge
         value: true
+      - key: Media__Provider
+        value: Cloudinary
+      - key: R2Settings__AccountId
+        sync: false
+      - key: R2Settings__AccessKeyId
+        sync: false
+      - key: R2Settings__SecretAccessKey
+        sync: false
+      - key: R2Settings__BucketName
+        sync: false
+      - key: R2Settings__PublicBaseUrl
+        sync: false
       - key: CloudinarySettings__CloudName
         sync: false
       - key: CloudinarySettings__ApiKey
@@ -167,6 +179,12 @@ services:
       - key: ProviderAcceptance__Cloudinary__AcceptedAtUtc
         sync: false
       - key: ProviderAcceptance__Cloudinary__EvidenceReference
+        sync: false
+      - key: ProviderAcceptance__R2__CredentialRotationReference
+        sync: false
+      - key: ProviderAcceptance__R2__AcceptedAtUtc
+        sync: false
+      - key: ProviderAcceptance__R2__EvidenceReference
         sync: false
       - key: ProviderAcceptance__HostedPaymentPageOnly
         value: false
