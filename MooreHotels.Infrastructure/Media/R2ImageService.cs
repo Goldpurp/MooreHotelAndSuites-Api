@@ -30,7 +30,7 @@ public sealed class R2ImageService : IImageService, IDisposable
             "avatars", "general", "rooms", "website-assets"
         };
 
-    private readonly IAmazonS3 _client;
+    private readonly AmazonS3Client _client;
     private readonly R2Settings _settings;
     private readonly ILogger<R2ImageService> _logger;
 
@@ -174,7 +174,7 @@ public sealed class R2ImageService : IImageService, IDisposable
         return true;
     }
 
-    private async Task CleanupAsync(IReadOnlyCollection<string> keys)
+    private async Task CleanupAsync(List<string> keys)
     {
         if (keys.Count == 0) return;
         try
