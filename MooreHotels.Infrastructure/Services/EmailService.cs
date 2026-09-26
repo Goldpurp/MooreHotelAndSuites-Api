@@ -26,9 +26,6 @@ public sealed class EmailService : IEmailService
     private readonly string _dashboardUrl;
     private readonly IEmailDeliveryContext _deliveryContext;
 
-    private const string LogoUrl =
-        "https://res.cloudinary.com/dxryndnhl/image/upload/v1777386016/slazzer-preview-ofc3f_uvulyz.png";
-
     public EmailService(
         IOptions<EmailSettings> settings,
         ILogger<EmailService> logger,
@@ -276,11 +273,12 @@ public sealed class EmailService : IEmailService
         string accentColor = "#B7792A",
         string? preheader = null)
     {
-        string optimizedLogo = LogoUrl.Contains("cloudinary.com")
-            ? LogoUrl.Replace(
+        string optimizedLogo = _settings.LogoUrl.Contains("cloudinary.com", StringComparison.OrdinalIgnoreCase)
+            ? _settings.LogoUrl.Replace(
                 "/upload/",
-                "/upload/e_trim/f_auto,q_auto,w_420/")
-            : LogoUrl;
+                "/upload/e_trim/f_auto,q_auto,w_420/",
+                StringComparison.Ordinal)
+            : _settings.LogoUrl;
         var safeTitle = E(title);
         var safePreheader = E(preheader ?? title);
         var safeSenderEmail = E(_settings.SenderEmail);

@@ -757,6 +757,12 @@ public static class ConfigurationBootstrap
                 RequireSecret(configuration, "R2Settings:SecretAccessKey", errors);
                 RequireSecret(configuration, "R2Settings:BucketName", errors);
                 ValidateDeployedUrl(configuration, "R2Settings:PublicBaseUrl", errors);
+                ValidateDeployedUrl(configuration, "EmailSettings:LogoUrl", errors);
+                if (Uri.TryCreate(configuration["EmailSettings:LogoUrl"], UriKind.Absolute, out var logoUri) &&
+                    logoUri.Host.EndsWith(".cloudinary.com", StringComparison.OrdinalIgnoreCase))
+                {
+                    errors.Add("EmailSettings:LogoUrl must not use Cloudinary when Media:Provider is R2.");
+                }
             }
             else
             {

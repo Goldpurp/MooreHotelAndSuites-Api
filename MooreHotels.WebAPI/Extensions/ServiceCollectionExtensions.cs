@@ -645,13 +645,16 @@ public static class ServiceCollectionExtensions
             services.AddScoped<IMonnifyService, UnavailableMonnifyService>();
         }
 
-        if (runtime.EnableExternalServices && ConfigurationBootstrap.UsesR2Media(configuration))
+        if (runtime.EnableExternalServices)
         {
-            services.AddScoped<IImageService, R2ImageService>();
-        }
-        else if (runtime.EnableExternalServices)
-        {
-            services.AddScoped<IImageService, CloudinaryService>();
+            services.AddScoped<R2ImageService>();
+            services.AddScoped<CloudinaryService>();
+            services.AddScoped<IImageService>(provider =>
+                new MooreHotels.Infrastructure.Media.ProviderAwareImageService(
+                    ConfigurationBootstrap.UsesR2Media(configuration)
+                        ? provider.GetRequiredService<R2ImageService>()
+                        : provider.GetRequiredService<CloudinaryService>(),
+                    () => provider.GetRequiredService<R2ImageService>()));
         }
         else
         {
