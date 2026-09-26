@@ -8,13 +8,15 @@ using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Infrastructure.Media;
+using System.Security.Cryptography;
 
 namespace MooreHotels.Infrastructure.Services;
 
 /// <summary>
 /// Stores media in a Cloudflare R2 bucket (S3-compatible). Each upload is
-/// re-encoded into a fixed set of WebP variants by <see cref="ImageProcessor"/>
-/// and stored under one logical key: "{PublicId}-{variant}.webp" per variant.
+/// retained byte-for-byte and re-encoded into a fixed set of WebP variants by
+/// <see cref="ImageProcessor"/>. Objects are stored as "{PublicId}-original"
+/// and "{PublicId}-{variant}.webp".
 /// PublicId itself is never a literal object key, so no schema change was
 /// needed when this replaced Cloudinary — see MediaAsset/RoomImage, which
 /// already stored only a single Url + PublicId per image.
@@ -80,28 +82,23 @@ public sealed class R2ImageService : IImageService, IDisposable
             throw new BadRequestException("The uploaded image could not be processed.");
         }
 
-        var publicId = $"{folder.ToLowerInvariant()}/{Guid.NewGuid():N}";
-        var uploaded = new List<string>(variants.Count);
+        var publicId = $"{ProviderAwareImageService.R2PublicIdPrefix}{folder.ToLowerInvariant()}/{Guid.NewGuid():N}";
+        var uploaded = new List<string>(variants.Count + 1);
         using var timeout = new CancellationTokenSource(UploadTimeout);
         try
         {
+            var originalKey = R2ObjectNaming.OriginalKey(publicId);
+            await PutObjectAsync(
+                originalKey,
+                sourceBytes,
+                "application/octet-stream",
+                timeout.Token);
+            uploaded.Add(originalKey);
+
             foreach (var variant in variants)
             {
-                var key = VariantKey(publicId, variant.Name);
-                await _client.PutObjectAsync(
-                    new PutObjectRequest
-                    {
-                        BucketName = _settings.BucketName,
-                        Key = key,
-                        InputStream = new MemoryStream(variant.Bytes),
-                        ContentType = "image/webp",
-                        AutoCloseStream = true,
-                        // R2 rejects the SDK's default chunked/trailer-signed
-                        // streaming upload; a plain signed request is required.
-                        UseChunkEncoding = false,
-                        DisablePayloadSigning = true,
-                    },
-                    timeout.Token);
+                var key = R2ObjectNaming.VariantKey(publicId, variant.Name);
+                await PutObjectAsync(key, variant.Bytes, "image/webp", timeout.Token);
                 uploaded.Add(key);
             }
         }
@@ -132,7 +129,7 @@ public sealed class R2ImageService : IImageService, IDisposable
             throw new ServiceUnavailableException("Image storage could not be reached.", exception) { ErrorCode = "image_upload_unavailable" };
         }
 
-        var mediumUrl = $"{_settings.PublicBaseUrl.TrimEnd('/')}/{VariantKey(publicId, "medium")}";
+        var mediumUrl = R2ObjectNaming.PublicUrl(_settings.PublicBaseUrl, publicId);
         return new ImageUploadResult(publicId, mediumUrl);
     }
 
@@ -165,7 +162,9 @@ public sealed class R2ImageService : IImageService, IDisposable
         publicId = publicId?.Trim() ?? string.Empty;
         if (publicId.Length == 0 || publicId.Length > 512) return false;
 
-        var keys = VariantNames.Select(name => VariantKey(publicId, name));
+        var keys = VariantNames
+            .Select(name => R2ObjectNaming.VariantKey(publicId, name))
+            .Append(R2ObjectNaming.OriginalKey(publicId));
         // R2's multi-object DeleteObjectsAsync is unreliable with this SDK, so
         // each variant is deleted individually. S3-compatible delete is
         // idempotent — deleting a key that never existed still succeeds,
@@ -191,7 +190,27 @@ public sealed class R2ImageService : IImageService, IDisposable
 
     private static readonly string[] VariantNames = ImageProcessor.Variants.Select(v => v.Name).ToArray();
 
-    private static string VariantKey(string publicId, string variantName) => $"{publicId}-{variantName}.webp";
+    private Task<PutObjectResponse> PutObjectAsync(
+        string key,
+        byte[] bytes,
+        string contentType,
+        CancellationToken cancellationToken)
+    {
+        var request = new PutObjectRequest
+        {
+            BucketName = _settings.BucketName,
+            Key = key,
+            InputStream = new MemoryStream(bytes),
+            ContentType = contentType,
+            AutoCloseStream = true,
+            // R2 rejects the SDK's default chunked/trailer-signed
+            // streaming upload; a plain signed request is required.
+            UseChunkEncoding = false,
+            DisablePayloadSigning = true,
+        };
+        request.Metadata["sha256"] = Convert.ToHexStringLower(SHA256.HashData(bytes));
+        return _client.PutObjectAsync(request, cancellationToken);
+    }
 
     public void Dispose() => _client.Dispose();
 }

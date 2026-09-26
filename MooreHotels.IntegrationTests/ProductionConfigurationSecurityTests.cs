@@ -32,6 +32,34 @@ public sealed class ProductionConfigurationSecurityTests
     }
 
     [Fact]
+    public void Production_accepts_r2_without_cloudinary_credentials_after_cutover()
+    {
+        var settings = R2Settings();
+        settings.Remove("CloudinarySettings:CloudName");
+        settings.Remove("CloudinarySettings:ApiKey");
+        settings.Remove("CloudinarySettings:ApiSecret");
+
+        ConfigurationBootstrap.ValidateForStartup(
+            BuildConfiguration(settings),
+            ProductionEnvironment());
+    }
+
+    [Fact]
+    public void Production_rejects_a_cloudinary_email_logo_after_r2_cutover()
+    {
+        var settings = R2Settings();
+        settings["EmailSettings:LogoUrl"] =
+            "https://res.cloudinary.com/example/image/upload/logo.png";
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            ConfigurationBootstrap.ValidateForStartup(
+                BuildConfiguration(settings),
+                ProductionEnvironment()));
+
+        Assert.Contains("EmailSettings:LogoUrl", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Production_accepts_the_single_hop_render_edge_boundary()
     {
         var settings = BaselineSettings();
@@ -603,6 +631,24 @@ public sealed class ProductionConfigurationSecurityTests
         settings["PublicAppUrl"] = "http://localhost:3001";
         settings["DashboardUrl"] = "http://localhost:3000";
         settings["Api:PublicBaseUrl"] = "http://localhost:5222";
+        return settings;
+    }
+
+    private static Dictionary<string, string?> R2Settings()
+    {
+        var settings = BaselineSettings();
+        settings["Media:Provider"] = "R2";
+        settings["R2Settings:AccountId"] = "0123456789abcdef0123456789abcdef";
+        settings["R2Settings:AccessKeyId"] = "r2-access-key";
+        settings["R2Settings:SecretAccessKey"] = "r2-secret-key";
+        settings["R2Settings:BucketName"] = "moore-hotels-media";
+        settings["R2Settings:PublicBaseUrl"] = "https://media.moorehotelandsuites.com";
+        settings["EmailSettings:LogoUrl"] =
+            "https://media.moorehotelandsuites.com/slazzer-preview-ofc3f_uvulyz-medium.webp";
+        settings["ProviderAcceptance:R2:CredentialRotationReference"] = "ROTATE-R2-001";
+        settings["ProviderAcceptance:R2:AcceptedAtUtc"] =
+            DateTimeOffset.UtcNow.AddDays(-1).ToString("O");
+        settings["ProviderAcceptance:R2:EvidenceReference"] = "R2-TEST-001";
         return settings;
     }
 
