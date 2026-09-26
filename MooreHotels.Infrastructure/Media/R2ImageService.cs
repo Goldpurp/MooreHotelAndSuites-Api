@@ -190,7 +190,7 @@ public sealed class R2ImageService : IImageService, IDisposable
 
     private static readonly string[] VariantNames = ImageProcessor.Variants.Select(v => v.Name).ToArray();
 
-    private Task PutObjectAsync(
+    private Task<PutObjectResponse> PutObjectAsync(
         string key,
         byte[] bytes,
         string contentType,
