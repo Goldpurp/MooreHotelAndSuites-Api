@@ -645,11 +645,7 @@ public static class ServiceCollectionExtensions
             services.AddScoped<IMonnifyService, UnavailableMonnifyService>();
         }
 
-        if (runtime.EnableExternalServices && ConfigurationBootstrap.UsesR2Media(configuration))
-        {
-            services.AddScoped<IImageService, R2ImageService>();
-        }
-        else if (runtime.EnableExternalServices)
+        if (runtime.EnableExternalServices)
         {
             services.AddScoped<R2ImageService>();
             services.AddScoped<CloudinaryService>();
