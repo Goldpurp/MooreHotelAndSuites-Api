@@ -26,7 +26,7 @@ public sealed class HousekeepingService : IHousekeepingService
         CancellationToken cancellationToken = default)
     {
         var tasks = await TaskQuery().AsNoTracking()
-            .OrderBy(task => task.Status == OperationalTaskStatus.Completed)
+            .OrderBy(task => task.Status == OperationalTaskStatus.Completed || task.Status == OperationalTaskStatus.Cancelled)
             .ThenByDescending(task => task.Priority)
             .ThenBy(task => task.CreatedAtUtc)
             .Take(1000)
@@ -44,48 +44,58 @@ public sealed class HousekeepingService : IHousekeepingService
         if (!Enum.IsDefined(request.Type) || !Enum.IsDefined(request.Priority))
             throw new BadRequestException("Housekeeping task type or priority is invalid.");
         var notes = Clean(request.Notes, "Housekeeping notes", 1000);
-        await RequireOperationalActorAsync(actorId, "Housekeeping", cancellationToken);
-        var room = await _db.Rooms.SingleOrDefaultAsync(item => item.Id == request.RoomId, cancellationToken)
-                   ?? throw new NotFoundException("Room not found.");
-        if (request.BookingId.HasValue)
+        var strategy = _db.Database.CreateExecutionStrategy();
+        return await strategy.ExecuteAsync(async () =>
         {
-            var bookingMatchesRoom = await _db.Bookings.AnyAsync(booking =>
-                booking.Id == request.BookingId &&
-                (booking.RoomId == room.Id ||
-                 booking.ReservationRooms.Any(unit => unit.AssignedRoomId == room.Id)),
-                cancellationToken);
-            if (!bookingMatchesRoom)
-                throw new BadRequestException("The booking is not assigned to this room.");
-        }
-        if (await _db.HousekeepingTasks.AnyAsync(task =>
-                task.RoomId == room.Id &&
-                task.Type == request.Type &&
-                task.Status != OperationalTaskStatus.Completed &&
-                task.Status != OperationalTaskStatus.Cancelled,
-                cancellationToken))
-            throw new ConflictException("An active task of this type already exists for the room.");
+            _db.ChangeTracker.Clear();
+            await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            await RequireOperationalActorAsync(actorId, "Housekeeping", cancellationToken);
+            var room = await _db.Rooms
+                .FromSqlInterpolated($"SELECT * FROM rooms WHERE \"Id\" = {request.RoomId} FOR UPDATE")
+                .SingleOrDefaultAsync(cancellationToken)
+                       ?? throw new NotFoundException("Room not found.");
+            if (request.BookingId.HasValue)
+            {
+                var bookingMatchesRoom = await _db.Bookings.AnyAsync(booking =>
+                    booking.Id == request.BookingId &&
+                    (booking.RoomId == room.Id ||
+                     booking.ReservationRooms.Any(unit => unit.AssignedRoomId == room.Id)),
+                    cancellationToken);
+                if (!bookingMatchesRoom)
+                    throw new BadRequestException("The booking is not assigned to this room.");
+            }
+            if (await _db.HousekeepingTasks.AnyAsync(task =>
+                    task.RoomId == room.Id &&
+                    task.Type == request.Type &&
+                    task.Status != OperationalTaskStatus.Completed &&
+                    task.Status != OperationalTaskStatus.Cancelled,
+                    cancellationToken))
+                throw new ConflictException("An active task of this type already exists for the room.");
 
-        var task = NewTask(
-            room.Id,
-            request.BookingId,
-            request.Type,
-            request.Priority,
-            notes,
-            actorId,
-            DateTime.UtcNow);
-        _db.HousekeepingTasks.Add(task);
-        if (request.Type != HousekeepingTaskType.Inspection && room.Status != RoomStatus.Occupied)
-            room.Status = RoomStatus.Dirty;
-        AddAudit(actorId, "HOUSEKEEPING_TASK_CREATED", "HousekeepingTask", task.Id, new
-        {
-            task.RoomId,
-            task.BookingId,
-            task.Type,
-            task.Priority
+            var task = NewTask(
+                room.Id,
+                request.BookingId,
+                request.Type,
+                request.Priority,
+                notes,
+                actorId,
+                DateTime.UtcNow);
+            _db.HousekeepingTasks.Add(task);
+            if (request.Type is not (HousekeepingTaskType.Inspection or HousekeepingTaskType.StayoverService) &&
+                !await IsOccupiedAsync(room, cancellationToken))
+                room.Status = RoomStatus.Dirty;
+            AddAudit(actorId, "HOUSEKEEPING_TASK_CREATED", "HousekeepingTask", task.Id, new
+            {
+                task.RoomId,
+                task.BookingId,
+                task.Type,
+                task.Priority
+            });
+            await _db.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            task.Room = room;
+            return ToDto(task);
         });
-        await _db.SaveChangesAsync(cancellationToken);
-        task.Room = room;
-        return ToDto(task);
     }
 
     public async Task<HousekeepingTaskDto> UpdateTaskAsync(
@@ -130,6 +140,25 @@ public sealed class HousekeepingService : IHousekeepingService
                     : null;
                 return ToDto(task);
             }
+            // The room row is locked above. Never let a stale turnover task or
+            // inspection overwrite an occupied room, even if its status drifted
+            // from the checked-in reservation record.
+            var stayover = task.Type == HousekeepingTaskType.StayoverService;
+            if (!stayover &&
+                request.Status is OperationalTaskStatus.InProgress or OperationalTaskStatus.Completed &&
+                await IsOccupiedAsync(room, cancellationToken))
+                throw new ConflictException("The room is occupied. Check out or move the guest before turnover cleaning or inspection.");
+
+            if (task.Type == HousekeepingTaskType.Inspection &&
+                request.Status == OperationalTaskStatus.Completed && request.InspectionPassed == true &&
+                await _db.HousekeepingTasks.AnyAsync(other =>
+                    other.RoomId == room.Id && other.Id != task.Id &&
+                    other.Type != HousekeepingTaskType.Inspection &&
+                    other.Type != HousekeepingTaskType.StayoverService &&
+                    other.Status != OperationalTaskStatus.Completed &&
+                    other.Status != OperationalTaskStatus.Cancelled, cancellationToken))
+                throw new ConflictException("Complete the outstanding room cleaning tasks before releasing this room.");
+
             if (request.AssignedToUserId.HasValue)
             {
                 if (request.Status == OperationalTaskStatus.Pending)
@@ -149,9 +178,10 @@ public sealed class HousekeepingService : IHousekeepingService
                 task.AssignedToUserId ??= actorId;
                 task.AssignedAtUtc ??= DateTime.UtcNow;
                 task.StartedAtUtc ??= DateTime.UtcNow;
-                room.Status = task.Type == HousekeepingTaskType.Inspection
-                    ? RoomStatus.Inspected
-                    : RoomStatus.Cleaning;
+                if (!stayover)
+                    room.Status = task.Type == HousekeepingTaskType.Inspection
+                        ? RoomStatus.Inspected
+                        : RoomStatus.Cleaning;
             }
             if (request.Status == OperationalTaskStatus.Completed)
             {
@@ -188,7 +218,7 @@ public sealed class HousekeepingService : IHousekeepingService
                             DateTime.UtcNow));
                     }
                 }
-                else
+                else if (!stayover)
                 {
                     room.Status = RoomStatus.Clean;
                     if (!await _db.HousekeepingTasks.AnyAsync(existing =>
@@ -687,6 +717,14 @@ public sealed class HousekeepingService : IHousekeepingService
             CreatedByUserId = actorId,
             CreatedAtUtc = now
         };
+
+    private Task<bool> IsOccupiedAsync(Room room, CancellationToken cancellationToken) =>
+        room.Status == RoomStatus.Occupied
+            ? Task.FromResult(true)
+            : _db.Bookings.AnyAsync(booking =>
+                booking.Status == BookingStatus.CheckedIn &&
+                (booking.RoomId == room.Id ||
+                 booking.ReservationRooms.Any(unit => unit.AssignedRoomId == room.Id)), cancellationToken);
 
     private async Task SetRoomOfflineAsync(Room room, CancellationToken cancellationToken)
     {
