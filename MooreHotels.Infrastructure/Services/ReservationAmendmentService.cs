@@ -56,6 +56,8 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
                 ?? throw new NotFoundException("Booking not found.");
             if (booking.Status is not (BookingStatus.Pending or BookingStatus.Confirmed))
                 throw new BadRequestException("Only pending or confirmed reservations can be amended.");
+            if (booking.PaymentStatus == PaymentStatus.PaymentReported)
+                throw new BadRequestException("Resolve the reported bank transfer before amending this reservation.");
             if (DateTime.UtcNow >= booking.CheckIn)
                 throw new BadRequestException("A reservation cannot be amended after its check-in time.");
 

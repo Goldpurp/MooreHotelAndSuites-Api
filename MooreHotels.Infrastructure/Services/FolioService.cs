@@ -631,6 +631,8 @@ public sealed class FolioService : IFolioService
                 .SingleOrDefaultAsync(item => item.BookingId == booking.Id, cancellationToken)
                 ?? throw new NotFoundException("Booking folio not found.");
             var actor = await RequireActorAsync(actorId, capability, cancellationToken);
+            if (booking.PaymentStatus == PaymentStatus.PaymentReported)
+                throw new BadRequestException("Resolve the reported bank transfer before posting other folio changes.");
             folio.Booking = booking;
             var key = BuildIdempotencyKey(folio.Id, clientIdempotencyKey);
             if (idempotencyIsEntry && folio.Entries.Any(entry => entry.IdempotencyKey == key))

@@ -556,6 +556,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IBookingService, BookingService>();
         services.AddScoped<IPricingService, PricingService>();
         services.AddScoped<IInventoryService, InventoryService>();
+        services.AddScoped<PaymentReviewService>();
         services.AddScoped<IFolioService, FolioService>();
         services.AddScoped<IReservationAmendmentService, ReservationAmendmentService>();
         services.AddScoped<IHousekeepingService, HousekeepingService>();

@@ -23,4 +23,5 @@ public record CreateBookingRequest(
     Guid? QuoteId = null,
     [StringLength(128, MinimumLength = 40)] string? QuoteToken = null,
     Guid? RoomTypeId = null,
-    [Range(1, 10)] int RoomQuantity = 1);
+    [Range(1, 10)] int RoomQuantity = 1,
+    bool PaymentReported = false);

@@ -23,9 +23,10 @@ public sealed class BookingEmailLifecycleTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task New_booking_sends_guest_confirmation_and_admin_alert(bool typeOnly)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task New_booking_sends_guest_confirmation_and_admin_alert(bool typeOnly, bool paymentReported)
     {
         var room = await _fixture.CreateRoomAsync();
         _fixture.Email.Reset();
@@ -46,6 +47,7 @@ public sealed class BookingEmailLifecycleTests
                 adultCount = 2,
                 childCount = 0,
                 paymentMethod = "directTransfer",
+                paymentReported,
                 notes = "Email lifecycle integration test"
             })
         };
@@ -60,6 +62,13 @@ public sealed class BookingEmailLifecycleTests
         var bookingCode = document.RootElement
             .GetProperty("bookingCode")
             .GetString();
+        if (paymentReported)
+        {
+            Assert.Equal("paymentReported", document.RootElement.GetProperty("paymentStatus").GetString());
+            Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("paymentExpiresAtUtc").ValueKind);
+            Assert.Equal(1, await _fixture.WithDbAsync(db => db.AuditLogs.CountAsync(a =>
+                a.Action == "PAYMENT_REPORTED" && db.Bookings.Any(b => b.BookingCode == bookingCode && b.Id.ToString() == a.EntityId))));
+        }
         var expectedRoomName = typeOnly
             ? "Update Integration Room Type (room assignment pending)"
             : room.Name;
