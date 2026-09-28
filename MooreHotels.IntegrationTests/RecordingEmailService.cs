@@ -8,7 +8,8 @@ public sealed record RecordedEmail(
     string Template,
     string Recipient,
     string? BookingCode = null,
-    string? Link = null);
+    string? Link = null,
+    string? RoomName = null);
 
 public sealed class RecordingEmailService : IEmailService
 {
@@ -22,13 +23,15 @@ public sealed class RecordingEmailService : IEmailService
         string template,
         string recipient,
         string? bookingCode = null,
-        string? link = null)
+        string? link = null,
+        string? roomName = null)
     {
         _messages.Enqueue(new RecordedEmail(
             template,
             recipient,
             bookingCode,
-            link));
+            link,
+            roomName));
         return Task.CompletedTask;
     }
 
@@ -46,7 +49,7 @@ public sealed class RecordingEmailService : IEmailService
         int nights,
         decimal totalAmount,
         string? manageBookingUrl = null) =>
-        Record("BookingConfirmation", email, bookingCode, manageBookingUrl);
+        Record("BookingConfirmation", email, bookingCode, manageBookingUrl, roomName);
 
     public Task SendBookingAccessLinkAsync(
         string email,
@@ -97,7 +100,7 @@ public sealed class RecordingEmailService : IEmailService
         string roomName,
         decimal amount,
         string reference) =>
-        Record("PaymentSuccess", email, bookingCode);
+        Record("PaymentSuccess", email, bookingCode, roomName: roomName);
 
     public Task SendCheckOutThankYouAsync(
         string email,
@@ -121,7 +124,7 @@ public sealed class RecordingEmailService : IEmailService
         decimal totalAmount,
         string guestEmail,
         string guestPhone) =>
-        Record("AdminNewBooking", adminEmail, bookingCode);
+        Record("AdminNewBooking", adminEmail, bookingCode, roomName: roomName);
 
     public Task SendStaffWelcomeEmailAsync(
         string email,

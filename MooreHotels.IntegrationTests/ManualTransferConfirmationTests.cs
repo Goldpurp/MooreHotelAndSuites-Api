@@ -62,10 +62,15 @@ public sealed class ManualTransferConfirmationTests
         Assert.Equal(ManualTransferConfirmation.Method, stored.PaymentConfirmationMethod);
         Assert.Equal(actor.Id, stored.PaymentConfirmedByUserId);
         Assert.NotNull(stored.PaymentConfirmedAtUtc);
+        var expectedRoomName = await _fixture.WithDbAsync(db => db.Rooms
+            .Where(room => room.Id == booking.RoomId)
+            .Select(room => room.Name)
+            .SingleAsync());
         Assert.Contains(
             _fixture.Email.Messages,
             email => email.Template == "PaymentSuccess" &&
-                     email.BookingCode == booking.BookingCode);
+                     email.BookingCode == booking.BookingCode &&
+                     email.RoomName == expectedRoomName);
     }
 
     [Theory]

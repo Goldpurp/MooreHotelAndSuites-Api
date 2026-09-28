@@ -22,8 +22,10 @@ public sealed class BookingEmailLifecycleTests
         _fixture = fixture;
     }
 
-    [Fact]
-    public async Task New_booking_sends_guest_confirmation_and_admin_alert()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task New_booking_sends_guest_confirmation_and_admin_alert(bool typeOnly)
     {
         var room = await _fixture.CreateRoomAsync();
         _fixture.Email.Reset();
@@ -33,7 +35,8 @@ public sealed class BookingEmailLifecycleTests
         {
             Content = JsonContent.Create(new
             {
-                roomId = room.Id,
+                roomId = typeOnly ? (Guid?)null : room.Id,
+                roomTypeId = typeOnly ? room.RoomTypeId : (Guid?)null,
                 guestFirstName = "Email",
                 guestLastName = "Lifecycle",
                 guestEmail = $"lifecycle-{Guid.NewGuid():N}@example.test",
@@ -57,19 +60,25 @@ public sealed class BookingEmailLifecycleTests
         var bookingCode = document.RootElement
             .GetProperty("bookingCode")
             .GetString();
+        var expectedRoomName = typeOnly
+            ? "Update Integration Room Type (room assignment pending)"
+            : room.Name;
         Assert.Contains(
             _fixture.Email.Messages,
             email => email.Template == "BookingConfirmation" &&
-                     email.BookingCode == bookingCode);
+                     email.BookingCode == bookingCode &&
+                     email.RoomName == expectedRoomName);
         Assert.Contains(
             _fixture.Email.Messages,
             email => email.Template == "AdminNewBooking" &&
                      email.BookingCode == bookingCode &&
+                     email.RoomName == expectedRoomName &&
                      email.Recipient == "admin-notifications@example.test");
         Assert.Equal(
             1,
             await _fixture.WithDbAsync(db => db.Notifications.CountAsync(
-                notification => notification.BookingCode == bookingCode)));
+                notification => notification.BookingCode == bookingCode &&
+                                notification.Message.Contains(expectedRoomName))));
     }
 
     [Fact]

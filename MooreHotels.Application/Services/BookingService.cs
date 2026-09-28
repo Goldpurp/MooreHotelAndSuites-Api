@@ -431,6 +431,7 @@ public class BookingService : IBookingService
         }
 
         var manageBookingUrl = BuildManageBookingUrl(booking.BookingCode, guestAccessToken);
+        var roomDisplayName = room?.Name ?? $"{roomType.Name} (room assignment pending)";
         var emailMessages = new List<EmailOutboxMessage>
         {
             _emailOutbox.Create(
@@ -439,7 +440,7 @@ public class BookingService : IBookingService
                 new BookingConfirmationEmail(
                     $"{guest.FirstName} {guest.LastName}",
                     booking.BookingCode,
-                    roomType.Name,
+                    roomDisplayName,
                     roomType.Category.ToString(),
                     maximumOccupancy,
                     booking.AdultCount,
@@ -461,7 +462,7 @@ public class BookingService : IBookingService
                 new AdminNewBookingEmail(
                     $"{guest.FirstName} {guest.LastName}",
                     booking.BookingCode,
-                    roomType.Name,
+                    roomDisplayName,
                     roomType.Category.ToString(),
                     maximumOccupancy,
                     booking.AdultCount,
@@ -491,7 +492,7 @@ public class BookingService : IBookingService
             await _notificationService.NotifyNewBookingAsync(
                 booking,
                 $"{guest.FirstName} {guest.LastName}",
-                roomType.Name);
+                roomDisplayName);
         }
         catch (Exception ex)
         {
