@@ -573,7 +573,9 @@ public class BookingRepository : IBookingRepository
                     new PaymentSuccessEmail(
                         guest.FirstName,
                         booking.BookingCode,
-                        room?.Name ?? roomTypeName ?? "Reserved Room",
+                        room?.Name ?? (roomTypeName is null
+                            ? "Room assignment pending"
+                            : $"{roomTypeName} (room assignment pending)"),
                         amountDue,
                         internalReference),
                     booking.GuestId));

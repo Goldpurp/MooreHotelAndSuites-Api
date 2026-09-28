@@ -275,7 +275,11 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                     previousBookingStatus);
                 if (booking.Guest is not null)
                 {
-                    var roomName = await _db.RoomTypes
+                    var roomName = await _db.Rooms
+                        .Where(room => room.Id == booking.RoomId)
+                        .Select(room => room.Name)
+                        .SingleOrDefaultAsync(cancellationToken);
+                    var roomTypeName = await _db.RoomTypes
                         .Where(type => type.Id == booking.RoomTypeId)
                         .Select(type => type.Name)
                         .SingleOrDefaultAsync(cancellationToken)
@@ -286,7 +290,7 @@ public sealed class MonnifyPaymentProcessor : IMonnifyPaymentProcessor
                         new PaymentSuccessEmail(
                             booking.Guest.FirstName,
                             booking.BookingCode,
-                            roomName,
+                            roomName ?? $"{roomTypeName} (room assignment pending)",
                             verification.AmountPaid,
                             verification.PaymentReference),
                         booking.GuestId));
