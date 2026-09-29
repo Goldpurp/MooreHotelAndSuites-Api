@@ -48,7 +48,9 @@ public enum PaymentStatus
     Unpaid,
     AwaitingVerification,
     RefundPending,
-    Refunded
+    Refunded,
+    // A guest assertion, never evidence of a settled bank credit.
+    PaymentReported
 }
 
 public enum PaymentMethod

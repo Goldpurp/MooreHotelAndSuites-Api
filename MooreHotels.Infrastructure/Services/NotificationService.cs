@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
+using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Hubs;
 using MooreHotels.Infrastructure.Persistence;
 
@@ -32,6 +33,9 @@ public class NotificationService : INotificationService
                       $"Code: {booking.BookingCode}\n" +
                       $"Guest: {guestName}\n" +
                       $"Room: {roomName}\n" +
+                      (booking.PaymentStatus == PaymentStatus.PaymentReported
+                          ? "Payment reported, not verified. Review the bank credit; room held pending review.\n"
+                          : "") +
                       $"Total Amount: {booking.Amount:N2}";
 
         var notification = new Notification

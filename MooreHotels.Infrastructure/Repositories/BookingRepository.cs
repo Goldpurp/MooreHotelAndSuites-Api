@@ -404,6 +404,19 @@ public class BookingRepository : IBookingRepository
             if (newGuest is not null)
                 await _db.Guests.AddAsync(newGuest);
             await _db.Bookings.AddAsync(booking);
+            if (booking.PaymentStatus == PaymentStatus.PaymentReported)
+            {
+                _db.AuditLogs.Add(new AuditLog
+                {
+                    Id = Guid.NewGuid(),
+                    ProfileId = Guid.Empty,
+                    Action = "PAYMENT_REPORTED",
+                    EntityType = "Booking",
+                    EntityId = booking.Id.ToString(),
+                    NewDataJson = JsonSerializer.Serialize(new { booking.BookingCode, RoomHeld = true, Verified = false }),
+                    CreatedAt = booking.CreatedAt
+                });
+            }
             if (emailMessages is not null)
                 await _db.EmailOutboxMessages.AddRangeAsync(emailMessages);
             if (verification is not null)

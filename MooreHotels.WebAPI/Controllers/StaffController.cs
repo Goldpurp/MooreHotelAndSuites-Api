@@ -53,7 +53,18 @@ public class StaffController : ControllerBase
         var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier);
         if (!Guid.TryParse(userIdStr, out var actingUserId)) return Unauthorized();
         await _staffService.OnboardUserAsync(request, actingUserId);
-        return Ok(new { Message = "Staff member provisioned. A secure setup link has been emailed." });
+        return Ok(new { Message = "Staff member provisioned. A secure setup email is queued; delivery is not yet confirmed." });
+    }
+
+    [HttpPost("employees/{id:guid}/resend-setup")]
+    [Authorize(Roles = "Admin,Manager")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
+    public async Task<IActionResult> ResendSetup(Guid id)
+    {
+        if (!Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+            return Unauthorized();
+        await _staffService.ResendSetupAsync(id, actorId);
+        return Accepted(new { Message = "Setup email queued. Check delivery logs if it does not arrive." });
     }
 
     [HttpPut("employees/{id:guid}")]

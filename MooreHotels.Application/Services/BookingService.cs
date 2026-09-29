@@ -220,6 +220,8 @@ public class BookingService : IBookingService
         if (request.RoomId.HasValue == request.RoomTypeId.HasValue)
             throw new BadRequestException(
                 "Select exactly one inventory scope: a room type or a legacy physical room.");
+        if (request.PaymentReported && request.PaymentMethod != PaymentMethod.DirectTransfer)
+            throw new BadRequestException("Only direct bank transfers can be reported for manual review.");
         if (request.RoomQuantity is < 1 or > 10)
             throw new BadRequestException("Room quantity must be between 1 and 10.");
         if (request.RoomId == Guid.Empty || request.RoomTypeId == Guid.Empty || request.QuoteId == Guid.Empty)
@@ -359,7 +361,9 @@ public class BookingService : IBookingService
             TaxAmount = quote?.TaxAmount ?? 0m,
             FeeAmount = quote?.FeeAmount ?? 0m,
             Amount = totalAmount,
-            PaymentStatus = request.PaymentMethod == PaymentMethod.DirectTransfer ? PaymentStatus.AwaitingVerification : PaymentStatus.Unpaid,
+            PaymentStatus = request.PaymentMethod == PaymentMethod.DirectTransfer
+                ? (request.PaymentReported ? PaymentStatus.PaymentReported : PaymentStatus.AwaitingVerification)
+                : PaymentStatus.Unpaid,
             PaymentMethod = request.PaymentMethod.Value,
             Notes = notes,
             StatusHistoryJson = "[]", // FIX: Initialised as empty JSON array to prevent Deserialization errors
@@ -643,6 +647,9 @@ public class BookingService : IBookingService
         var booking = await _bookingRepo.GetByIdAsync(bookingId);
         if (booking == null) throw new NotFoundException("Booking not found.");
 
+        if (booking.PaymentStatus == PaymentStatus.PaymentReported)
+            throw new BadRequestException("Complete the bank-transfer review before changing this booking's status.");
+
         // FIX: Ensure Guest navigation property is loaded to prevent NullRef in Emails
         if (booking.Guest == null) throw new InvalidOperationException("Booking guest data could not be loaded.");
 
@@ -817,6 +824,9 @@ public class BookingService : IBookingService
 
         if (booking.Status == BookingStatus.Cancelled) return MapToDto(booking);
 
+        if (booking.PaymentStatus == PaymentStatus.PaymentReported)
+            throw new BadRequestException("Review the reported bank transfer before cancelling this reservation.");
+
         if (booking.Status is BookingStatus.CheckedIn or BookingStatus.CheckedOut or BookingStatus.NoShow)
             throw new BadRequestException("Active or completed stays cannot be cancelled.");
 
@@ -923,6 +933,8 @@ public class BookingService : IBookingService
             throw new UnauthorizedAccessException("Verification failed.");
 
         if (booking.Status == BookingStatus.Cancelled) return MapToDto(booking);
+        if (booking.PaymentStatus == PaymentStatus.PaymentReported)
+            throw new BadRequestException("Your reported payment is under review. Contact the hotel to cancel or arrange a refund.");
         if (booking.Status is BookingStatus.CheckedIn or BookingStatus.CheckedOut or BookingStatus.NoShow ||
             DateTime.UtcNow >= booking.CheckIn)
         {
@@ -1222,7 +1234,13 @@ public class BookingService : IBookingService
         string? msg = null;
         var now = DateTime.UtcNow;
         DateTime? paymentExpiresAtUtc = null;
-        if (b.Status == BookingStatus.CheckedIn)
+        if (b.PaymentStatus == PaymentStatus.PaymentReported)
+        {
+            msg = b.Status == BookingStatus.Cancelled
+                ? "Payment reported after the room hold ended. Contact the hotel for reconciliation; a room is not yet guaranteed."
+                : "Payment reported. Your room is held while hotel staff verify the bank credit.";
+        }
+        else if (b.Status == BookingStatus.CheckedIn)
         {
             if (now > b.CheckOut.AddMinutes(-30) && now <= b.CheckOut)
                 msg = "Guest checks out in 30mins";
