@@ -194,6 +194,39 @@ public class StaffService : IStaffService
         });
     }
 
+    public async Task ResendSetupAsync(Guid userId, Guid actingUserId)
+    {
+        RequireActor(actingUserId);
+        var actor = await _userManager.FindByIdAsync(actingUserId.ToString());
+        if (actor is null || actor.Status != ProfileStatus.Active ||
+            actor.Role is not (UserRole.Admin or UserRole.Manager))
+            throw new UnauthorizedAccessException("Acting user is not authorized.");
+        if (!_userManager.Users.Any(item => item.Id == userId))
+            throw new NotFoundException("Staff profile was not found.");
+        await _transaction.ExecuteWithUserLockAsync(userId, async () =>
+        {
+            // Load only after acquiring the lock shared by edits and suspension.
+            var target = await _userManager.FindByIdAsync(userId.ToString());
+            if (target is null || target.Status != ProfileStatus.Active)
+                throw new BadRequestException("Only active staff can receive setup links.");
+            if (target.Role is not (UserRole.Staff or UserRole.Manager) ||
+                (actor.Role == UserRole.Manager && target.Role != UserRole.Staff))
+                throw new UnauthorizedAccessException("This staff account cannot be managed by you.");
+            var token = await _userManager.GeneratePasswordResetTokenAsync(target);
+            var setupLink = FrontendLinkBuilder.WithFragment(
+                _configuration["PublicAppUrl"] ?? throw new InvalidOperationException("PublicAppUrl is not configured."),
+                "reset-password", new Dictionary<string, string?>
+                {
+                    ["userId"] = target.Id.ToString(),
+                    ["token"] = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token))
+                });
+            await _emailOutbox.EnqueueAsync(TransactionalEmailTemplates.StaffWelcome,
+                target.Email!, new StaffWelcomeEmail(target.Name, setupLink, target.Role.ToString()));
+            await _auditService.LogActionAsync(actingUserId, "STAFF_SETUP_QUEUED", "User",
+                target.Id.ToString(), null, new { QueuedAtUtc = DateTime.UtcNow });
+        });
+    }
+
     public async Task ChangeUserStatusAsync(
         Guid userId,
         ProfileStatus newStatus,

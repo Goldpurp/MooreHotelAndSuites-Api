@@ -10,6 +10,7 @@ public interface IStaffService
     Task<IEnumerable<StaffSummaryDto>> GetAllUsersAsync();
     Task OnboardUserAsync(OnboardUserRequest request, Guid actingUserId);
     Task UpdateUserAsync(Guid userId, UpdateStaffRequest request, Guid actingUserId);
+    Task ResendSetupAsync(Guid userId, Guid actingUserId);
     // Task ToggleUserStatusAsync(Guid userId, Guid actingUserId);
     Task ChangeUserStatusAsync(Guid userId, ProfileStatus newStatus, Guid actingUserId);
     Task ChangeAdministratorStatusAsync(
