@@ -29,7 +29,9 @@ public sealed class StaffSetupRecoveryTests(ManualTransferTestFixture fixture)
         var corrected = $"corrected-{Guid.NewGuid():N}@example.test";
         await service.UpdateUserAsync(target.Id, new UpdateStaffRequest
         {
-            FullName = "Staff Recovery", Email = corrected, AssignedRole = UserRole.Staff,
+            FullName = "Staff Recovery",
+            Email = corrected,
+            AssignedRole = UserRole.Staff,
             Department = "Housekeeping"
         }, fixture.Admin.Id);
         await service.ResendSetupAsync(target.Id, fixture.Admin.Id);
@@ -42,7 +44,7 @@ public sealed class StaffSetupRecoveryTests(ManualTransferTestFixture fixture)
         var token = Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(values["token"].ToString()));
         Assert.True(await manager.VerifyUserTokenAsync(user, manager.Options.Tokens.PasswordResetTokenProvider,
             "ResetPassword", token));
-        Assert.True((await manager.ResetPasswordAsync(user, token, "RecoveryTest123!" )).Succeeded);
+        Assert.True((await manager.ResetPasswordAsync(user, token, "RecoveryTest123!")).Succeeded);
         Assert.False(await manager.VerifyUserTokenAsync(user, manager.Options.Tokens.PasswordResetTokenProvider,
             "ResetPassword", token));
         Assert.Equal(UserRole.Staff, user.Role);
