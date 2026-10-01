@@ -167,13 +167,16 @@ public class StaffService : IStaffService
                 throw new InvalidOperationException("The staff role could not be assigned.");
             }
 
-            var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+            var token = await _userManager.GenerateUserTokenAsync(
+                user,
+                _userManager.Options.Tokens.PasswordResetTokenProvider,
+                StaffSetupPolicy.TokenPurpose);
             var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
-            var publicAppUrl = _configuration["PublicAppUrl"]
-                ?? throw new InvalidOperationException("PublicAppUrl is not configured.");
+            var dashboardUrl = _configuration["DashboardUrl"]
+                ?? throw new InvalidOperationException("DashboardUrl is not configured.");
             var setupLink = FrontendLinkBuilder.WithFragment(
-                publicAppUrl,
-                "reset-password",
+                dashboardUrl,
+                "setup-password",
                 new Dictionary<string, string?>
                 {
                     ["userId"] = user.Id.ToString(),
@@ -212,10 +215,13 @@ public class StaffService : IStaffService
             if (target.Role is not (UserRole.Staff or UserRole.Manager) ||
                 (actor.Role == UserRole.Manager && target.Role != UserRole.Staff))
                 throw new UnauthorizedAccessException("This staff account cannot be managed by you.");
-            var token = await _userManager.GeneratePasswordResetTokenAsync(target);
+            var token = await _userManager.GenerateUserTokenAsync(
+                target,
+                _userManager.Options.Tokens.PasswordResetTokenProvider,
+                StaffSetupPolicy.TokenPurpose);
             var setupLink = FrontendLinkBuilder.WithFragment(
-                _configuration["PublicAppUrl"] ?? throw new InvalidOperationException("PublicAppUrl is not configured."),
-                "reset-password", new Dictionary<string, string?>
+                _configuration["DashboardUrl"] ?? throw new InvalidOperationException("DashboardUrl is not configured."),
+                "setup-password", new Dictionary<string, string?>
                 {
                     ["userId"] = target.Id.ToString(),
                     ["token"] = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token))
