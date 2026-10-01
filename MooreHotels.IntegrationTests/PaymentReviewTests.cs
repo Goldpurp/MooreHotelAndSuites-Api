@@ -248,6 +248,20 @@ public sealed class PaymentReviewTests(ManualTransferTestFixture fixture)
         Assert.Equal(PaymentStatus.PaymentReported, await fixture.WithDbAsync(db => db.Bookings.Where(x => x.Id == b.Id).Select(x => x.PaymentStatus).SingleAsync()));
     }
 
+    [Fact]
+    public async Task Booking_reference_cannot_be_recorded_as_the_bank_transaction_id()
+    {
+        var b = await fixture.CreateBookingAsync(paymentStatus: PaymentStatus.PaymentReported);
+        await Assert.ThrowsAsync<BadRequestException>(() => Service(s => s.ResolveAsync(
+            b.BookingCode,
+            Request(b, reference: b.BookingCode),
+            fixture.Admin.Id,
+            default)));
+        var stored = await fixture.WithDbAsync(db => db.Bookings.AsNoTracking().SingleAsync(x => x.Id == b.Id));
+        Assert.Null(stored.TransactionReference);
+        Assert.Equal(PaymentStatus.PaymentReported, stored.PaymentStatus);
+    }
+
     [Theory]
     [InlineData("Staff")]
     [InlineData("Client")]

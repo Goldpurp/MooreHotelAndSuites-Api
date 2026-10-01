@@ -153,9 +153,10 @@ public sealed class PaymentReviewService(
             var bankReference = request.BankReference?.Trim().ToUpperInvariant();
             if (bankReference is null || bankReference.Length < 6 || bankReference.Length > 120 ||
                 bankReference.Any(char.IsControl) ||
+                string.Equals(bankReference, b.BookingCode, StringComparison.OrdinalIgnoreCase) ||
                 request.Amount is not > 0 || request.Amount > 99999999999999m ||
                 decimal.Round(request.Amount.Value, 2) != request.Amount)
-                throw new BadRequestException("Enter the unique bank statement reference and exact verified credit amount (two decimal places maximum).");
+                throw new BadRequestException("Enter the unique bank transaction ID from the statement, not the booking reference, and the exact verified credit amount (two decimal places maximum).");
             if (b.Currency != "NGN") throw new BadRequestException("Only verified NGN bank credits can be reconciled here.");
             var creditKey = "bank-credit:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bankReference)));
             // Global lock + unique ledger key prevent reuse across different bookings.
