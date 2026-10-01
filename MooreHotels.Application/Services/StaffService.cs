@@ -176,9 +176,10 @@ public class StaffService : IStaffService
                 ?? throw new InvalidOperationException("DashboardUrl is not configured.");
             var setupLink = FrontendLinkBuilder.WithFragment(
                 dashboardUrl,
-                "setup-password",
+                string.Empty,
                 new Dictionary<string, string?>
                 {
+                    ["route"] = "setup-password",
                     ["userId"] = user.Id.ToString(),
                     ["token"] = encodedToken
                 });
@@ -221,8 +222,9 @@ public class StaffService : IStaffService
                 StaffSetupPolicy.TokenPurpose);
             var setupLink = FrontendLinkBuilder.WithFragment(
                 _configuration["DashboardUrl"] ?? throw new InvalidOperationException("DashboardUrl is not configured."),
-                "setup-password", new Dictionary<string, string?>
+                string.Empty, new Dictionary<string, string?>
                 {
+                    ["route"] = "setup-password",
                     ["userId"] = target.Id.ToString(),
                     ["token"] = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token))
                 });
