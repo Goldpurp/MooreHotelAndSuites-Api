@@ -30,7 +30,7 @@ public class JwtService : IJwtService
             ?? throw new InvalidOperationException("Jwt:Issuer is not configured.");
         var audience = _config["Jwt:Audience"]
             ?? throw new InvalidOperationException("Jwt:Audience is not configured.");
-        var expirationMinutes = Math.Clamp(_config.GetValue<int?>("Jwt:ExpirationMinutes") ?? 60, 5, 1440);
+        var expirationMinutes = Math.Clamp(_config.GetValue<int?>("Jwt:ExpirationMinutes") ?? 480, 5, 1440);
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey));
         var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
 

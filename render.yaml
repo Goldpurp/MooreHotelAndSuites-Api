@@ -33,7 +33,7 @@ services:
       - key: Jwt__Audience
         value: MooreHotels_Clients
       - key: Jwt__ExpirationMinutes
-        value: 60
+        value: 480
       - key: PublicAppUrl
         value: https://moorehotelandsuites.com
       - key: DashboardUrl

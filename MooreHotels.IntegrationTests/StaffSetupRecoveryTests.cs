@@ -48,7 +48,8 @@ public sealed class StaffSetupRecoveryTests(ManualTransferTestFixture fixture)
         Assert.Equal("http", link.Scheme);
         Assert.Equal("localhost", link.Host);
         Assert.Equal(3000, link.Port);
-        Assert.Equal("/setup-password", link.AbsolutePath);
+        Assert.Equal("/", link.AbsolutePath);
+        Assert.Equal("setup-password", values["route"].ToString());
         Assert.Equal(target.Id.ToString(), values["userId"].ToString());
         Assert.True(await manager.VerifyUserTokenAsync(
             user,
