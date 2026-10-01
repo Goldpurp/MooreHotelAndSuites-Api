@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using MooreHotels.Application.Common;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces;
 using MooreHotels.Application.Interfaces.Services;
@@ -11,6 +12,7 @@ using MooreHotels.Infrastructure.Persistence;
 using System.Text;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.Http.Json;
 
 namespace MooreHotels.IntegrationTests;
 
@@ -40,17 +42,56 @@ public sealed class StaffSetupRecoveryTests(ManualTransferTestFixture fixture)
         var db = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
         var message = await db.EmailOutboxMessages.SingleAsync(x => x.Recipient == corrected);
         var payload = scope.ServiceProvider.GetRequiredService<IEmailOutbox>().ReadPayload<StaffWelcomeEmail>(message);
-        var values = QueryHelpers.ParseQuery(new Uri(payload.SetupLink).Fragment.TrimStart('#'));
+        var link = new Uri(payload.SetupLink);
+        var values = QueryHelpers.ParseQuery(link.Fragment.TrimStart('#'));
         var token = Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(values["token"].ToString()));
-        Assert.True(await manager.VerifyUserTokenAsync(user, manager.Options.Tokens.PasswordResetTokenProvider,
-            "ResetPassword", token));
-        Assert.True((await manager.ResetPasswordAsync(user, token, "RecoveryTest123!")).Succeeded);
-        Assert.False(await manager.VerifyUserTokenAsync(user, manager.Options.Tokens.PasswordResetTokenProvider,
-            "ResetPassword", token));
+        Assert.Equal("http", link.Scheme);
+        Assert.Equal("localhost", link.Host);
+        Assert.Equal(3000, link.Port);
+        Assert.Equal("/setup-password", link.AbsolutePath);
+        Assert.Equal(target.Id.ToString(), values["userId"].ToString());
+        Assert.True(await manager.VerifyUserTokenAsync(
+            user,
+            manager.Options.Tokens.PasswordResetTokenProvider,
+            StaffSetupPolicy.TokenPurpose,
+            token));
         Assert.Equal(UserRole.Staff, user.Role);
         Assert.Equal("Housekeeping", user.Department);
         Assert.Equal(corrected, user.Email);
         Assert.True(await db.AuditLogs.AnyAsync(x => x.Action == "STAFF_SETUP_QUEUED" && x.EntityId == target.Id.ToString()));
+    }
+
+    [Fact]
+    public async Task Dedicated_setup_endpoint_accepts_staff_token_once_and_rejects_it_as_password_reset()
+    {
+        var target = await fixture.CreateUserAsync(UserRole.Staff);
+        using var scope = fixture.Services.CreateScope();
+        var manager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
+        var service = scope.ServiceProvider.GetRequiredService<IStaffService>();
+        var db = scope.ServiceProvider.GetRequiredService<MooreHotelsDbContext>();
+        var targetUser = (await manager.FindByIdAsync(target.Id.ToString()))!;
+        await service.ResendSetupAsync(target.Id, fixture.Admin.Id);
+        var message = await db.EmailOutboxMessages.SingleAsync(x => x.Recipient == targetUser.Email);
+        var payload = scope.ServiceProvider.GetRequiredService<IEmailOutbox>().ReadPayload<StaffWelcomeEmail>(message);
+        var values = QueryHelpers.ParseQuery(new Uri(payload.SetupLink).Fragment.TrimStart('#'));
+        var request = new
+        {
+            UserId = values["userId"].ToString(),
+            Token = values["token"].ToString(),
+            NewPassword = "StaffSetupTest123!",
+            ConfirmNewPassword = "StaffSetupTest123!"
+        };
+
+        using var response = await fixture.Client.PostAsJsonAsync("/api/auth/setup-password", request);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await db.Entry(targetUser).ReloadAsync();
+        Assert.True(await manager.CheckPasswordAsync(targetUser, request.NewPassword));
+
+        using var replay = await fixture.Client.PostAsJsonAsync("/api/auth/setup-password", request);
+        Assert.Equal(HttpStatusCode.BadRequest, replay.StatusCode);
+
+        using var resetAttempt = await fixture.Client.PostAsJsonAsync("/api/auth/reset-password", request);
+        Assert.Equal(HttpStatusCode.BadRequest, resetAttempt.StatusCode);
     }
 
     [Fact]

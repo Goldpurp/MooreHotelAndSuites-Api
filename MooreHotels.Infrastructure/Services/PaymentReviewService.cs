@@ -19,9 +19,7 @@ public sealed class PaymentReviewService(
 {
     public async Task<IReadOnlyList<PaymentReviewItem>> GetQueueAsync(Guid actorId, CancellationToken ct)
     {
-        if (!await db.Users.AnyAsync(u => u.Id == actorId && u.Status == ProfileStatus.Active &&
-            (u.Role == UserRole.Admin || u.Role == UserRole.Manager), ct))
-            throw new UnauthorizedAccessException("An active manager or administrator is required.");
+        await RequireReviewerAsync(actorId, ct);
         var bookings = await db.Bookings.AsNoTracking().Include(b => b.Guest)
             .Where(b => b.PaymentStatus == PaymentStatus.PaymentReported)
             .OrderBy(b => b.CreatedAt).Take(500).ToListAsync(ct);
@@ -38,6 +36,33 @@ public sealed class PaymentReviewService(
                 $"{b.Guest?.FirstName} {b.Guest?.LastName}", b.Status.ToString(), b.Amount, b.Currency,
                 reported, now >= reported.AddHours(1), b.Status == BookingStatus.Pending);
         }).ToArray();
+    }
+
+    public async Task<PaymentReviewRoomOptions> GetReplacementRoomsAsync(
+        string code,
+        Guid actorId,
+        CancellationToken ct)
+    {
+        await RequireReviewerAsync(actorId, ct);
+        var normalized = code.Trim().ToUpperInvariant();
+        var booking = await db.Bookings.AsNoTracking()
+            .Include(b => b.RoomType)
+            .SingleOrDefaultAsync(b => b.BookingCode == normalized, ct)
+            ?? throw new NotFoundException("Booking not found.");
+        if (booking.PaymentMethod != PaymentMethod.DirectTransfer ||
+            booking.PaymentStatus != PaymentStatus.PaymentReported ||
+            booking.Status is not (BookingStatus.Pending or BookingStatus.Cancelled))
+            throw new BadRequestException("This reservation is not awaiting a bank-transfer review.");
+        if (booking.CheckIn < hotelTime.GetLocalDayStartUtc(hotelTime.Today) || booking.CheckOut <= DateTime.UtcNow)
+            throw new BadRequestException("Past stays cannot be restored. Arrange a refund or a new reservation.");
+
+        var rooms = await GetEligibleReplacementRoomsAsync(booking, ct);
+        return new PaymentReviewRoomOptions(
+            booking.BookingCode,
+            booking.RoomQuantity,
+            booking.RoomTypeId,
+            booking.RoomType?.Name ?? "Reserved room type",
+            rooms);
     }
 
     public Task<PaymentReviewResult> ReportAsync(string code, string? token, Guid? userId, CancellationToken ct) =>
@@ -144,13 +169,30 @@ public sealed class PaymentReviewService(
                     throw new BadRequestException("Confirmation requires the full reservation amount. Reconcile partial or excess payments separately; do not invent a matching amount.");
                 if (b.CheckIn < hotelTime.GetLocalDayStartUtc(hotelTime.Today) || b.CheckOut <= now)
                     throw new BadRequestException("Past stays cannot be restored. Arrange a refund or a new reservation.");
-                await VerifyInventoryAsync(b, ct);
                 // Only automatically-expired reservations may be restored. Other
                 // cancellations may carry penalties or separate commitments.
                 if (b.Status == BookingStatus.Cancelled && !await db.AuditLogs.AnyAsync(a =>
                     a.EntityId == b.Id.ToString() &&
                     (a.Action == "UNCONFIRMED_BOOKING_EXPIRED" || a.Action == "PAYMENT_REPORT_AFTER_EXPIRY"), ct))
                     throw new BadRequestException("Only an automatically expired reservation can be restored. Arrange a refund or a new booking.");
+                var replacementRoomIds = request.ReplacementRoomIds?
+                    .Where(id => id != Guid.Empty)
+                    .Distinct()
+                    .ToArray() ?? [];
+                if (b.Status == BookingStatus.Cancelled)
+                {
+                    if (replacementRoomIds.Length != b.RoomQuantity)
+                        throw new BadRequestException($"Choose {b.RoomQuantity} available replacement room{(b.RoomQuantity == 1 ? string.Empty : "s")} before restoring this reservation.");
+                    await AssignReplacementRoomsAsync(b, replacementRoomIds, actorId, now, ct);
+                }
+                else if (replacementRoomIds.Length != 0)
+                {
+                    throw new BadRequestException("Replacement rooms are only accepted when restoring an expired reservation.");
+                }
+                await VerifyInventoryAsync(
+                    b,
+                    ct,
+                    replacementRoomIds.Length == 0 ? null : replacementRoomIds);
                 var release = folio.Entries.Where(e => e.SourceType == "Expiration" && e.Direction == FolioEntryDirection.Credit).ToArray();
                 foreach (var entry in release)
                     AddEntry(folio, FolioAccounting.NewEntry(folio, FolioEntryType.Void, FolioEntryDirection.Debit,
@@ -192,7 +234,104 @@ public sealed class PaymentReviewService(
                 : "Verified credit recorded. Complete the existing refund approval and payment workflow; no money has been sent automatically.");
         }, ct);
 
-    private async Task VerifyInventoryAsync(Booking b, CancellationToken ct)
+    private async Task RequireReviewerAsync(Guid actorId, CancellationToken ct)
+    {
+        if (!await db.Users.AnyAsync(u => u.Id == actorId && u.Status == ProfileStatus.Active &&
+            (u.Role == UserRole.Admin || u.Role == UserRole.Manager), ct))
+            throw new UnauthorizedAccessException("An active manager or administrator is required.");
+    }
+
+    private async Task<IReadOnlyList<PaymentReviewRoomOption>> GetEligibleReplacementRoomsAsync(
+        Booking booking,
+        CancellationToken ct)
+    {
+        var start = DateOnly.FromDateTime(hotelTime.ToHotelLocalTime(booking.CheckIn));
+        var end = DateOnly.FromDateTime(hotelTime.ToHotelLocalTime(booking.CheckOut));
+        var availability = await inventory.GetAvailabilityExcludingBookingAsync(
+            booking.RoomTypeId, start, end, booking.RoomQuantity, booking.Id, ct);
+        if (!availability.Available) return [];
+
+        var cutoff = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
+        return await db.Rooms.AsNoTracking()
+            .Where(room =>
+                room.RoomTypeId == booking.RoomTypeId &&
+                room.IsOnline &&
+                room.Status == RoomStatus.Available &&
+                !db.RoomInventoryClosures.Any(closure =>
+                    closure.IsActive && closure.RoomId == room.Id &&
+                    closure.StartDate < end && closure.EndDate > start) &&
+                !db.ReservationRooms.Any(other =>
+                    other.BookingId != booking.Id &&
+                    other.AssignedRoomId == room.Id &&
+                    other.Booking != null &&
+                    other.Booking.Status != BookingStatus.Cancelled &&
+                    other.Booking.Status != BookingStatus.CheckedOut &&
+                    other.Booking.Status != BookingStatus.NoShow &&
+                    !(other.Booking.Status == BookingStatus.Pending &&
+                      (other.Booking.PaymentStatus == PaymentStatus.Unpaid ||
+                       other.Booking.PaymentStatus == PaymentStatus.AwaitingVerification) &&
+                      other.Booking.CreatedAt <= cutoff) &&
+                    other.Booking.CheckIn < booking.CheckOut &&
+                    other.Booking.CheckOut > booking.CheckIn))
+            .OrderBy(room => room.RoomNumber)
+            .Select(room => new PaymentReviewRoomOption(room.Id, room.RoomNumber, room.Name))
+            .ToArrayAsync(ct);
+    }
+
+    private async Task AssignReplacementRoomsAsync(
+        Booking booking,
+        Guid[] replacementRoomIds,
+        Guid actorId,
+        DateTime now,
+        CancellationToken ct)
+    {
+        var inventoryKey = BitConverter.ToInt64(booking.RoomTypeId.ToByteArray(), 0);
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({inventoryKey})", ct);
+        foreach (var roomId in replacementRoomIds.OrderBy(id => id))
+        {
+            var roomKey = BitConverter.ToInt64(roomId.ToByteArray(), 0);
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({roomKey})", ct);
+            var room = await db.Rooms
+                .FromSqlInterpolated($"SELECT * FROM rooms WHERE \"Id\" = {roomId} FOR UPDATE")
+                .SingleOrDefaultAsync(ct)
+                ?? throw new BadRequestException("One or more selected rooms no longer exist. Refresh the room choices and try again.");
+            if (room.RoomTypeId != booking.RoomTypeId || !room.IsOnline || room.Status != RoomStatus.Available)
+                throw new BadRequestException("One or more selected rooms are no longer clean, online, and in the paid room type. Refresh the room choices and try again.");
+        }
+
+        var options = await GetEligibleReplacementRoomsAsync(booking, ct);
+        var optionIds = options.Select(room => room.RoomId).ToHashSet();
+        if (replacementRoomIds.Any(id => !optionIds.Contains(id)))
+            throw new BadRequestException("One or more selected rooms are no longer available. Refresh the room choices and try again.");
+
+        var units = await db.ReservationRooms
+            .Where(unit => unit.BookingId == booking.Id && unit.RoomTypeId == booking.RoomTypeId)
+            .OrderBy(unit => unit.Sequence)
+            .ToArrayAsync(ct);
+        if (units.Length != booking.RoomQuantity)
+            throw new BadRequestException("Reservation inventory is incomplete. Reconcile the booking before restoring it.");
+
+        for (var index = 0; index < units.Length; index++)
+        {
+            var previousRoomId = units[index].AssignedRoomId;
+            units[index].AssignedRoomId = replacementRoomIds[index];
+            units[index].AssignedAtUtc = now;
+            units[index].AssignedByUserId = actorId;
+            Audit(booking, actorId, "PAYMENT_REVIEW_ROOM_REASSIGNED", new
+            {
+                ReservationRoomId = units[index].Id,
+                PreviousRoomId = previousRoomId,
+                ReplacementRoomId = replacementRoomIds[index],
+                units[index].Sequence
+            });
+        }
+        booking.RoomId = replacementRoomIds[0];
+    }
+
+    private async Task VerifyInventoryAsync(
+        Booking b,
+        CancellationToken ct,
+        IReadOnlyCollection<Guid>? assignedRoomIds = null)
     {
         var key = BitConverter.ToInt64(b.RoomTypeId.ToByteArray(), 0);
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
@@ -202,8 +341,10 @@ public sealed class PaymentReviewService(
         var end = DateOnly.FromDateTime(hotelTime.ToHotelLocalTime(b.CheckOut));
         var availability = await inventory.GetAvailabilityExcludingBookingAsync(b.RoomTypeId, start, end, b.RoomQuantity, b.Id, ct);
         if (!availability.Available) throw new BadRequestException("Room inventory is no longer available. Arrange an alternative with the guest or select Refund.");
-        var assigned = await db.ReservationRooms.Where(r => r.BookingId == b.Id && r.AssignedRoomId != null)
-            .Select(r => r.AssignedRoomId!.Value).ToListAsync(ct);
+        var assigned = assignedRoomIds?.ToList() ?? await db.ReservationRooms
+            .Where(r => r.BookingId == b.Id && r.AssignedRoomId != null)
+            .Select(r => r.AssignedRoomId!.Value)
+            .ToListAsync(ct);
         if (b.RoomId.HasValue && !assigned.Contains(b.RoomId.Value)) assigned.Add(b.RoomId.Value);
         var cutoff = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
         if (await db.Rooms.AnyAsync(r => assigned.Contains(r.Id) &&

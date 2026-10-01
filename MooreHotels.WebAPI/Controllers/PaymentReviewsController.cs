@@ -29,6 +29,14 @@ public sealed class PaymentReviewsController(PaymentReviewService reviews) : Con
         return Ok(await reviews.GetQueueAsync(userId, ct));
     }
 
+    [HttpGet("{code}/review-transfer/rooms")]
+    [Authorize(Roles = "Admin,Manager")]
+    public async Task<IActionResult> ReplacementRooms(string code, CancellationToken ct)
+    {
+        if (!Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var userId)) return Unauthorized();
+        return Ok(await reviews.GetReplacementRoomsAsync(code, userId, ct));
+    }
+
     [HttpPost("{code}/review-transfer")]
     [Authorize(Roles = "Admin,Manager")]
     public async Task<IActionResult> Resolve(string code, ResolveTransferRequest request, CancellationToken ct)

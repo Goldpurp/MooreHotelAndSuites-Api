@@ -29,6 +29,12 @@ public sealed class PaymentReviewTests(ManualTransferTestFixture fixture)
         await scope.ServiceProvider.GetRequiredService<IBookingRepository>().CancelExpiredUnconfirmedAsync(DateTime.UtcNow);
     }
 
+    private Task MarkPaymentReported(Booking booking) => fixture.WithDbAsync(async db =>
+    {
+        (await db.Bookings.SingleAsync(item => item.Id == booking.Id)).PaymentStatus = PaymentStatus.PaymentReported;
+        return await db.SaveChangesAsync();
+    });
+
     private async Task<string> GiveToken(Booking b)
     {
         var token = BookingGuestAccess.GenerateToken();
@@ -74,8 +80,13 @@ public sealed class PaymentReviewTests(ManualTransferTestFixture fixture)
         Assert.Equal(PaymentStatus.Paid, await fixture.WithDbAsync(db => db.Bookings.Where(x => x.Id == b.Id).Select(x => x.PaymentStatus).SingleAsync()));
     }
 
-    private ResolveTransferRequest Request(Booking b, string decision = "Confirm", string? reference = null) =>
-        new(decision, "VERIFY", "Checked the hotel's bank statement and contacted the guest.", reference ?? $"BANK-{Guid.NewGuid():N}", b.Amount);
+    private ResolveTransferRequest Request(
+        Booking b,
+        string decision = "Confirm",
+        string? reference = null,
+        IReadOnlyList<Guid>? replacementRoomIds = null) =>
+        new(decision, "VERIFY", "Checked the hotel's bank statement and contacted the guest.",
+            reference ?? $"BANK-{Guid.NewGuid():N}", b.Amount, replacementRoomIds);
 
     [Fact]
     public async Task Reconciled_credit_can_be_completed_through_existing_refund_controls()
@@ -175,7 +186,11 @@ public sealed class PaymentReviewTests(ManualTransferTestFixture fixture)
     {
         var b = await fixture.CreateBookingAsync(createdAtUtc: DateTime.UtcNow.AddHours(-2));
         await Expire();
-        var result = await Service(s => s.ResolveAsync(b.BookingCode, Request(b), fixture.Manager.Id, default));
+        var result = await Service(s => s.ResolveAsync(
+            b.BookingCode,
+            Request(b, replacementRoomIds: [b.RoomId!.Value]),
+            fixture.Manager.Id,
+            default));
         Assert.Equal("Confirmed", result.Status);
         Assert.Equal("Paid", result.PaymentStatus);
         var balance = await fixture.WithDbAsync(async db => FolioAccounting.Calculate(await db.FolioEntries.Where(e => e.Folio!.BookingId == b.Id).ToListAsync()));
@@ -194,7 +209,11 @@ public sealed class PaymentReviewTests(ManualTransferTestFixture fixture)
             (await db.Rooms.SingleAsync(r => r.Id == b.RoomId)).IsOnline = false;
             return await db.SaveChangesAsync();
         });
-        await Assert.ThrowsAsync<BadRequestException>(() => Service(s => s.ResolveAsync(b.BookingCode, Request(b), fixture.Admin.Id, default)));
+        await Assert.ThrowsAsync<BadRequestException>(() => Service(s => s.ResolveAsync(
+            b.BookingCode,
+            Request(b, replacementRoomIds: [b.RoomId!.Value]),
+            fixture.Admin.Id,
+            default)));
         var result = await Service(s => s.ResolveAsync(b.BookingCode, Request(b, "Refund"), fixture.Admin.Id, default));
         Assert.Equal("Cancelled", result.Status);
         Assert.Equal("RefundPending", result.PaymentStatus);
@@ -265,10 +284,11 @@ public sealed class PaymentReviewTests(ManualTransferTestFixture fixture)
     }
 
     [Fact]
-    public async Task Restoration_cannot_take_a_room_assigned_to_another_guest_even_if_type_has_capacity()
+    public async Task Manager_can_select_a_clean_available_same_type_room_when_original_was_resold()
     {
         var expired = await fixture.CreateBookingAsync(createdAtUtc: DateTime.UtcNow.AddHours(-2));
         await Expire();
+        await MarkPaymentReported(expired);
         var replacement = await fixture.CreateBookingAsync(paymentStatus: PaymentStatus.Paid,
             bookingStatus: BookingStatus.Confirmed, checkInUtc: expired.CheckIn, checkOutUtc: expired.CheckOut);
         var spare = await fixture.CreateRoomAsync();
@@ -281,9 +301,56 @@ public sealed class PaymentReviewTests(ManualTransferTestFixture fixture)
             (await db.Rooms.SingleAsync(r => r.Id == spare.Id)).RoomTypeId = expired.RoomTypeId;
             return await db.SaveChangesAsync();
         });
-        await Assert.ThrowsAsync<BadRequestException>(() => Service(s => s.ResolveAsync(expired.BookingCode, Request(expired), fixture.Admin.Id, default)));
-        Assert.Equal(BookingStatus.Cancelled, await fixture.WithDbAsync(db => db.Bookings.Where(x => x.Id == expired.Id).Select(x => x.Status).SingleAsync()));
+        var choices = await Service(s => s.GetReplacementRoomsAsync(expired.BookingCode, fixture.Admin.Id, default));
+        Assert.DoesNotContain(choices.Rooms, room => room.RoomId == expired.RoomId);
+        Assert.Contains(choices.Rooms, room => room.RoomId == spare.Id);
+        var result = await Service(s => s.ResolveAsync(
+            expired.BookingCode,
+            Request(expired, replacementRoomIds: [spare.Id]),
+            fixture.Admin.Id,
+            default));
+        Assert.Equal("Confirmed", result.Status);
+        Assert.Equal("Paid", result.PaymentStatus);
+        Assert.Equal(spare.Id, await fixture.WithDbAsync(db =>
+            db.Bookings.Where(x => x.Id == expired.Id).Select(x => x.RoomId).SingleAsync()));
+        Assert.Equal(spare.Id, await fixture.WithDbAsync(db =>
+            db.ReservationRooms.Where(x => x.BookingId == expired.Id).Select(x => x.AssignedRoomId).SingleAsync()));
+        Assert.Equal(1, await fixture.WithDbAsync(db => db.AuditLogs.CountAsync(a =>
+            a.Action == "PAYMENT_REVIEW_ROOM_REASSIGNED" && a.EntityId == expired.Id.ToString())));
         Assert.Equal(BookingStatus.Confirmed, await fixture.WithDbAsync(db => db.Bookings.Where(x => x.Id == replacement.Id).Select(x => x.Status).SingleAsync()));
+    }
+
+    [Fact]
+    public async Task Replacement_room_must_be_clean_online_same_type_and_is_rechecked_at_commit()
+    {
+        var expired = await fixture.CreateBookingAsync(createdAtUtc: DateTime.UtcNow.AddHours(-2));
+        await Expire();
+        await MarkPaymentReported(expired);
+        var dirty = await fixture.CreateRoomAsync();
+        var offline = await fixture.CreateRoomAsync();
+        var wrongType = await fixture.CreateRoomAsync();
+        await fixture.WithDbAsync(async db =>
+        {
+            var dirtyRoom = await db.Rooms.SingleAsync(r => r.Id == dirty.Id);
+            dirtyRoom.RoomTypeId = expired.RoomTypeId;
+            dirtyRoom.Status = RoomStatus.Dirty;
+            var offlineRoom = await db.Rooms.SingleAsync(r => r.Id == offline.Id);
+            offlineRoom.RoomTypeId = expired.RoomTypeId;
+            offlineRoom.IsOnline = false;
+            return await db.SaveChangesAsync();
+        });
+
+        var choices = await Service(s => s.GetReplacementRoomsAsync(expired.BookingCode, fixture.Admin.Id, default));
+        Assert.DoesNotContain(choices.Rooms, room => room.RoomId == dirty.Id);
+        Assert.DoesNotContain(choices.Rooms, room => room.RoomId == offline.Id);
+        Assert.DoesNotContain(choices.Rooms, room => room.RoomId == wrongType.Id);
+        await Assert.ThrowsAsync<BadRequestException>(() => Service(s => s.ResolveAsync(
+            expired.BookingCode,
+            Request(expired, replacementRoomIds: [dirty.Id]),
+            fixture.Admin.Id,
+            default)));
+        Assert.Equal(PaymentStatus.PaymentReported, await fixture.WithDbAsync(db =>
+            db.Bookings.Where(x => x.Id == expired.Id).Select(x => x.PaymentStatus).SingleAsync()));
     }
 
     [Fact]

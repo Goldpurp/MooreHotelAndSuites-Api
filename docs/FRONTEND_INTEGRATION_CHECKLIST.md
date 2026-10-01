@@ -23,6 +23,12 @@ longer exists. Password reset uses `POST /api/auth/reset-password` with
 `userId`, `token`, `newPassword`, and `confirmNewPassword`. Neither flow sends
 an email address or token in an API URL.
 
+New Staff and Manager accounts use the staff dashboard's `/setup-password`
+page and `POST /api/auth/setup-password` with the same four JSON fields. The
+staff token has its own purpose and is not accepted by the password-reset
+endpoint. The setup page must never redirect the token through the guest
+website or label the flow as account recovery.
+
 ## Staff MFA
 
 1. After login, check `mfaSetupRequired` in the successful auth response.

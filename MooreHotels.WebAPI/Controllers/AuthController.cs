@@ -421,6 +421,68 @@ public class AuthController : ControllerBase
         });
     }
 
+    [HttpPost("setup-password")]
+    [AllowAnonymous]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
+    public async Task<IActionResult> SetupPassword([FromBody] SetupPasswordRequest request)
+    {
+        if (!Guid.TryParse(request.UserId, out _))
+        {
+            return BadRequest(new { Message = "The staff setup link is invalid or expired." });
+        }
+
+        var user = await _userManager.FindByIdAsync(request.UserId);
+        if (user is null ||
+            user.Status != ProfileStatus.Active ||
+            user.Role is not (UserRole.Staff or UserRole.Manager) ||
+            !user.EmailConfirmed)
+        {
+            return BadRequest(new { Message = "The staff setup link is invalid or expired." });
+        }
+
+        string decodedToken;
+        try
+        {
+            decodedToken = Encoding.UTF8.GetString(WebEncoders.Base64UrlDecode(request.Token));
+        }
+        catch (FormatException)
+        {
+            return BadRequest(new { Message = "The staff setup link is invalid or expired." });
+        }
+
+        var tokenIsValid = await _userManager.VerifyUserTokenAsync(
+            user,
+            _userManager.Options.Tokens.PasswordResetTokenProvider,
+            StaffSetupPolicy.TokenPurpose,
+            decodedToken);
+        if (!tokenIsValid)
+        {
+            return BadRequest(new { Message = "The staff setup link is invalid or expired." });
+        }
+
+        // The public setup token has a purpose distinct from ordinary account
+        // recovery. Exchange it server-side for Identity's reset operation so
+        // it cannot be replayed through the password-reset endpoint.
+        var resetToken = await _userManager.GeneratePasswordResetTokenAsync(user);
+        var result = await _userManager.ResetPasswordAsync(user, resetToken, request.NewPassword);
+        if (!result.Succeeded)
+        {
+            return BadRequest(new
+            {
+                Message = "The password does not meet the staff account requirements.",
+                Errors = result.Errors.Select(error => error.Description)
+            });
+        }
+
+        await _sessionRevocation.RevokeAsync(user.Id, "STAFF_PASSWORD_SETUP");
+
+        return Ok(new
+        {
+            Message = "Your staff password has been created. Sign in to continue.",
+            SignInUrl = _configuration["DashboardUrl"]?.TrimEnd('/')
+        });
+    }
+
     private AcceptedResult RegistrationAccepted() => Accepted(new
     {
         Message = "If registration can be completed, activation instructions will be sent."
