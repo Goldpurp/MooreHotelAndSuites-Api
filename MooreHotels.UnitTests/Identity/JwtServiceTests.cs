@@ -3,6 +3,7 @@ using Microsoft.Extensions.Configuration;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Infrastructure.Identity;
+using Xunit;
 
 namespace MooreHotels.UnitTests.Identity;
 
