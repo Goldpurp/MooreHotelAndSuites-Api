@@ -45,6 +45,7 @@ public sealed record ReservationAmendmentDto(
 public sealed record HousekeepingTaskDto(
     Guid Id,
     Guid RoomId,
+    string RoomName,
     string RoomNumber,
     Guid? BookingId,
     string? BookingCode,

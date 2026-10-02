@@ -770,6 +770,7 @@ public sealed class HousekeepingService : IHousekeepingService
     public static HousekeepingTaskDto ToDto(HousekeepingTask task) => new(
         task.Id,
         task.RoomId,
+        task.Room?.Name ?? string.Empty,
         task.Room?.RoomNumber ?? string.Empty,
         task.BookingId,
         task.Booking?.BookingCode,

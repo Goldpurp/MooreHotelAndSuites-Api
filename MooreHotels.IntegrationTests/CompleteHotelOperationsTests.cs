@@ -107,6 +107,10 @@ public sealed class CompleteHotelOperationsTests
         var cleaning = Assert.Single(
             await housekeeping.GetTasksAsync(),
             item => item.BookingId == booking.Id && item.Type == HousekeepingTaskType.CheckoutCleaning);
+        var assignedRoom = await _fixture.WithDbAsync(db => db.Rooms.AsNoTracking()
+            .SingleAsync(room => room.Id == booking.RoomId));
+        Assert.Equal(assignedRoom.Name, cleaning.RoomName);
+        Assert.Equal(assignedRoom.RoomNumber, cleaning.RoomNumber);
         Assert.Equal(RoomStatus.Dirty, await RoomStatusAsync(booking.RoomId!.Value));
         await housekeeping.UpdateTaskAsync(
             cleaning.Id,
