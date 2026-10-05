@@ -68,6 +68,44 @@ public sealed class PaymentReadinessTests(ManualTransferTestFixture fixture)
         foreach (var response in responses) response.Dispose();
     }
 
+    [Theory]
+    [InlineData("confirm")]
+    [InlineData("review")]
+    [InlineData("folio")]
+    public async Task Reference_matching_is_literal_and_rejects_legacy_case_variants(string route)
+    {
+        var prefix = "BANK-" + Guid.NewGuid().ToString("N");
+        var first = await fixture.CreateBookingAsync();
+        using var initial = await Send(fixture.Admin, HttpMethod.Post,
+            $"/api/bookings/{first.BookingCode}/confirm-transfer",
+            new { confirmationText = "ACCEPT", bankReference = prefix + "AB!", amount = first.Amount, reason = "Matched hotel bank statement credit" });
+        Assert.Equal(HttpStatusCode.OK, initial.StatusCode);
+
+        var literal = prefix + "%_!";
+        var target = await fixture.CreateBookingAsync(paymentStatus: PaymentStatus.PaymentReported);
+        var duplicate = await fixture.CreateBookingAsync(paymentStatus: PaymentStatus.PaymentReported);
+        Task<HttpResponseMessage> Submit(MooreHotels.Domain.Entities.Booking booking) => route switch
+        {
+            "review" => Send(fixture.Admin, HttpMethod.Post, $"/api/bookings/{booking.BookingCode}/review-transfer",
+                new { decision = "Confirm", confirmationText = "VERIFY", bankReference = literal, amount = booking.Amount, reason = "Matched hotel bank statement credit" }),
+            "folio" => Send(fixture.Admin, HttpMethod.Post, $"/api/folios/{booking.BookingCode}/payments",
+                new { amount = booking.Amount, method = "BankTransfer", externalReference = literal, idempotencyKey = Guid.NewGuid().ToString("N") }),
+            _ => Send(fixture.Admin, HttpMethod.Post, $"/api/bookings/{booking.BookingCode}/confirm-transfer",
+                new { confirmationText = "ACCEPT", bankReference = literal, amount = booking.Amount, reason = "Matched hotel bank statement credit" })
+        };
+        using var accepted = await Submit(target);
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        await fixture.WithDbAsync(async db =>
+        {
+            var entry = await db.FolioEntries.SingleAsync(e => e.Folio!.BookingId == target.Id && e.Type == FolioEntryType.Payment);
+            entry.ExternalReference = literal.ToLowerInvariant();
+            entry.IdempotencyKey = "legacy-" + Guid.NewGuid().ToString("N");
+            return await db.SaveChangesAsync();
+        });
+        using var rejected = await Submit(duplicate);
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+    }
+
     private async Task<HttpResponseMessage> Send(TestUser actor, HttpMethod method, string path, object? body = null)
     {
         using var request = new HttpRequestMessage(method, path);

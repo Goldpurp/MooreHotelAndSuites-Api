@@ -128,9 +128,11 @@ public sealed class FolioService : IFolioService
                 {
                     reference = BankTransferEvidence.Reference(reference, booking.BookingCode);
                     var creditKey = BankTransferEvidence.CreditKey(reference);
+                    var referencePattern = SqlLikePattern.Literal(reference);
                     await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({creditKey}, 0))", cancellationToken);
                     if (await _db.FolioEntries.AnyAsync(e => e.Type == FolioEntryType.Payment &&
-                        e.ExternalReference != null && e.ExternalReference.ToUpper() == reference, cancellationToken))
+                        e.ExternalReference != null && EF.Functions.ILike(e.ExternalReference, referencePattern,
+                            SqlLikePattern.EscapeCharacter), cancellationToken))
                         throw new BadRequestException("This bank credit has already been recorded. Do not apply it twice.");
                 }
                 var entry = FolioAccounting.NewEntry(

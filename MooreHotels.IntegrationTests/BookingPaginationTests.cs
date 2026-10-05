@@ -43,6 +43,25 @@ public sealed class BookingPaginationTests(ManualTransferTestFixture fixture)
         Assert.Equal(prefix + "31", Assert.Single(last.Items).BookingCode);
     }
 
+    [Theory]
+    [InlineData("%")]
+    [InlineData("_")]
+    [InlineData("!")]
+    public async Task Search_treats_pattern_characters_literally(string character)
+    {
+        var prefix = "SEARCH" + Guid.NewGuid().ToString("N");
+        var matching = await fixture.CreateBookingAsync();
+        var other = await fixture.CreateBookingAsync();
+        await fixture.WithDbAsync(async db =>
+        {
+            (await db.Bookings.SingleAsync(b => b.Id == matching.Id)).TransactionReference = prefix + character + "MATCH";
+            (await db.Bookings.SingleAsync(b => b.Id == other.Id)).TransactionReference = prefix + "XMATCH";
+            return await db.SaveChangesAsync();
+        });
+        var result = await Get($"/api/bookings?search={Uri.EscapeDataString(prefix + character)}");
+        Assert.Equal(matching.Id, Assert.Single(result.Items).Id);
+    }
+
     private async Task<PagedResult<BookingDto>> Get(string path)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, path);

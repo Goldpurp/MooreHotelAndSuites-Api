@@ -156,10 +156,12 @@ public sealed class PaymentReviewService(
             var verifiedAmount = request.Amount ?? throw new BadRequestException("A verified bank credit amount is required.");
             if (b.Currency != "NGN") throw new BadRequestException("Only verified NGN bank credits can be reconciled here.");
             var creditKey = BankTransferEvidence.CreditKey(bankReference);
+            var bankReferencePattern = SqlLikePattern.Literal(bankReference);
             // Global lock + unique ledger key prevent reuse across different bookings.
             await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({creditKey}, 0))", ct);
             if (await db.FolioEntries.AnyAsync(e => e.IdempotencyKey == creditKey ||
-                (e.Type == FolioEntryType.Payment && e.ExternalReference != null && e.ExternalReference.ToUpper() == bankReference), ct))
+                (e.Type == FolioEntryType.Payment && e.ExternalReference != null &&
+                 EF.Functions.ILike(e.ExternalReference, bankReferencePattern, SqlLikePattern.EscapeCharacter)), ct))
                 throw new BadRequestException("This bank credit has already been recorded. Do not apply it twice.");
 
             if (decision == "Confirm")

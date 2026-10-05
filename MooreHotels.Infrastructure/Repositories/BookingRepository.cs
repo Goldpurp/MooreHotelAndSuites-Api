@@ -514,9 +514,11 @@ public class BookingRepository : IBookingRepository
                 FolioAccounting.Calculate(folio.Entries).Payments != 0)
                 throw new BadRequestException("The verified NGN credit must match the full unpaid reservation balance.");
             var creditKey = BankTransferEvidence.CreditKey(bankReference);
+            var bankReferencePattern = SqlLikePattern.Literal(bankReference);
             await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({creditKey}, 0))", cancellationToken);
             if (await _db.FolioEntries.AnyAsync(e => e.IdempotencyKey == creditKey ||
-                (e.Type == FolioEntryType.Payment && e.ExternalReference != null && e.ExternalReference.ToUpper() == bankReference), cancellationToken))
+                (e.Type == FolioEntryType.Payment && e.ExternalReference != null &&
+                 EF.Functions.ILike(e.ExternalReference, bankReferencePattern, SqlLikePattern.EscapeCharacter)), cancellationToken))
                 throw new BadRequestException("This bank credit has already been recorded. Do not apply it twice.");
             if (booking.CheckIn < _hotelTime.GetLocalDayStartUtc(_hotelTime.Today) || booking.CheckOut <= DateTime.UtcNow)
                 throw new BadRequestException("Past stays cannot be confirmed.");
@@ -1007,12 +1009,14 @@ public class BookingRepository : IBookingRepository
 
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var s = search.Trim().ToLowerInvariant();
+            var pattern = $"%{SqlLikePattern.Literal(search.Trim())}%";
             query = query.Where(b =>
-                b.BookingCode.ToLower().Contains(s) ||
-                (b.TransactionReference != null && b.TransactionReference.ToLower().Contains(s)) ||
-                (b.Guest != null && ((b.Guest.FirstName + " " + b.Guest.LastName).ToLower().Contains(s) || b.Guest.Email.ToLower().Contains(s) || b.Guest.Phone.Contains(s))) ||
-                (b.Room != null && b.Room.RoomNumber.ToLower().Contains(s)));
+                EF.Functions.ILike(b.BookingCode, pattern, SqlLikePattern.EscapeCharacter) ||
+                (b.TransactionReference != null && EF.Functions.ILike(b.TransactionReference, pattern, SqlLikePattern.EscapeCharacter)) ||
+                (b.Guest != null && (EF.Functions.ILike(b.Guest.FirstName + " " + b.Guest.LastName, pattern, SqlLikePattern.EscapeCharacter) ||
+                    EF.Functions.ILike(b.Guest.Email, pattern, SqlLikePattern.EscapeCharacter) ||
+                    EF.Functions.ILike(b.Guest.Phone, pattern, SqlLikePattern.EscapeCharacter))) ||
+                (b.Room != null && EF.Functions.ILike(b.Room.RoomNumber, pattern, SqlLikePattern.EscapeCharacter)));
         }
 
         var totalCount = await query.CountAsync(cancellationToken);
