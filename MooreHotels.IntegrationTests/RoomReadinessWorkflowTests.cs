@@ -142,6 +142,8 @@ public sealed class RoomReadinessWorkflowTests(ManualTransferTestFixture fixture
     public async Task Amendment_rechecks_readiness_after_the_quote_without_changing_the_original_stay(bool byType)
     {
         var booking = await fixture.CreateBookingAsync();
+        var originalCheckIn = await fixture.WithDbAsync(db => db.Bookings
+            .Where(b => b.Id == booking.Id).Select(b => b.CheckIn).SingleAsync());
         await using var scope = fixture.Services.CreateAsyncScope();
         var time = scope.ServiceProvider.GetRequiredService<IHotelTimeService>();
         var start = time.Today.ToDateTime(TimeOnly.MinValue);
@@ -156,7 +158,7 @@ public sealed class RoomReadinessWorkflowTests(ManualTransferTestFixture fixture
                 booking.RoomTypeId, 1, start, start.AddDays(2), 1, 0, "Move this reservation to today's arrival."),
             fixture.Admin.Id));
         Assert.True(error is BadRequestException or ConflictException, error?.ToString() ?? "Unsafe amendment was accepted.");
-        Assert.Equal(booking.CheckIn, await fixture.WithDbAsync(db => db.Bookings
+        Assert.Equal(originalCheckIn, await fixture.WithDbAsync(db => db.Bookings
             .Where(b => b.Id == booking.Id).Select(b => b.CheckIn).SingleAsync()));
         Assert.Empty(await amendments.GetHistoryAsync(booking.Id));
         Assert.Null(await fixture.WithDbAsync(db => db.BookingQuotes
