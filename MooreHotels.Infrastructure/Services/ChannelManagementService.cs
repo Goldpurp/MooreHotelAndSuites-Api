@@ -30,6 +30,40 @@ public sealed class ChannelManagementService : IChannelManagementService
                 item.Id, item.Code, item.Name, item.IsActive, item.UpdatedAtUtc))
             .ToListAsync(cancellationToken);
 
+    public async Task<PagedResult<ChannelEventSummaryDto>> GetEventsAsync(
+        Guid channelId, int page = 1, int pageSize = 20, CancellationToken cancellationToken = default)
+    {
+        if (!await _db.DistributionChannels.AnyAsync(c => c.Id == channelId, cancellationToken))
+            throw new NotFoundException("Distribution channel not found.");
+        page = Math.Clamp(page, 1, 1000000);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _db.ChannelEvents.AsNoTracking().Where(e => e.ChannelId == channelId);
+        var total = await query.CountAsync(cancellationToken);
+        var items = await query.OrderByDescending(e => e.CreatedAtUtc).ThenBy(e => e.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(e => new ChannelEventSummaryDto(e.Id, e.Direction, e.Status, e.EventType,
+                e.ExternalReservationId, e.AttemptCount, e.CreatedAtUtc, e.ProcessedAtUtc))
+            .ToListAsync(cancellationToken);
+        return PagedResult<ChannelEventSummaryDto>.Create(items, total, page, pageSize);
+    }
+
+    public async Task<PagedResult<ChannelReservationMappingDto>> GetMappingsAsync(
+        Guid channelId, int page = 1, int pageSize = 20, CancellationToken cancellationToken = default)
+    {
+        if (!await _db.DistributionChannels.AnyAsync(c => c.Id == channelId, cancellationToken))
+            throw new NotFoundException("Distribution channel not found.");
+        page = Math.Clamp(page, 1, 1000000);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _db.ChannelReservationMappings.AsNoTracking().Where(m => m.ChannelId == channelId);
+        var total = await query.CountAsync(cancellationToken);
+        var items = await query.OrderByDescending(m => m.LinkedAtUtc).ThenBy(m => m.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(m => new ChannelReservationMappingDto(m.Id, m.ChannelId, m.Channel!.Code,
+                m.ExternalReservationId, m.BookingId, m.Booking!.BookingCode, m.LinkedAtUtc))
+            .ToListAsync(cancellationToken);
+        return PagedResult<ChannelReservationMappingDto>.Create(items, total, page, pageSize);
+    }
+
     public async Task<DistributionChannelDto> SaveChannelAsync(
         Guid? id,
         SaveDistributionChannelRequest request,
@@ -259,7 +293,9 @@ public sealed class ChannelManagementService : IChannelManagementService
                 ?? throw new NotFoundException("Distribution channel not found.");
             if (!channel.IsActive)
                 throw new BadRequestException("The distribution channel is disabled.");
-            var booking = await _db.Bookings.AsNoTracking().SingleOrDefaultAsync(
+            // Keep the existing booking tracked so adding the mapping cannot
+            // traverse its navigation and try to insert the booking again.
+            var booking = await _db.Bookings.SingleOrDefaultAsync(
                 item => item.Id == request.BookingId, cancellationToken)
                 ?? throw new NotFoundException("Booking not found.");
             var existing = await _db.ChannelReservationMappings

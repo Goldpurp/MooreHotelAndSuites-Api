@@ -40,13 +40,17 @@ actually passed.
    the cloud secret/configuration manager. Evidence references may be ticket or
    vault record IDs; never put credentials or guest data in them.
 
-The free launch profile uses UptimeRobot for five-minute availability and
-operations checks. The default-branch `production-api-monitor.yml` workflow
-adds an independent ten-minute synthetic check for HTTP failures and p95
-latency above two seconds. The workflow excludes one warm-up request so a
-Render Free cold start is reported by availability monitoring without
-distorting warm-service latency. Treat a failed scheduled workflow as an API
-alert and investigate it using the same response procedure below.
+The free launch profile declares UptimeRobot availability and operations checks,
+but their actual operator delivery and coverage require evidence. The October QA
+sample found 150–362-minute gaps in the nominal ten-minute GitHub synthetic
+schedule. Do not describe GitHub cron as guaranteed ten-minute coverage.
+
+Use the independently hosted [monitor service and timer](../ops/monitoring/README.md)
+with a separate missed-run heartbeat, then verify failure delivery and actual
+cadence. It is a local deployment template, not an active monitor. Keep the
+GitHub probe as a secondary check. The probe excludes a warm-up sample when
+measuring warm-service latency; regional availability monitoring must still
+account for cold starts.
 
 ## Quarterly restore drill
 
@@ -101,3 +105,41 @@ alert and investigate it using the same response procedure below.
 | Rejected/invalid webhook | Repeated or unexpected source | Security/payment investigation |
 | Encrypted backup failure | Any | Page database owner |
 | Missed off-provider export | One daily export | Page database owner |
+
+## Encryption-key custody and the current recovery blocker
+
+The original age identity remains unavailable as of 5 October 2026. Existing
+public recipients cannot decrypt historical archives. Do not rotate the backup
+recipient and claim this recovers the old snapshots.
+
+The recovery owner must first check the approved vault/offline custody records.
+If the old identity cannot be found, generate a replacement on the recovery
+owner's trusted machine, keep the private identity in an encrypted vault and an
+independent offline recovery copy, and record two custodians plus a successful
+retrieval test. Never use `/tmp`, a Git repository, a chat message, or a public
+Actions artifact as the sole key store. Store the public recipient and a
+non-sensitive custody record ID in configuration. Retain the old encrypted
+archives in case the original identity is recovered.
+
+After custody is proven, update the public backup recipient, create a new
+snapshot, and restore it into a separately provisioned empty recovery database.
+The [safe restore runner](../scripts/restore-encrypted-backup.sh) requires an exact
+rehearsal database name, rejects existing application objects, decrypts and
+authenticates the complete archive before SQL execution, and restores in one
+transaction. It never invokes `--clean` or overwrites an existing database.
+Provide `RESTORE_AGE_IDENTITY_FILE`, `RESTORE_DRILL_CONNECTION_STRING`,
+`RESTORE_DRILL_EXPECTED_DATABASE` and the encrypted archive path; preserve the
+application PFX and its password through independent secure custody.
+
+Compare source/target business manifests, then prove the restored API can decrypt
+a captured transactional-email payload and the required authentication/MFA
+material using the recovered PFX. Keep outgoing mail, payments and media workers
+disabled in the rehearsal. A database-only restore does not prove application
+key or object-storage recovery. Supabase database backups exclude Storage object
+bytes and custom-role passwords; recover those separately.
+
+Record the new snapshot's digest, expected migration, counts, key custody evidence,
+application decryption results and observed recovery time. Leave the original
+archive and current-production recovery gate unresolved until that evidence exists.
+
+Reference: [Supabase backup scope](https://supabase.com/docs/guides/platform/backups).

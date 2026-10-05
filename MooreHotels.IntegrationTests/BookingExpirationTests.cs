@@ -328,6 +328,9 @@ public sealed class BookingExpirationTests
             {
                 confirmationText = "ACCEPT",
                 confirmationMethod = "TypedAcknowledgement",
+                bankReference = $"BANK-{booking.BookingCode}",
+                amount = booking.Amount,
+                reason = "Matched actual bank statement credit",
                 transactionReference = "IGNORED-LEGACY-REFERENCE"
             })
         };

@@ -5,5 +5,5 @@ namespace MooreHotels.Application.Interfaces.Services;
 
 public interface IAnalyticsService
 {
-    Task<DashboardOverviewDto> GetOverviewAsync();
+    Task<DashboardOverviewDto> GetOverviewAsync(string period = "month");
 }

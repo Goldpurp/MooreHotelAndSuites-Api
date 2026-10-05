@@ -4,6 +4,11 @@ namespace MooreHotels.Application.DTOs;
 
 public sealed class ConfirmTransferRequest
 {
+    [Required, StringLength(120, MinimumLength = 6)]
+    public string? BankReference { get; init; }
+    public decimal? Amount { get; init; }
+    [Required, StringLength(500, MinimumLength = 10)]
+    public string? Reason { get; init; }
     /// <summary>
     /// Must be exactly <c>ACCEPT</c>. Matching is case-sensitive and whitespace is not removed.
     /// </summary>
@@ -14,14 +19,13 @@ public sealed class ConfirmTransferRequest
 
     /// <summary>
     /// Identifies the dashboard acknowledgement UI. The server always stores
-    /// <c>TypedAcknowledgement</c> and does not trust this value as audit data.
+    /// <c>BankStatementReview</c> and does not trust this value as audit data.
     /// </summary>
     [StringLength(50)]
     public string? ConfirmationMethod { get; init; }
 
     /// <summary>
-    /// Deprecated compatibility field. The value is ignored; the API generates
-    /// the real manual-payment reference on the server.
+    /// Deprecated compatibility field, ignored. BankReference supplies bank evidence.
     /// </summary>
     public string? TransactionReference { get; init; }
 }

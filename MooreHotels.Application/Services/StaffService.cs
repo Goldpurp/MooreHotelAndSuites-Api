@@ -458,6 +458,37 @@ public class StaffService : IStaffService
         }
     }
 
+    public async Task UpdateClientAsync(Guid userId, UpdateClientRequest request, Guid actingUserId)
+    {
+        RequireActor(actingUserId);
+        var actor = await _userManager.FindByIdAsync(actingUserId.ToString());
+        if (actor is null || actor.Status != ProfileStatus.Active ||
+            actor.Role is not (UserRole.Admin or UserRole.Manager))
+            throw new UnauthorizedAccessException("An active manager or administrator is required.");
+        if (await _userManager.FindByIdAsync(userId.ToString()) is null)
+            throw new NotFoundException("Client account not found.");
+        var name = RequireText(request.FullName, "Full name", 160);
+        var phone = NormalizePhone(request.Phone);
+        var reason = RequireText(request.Reason, "Correction reason", 500);
+        if (reason.Length < 10) throw new BadRequestException("Correction reason must contain at least 10 characters.");
+        await _transaction.ExecuteWithUserLockAsync(userId, async () =>
+        {
+            var user = await _userManager.FindByIdAsync(userId.ToString())
+                ?? throw new NotFoundException("Client account not found.");
+            if (user.Role != UserRole.Client)
+                throw new BadRequestException("This operation is only for client accounts.");
+            var nameChanged = user.Name != name;
+            var phoneChanged = user.PhoneNumber != phone;
+            user.Name = name;
+            user.PhoneNumber = phone;
+            if (phoneChanged) user.PhoneNumberConfirmed = false;
+            var result = await _userManager.UpdateAsync(user);
+            if (!result.Succeeded) throw new BadRequestException(string.Join(", ", result.Errors.Select(e => e.Description)));
+            await _auditService.LogActionAsync(actingUserId, "CLIENT_PROFILE_UPDATED", "User", user.Id.ToString(),
+                null, new { NameChanged = nameChanged, PhoneChanged = phoneChanged, Reason = reason });
+        });
+    }
+
     public async Task UpdateUserAsync(Guid userId, UpdateStaffRequest request, Guid actingUserId)
     {
         RequireActor(actingUserId);
@@ -468,8 +499,8 @@ public class StaffService : IStaffService
             actingUser.Role is not (UserRole.Admin or UserRole.Manager))
             throw new UnauthorizedAccessException("Acting user is not authorized.");
         if (user is null) throw new NotFoundException("Target staff profile was not found.");
-        if (user.Role == UserRole.Admin)
-            throw new UnauthorizedAccessException("Administrator accounts cannot be edited here.");
+        if (user.Role is UserRole.Admin or UserRole.Client)
+            throw new UnauthorizedAccessException("Only existing staff accounts can be edited here.");
         if (!Enum.IsDefined(request.AssignedRole) || request.AssignedRole is UserRole.Admin or UserRole.Client)
             throw new UnauthorizedAccessException("Only Manager and Staff roles can be assigned here.");
         if (actingUser.Role == UserRole.Manager &&

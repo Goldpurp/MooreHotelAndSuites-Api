@@ -24,6 +24,16 @@ public sealed class ChannelsController : ControllerBase
         [FromBody] SaveDistributionChannelRequest request, CancellationToken ct) =>
         Ok(await _service.SaveChannelAsync(null, request, ActorId(), ct));
 
+    [HttpGet("{channelId:guid}/events")]
+    public async Task<IActionResult> Events(Guid channelId, [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20, CancellationToken ct = default) =>
+        Ok(await _service.GetEventsAsync(channelId, page, pageSize, ct));
+
+    [HttpGet("{channelId:guid}/reservation-mappings")]
+    public async Task<IActionResult> Mappings(Guid channelId, [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20, CancellationToken ct = default) =>
+        Ok(await _service.GetMappingsAsync(channelId, page, pageSize, ct));
+
     [HttpPut("{id:guid}")]
     public async Task<ActionResult<DistributionChannelDto>> Update(
         Guid id, [FromBody] SaveDistributionChannelRequest request, CancellationToken ct) =>

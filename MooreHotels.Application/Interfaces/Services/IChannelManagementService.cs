@@ -4,6 +4,8 @@ namespace MooreHotels.Application.Interfaces.Services;
 
 public interface IChannelManagementService
 {
+    Task<PagedResult<ChannelEventSummaryDto>> GetEventsAsync(Guid channelId, int page = 1, int pageSize = 20, CancellationToken cancellationToken = default);
+    Task<PagedResult<ChannelReservationMappingDto>> GetMappingsAsync(Guid channelId, int page = 1, int pageSize = 20, CancellationToken cancellationToken = default);
     Task<IReadOnlyList<DistributionChannelDto>> GetChannelsAsync(CancellationToken cancellationToken = default);
     Task<DistributionChannelDto> SaveChannelAsync(Guid? id, SaveDistributionChannelRequest request, Guid actorId, CancellationToken cancellationToken = default);
     Task<ChannelEventDto> ReceiveEventAsync(string channelCode, ReceiveChannelEventRequest request, CancellationToken cancellationToken = default);

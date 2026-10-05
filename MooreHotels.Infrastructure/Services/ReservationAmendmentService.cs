@@ -104,7 +104,7 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
                     room => room.Id == quote.RoomId && room.RoomTypeId == roomType.Id,
                     cancellationToken)
                     ?? throw new BadRequestException("The quoted physical room no longer belongs to the room type.");
-                if (!physicalRoom.IsOnline || physicalRoom.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder)
+                if (!RoomReadinessPolicy.CanSell(physicalRoom, quote.CheckInDate <= _hotelTime.Today))
                     throw new BadRequestException("The quoted physical room is not sellable.");
             }
             if (checked(request.AdultCount + request.ChildCount) >
@@ -321,10 +321,14 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
                 cancellationToken))
             throw new ConflictException("The selected room is already assigned during the amended stay.");
 
+        var startDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(checkIn));
+        var endDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(checkOut));
         var physicalRoomIds = await _db.Rooms
-            .Where(room => room.RoomTypeId == roomTypeId && room.IsOnline &&
-                           room.Status != RoomStatus.Maintenance && room.Status != RoomStatus.OutOfOrder)
+            .Where(RoomReadinessPolicy.Sellable(startDate <= _hotelTime.Today))
+            .Where(room => room.RoomTypeId == roomTypeId)
             .Select(room => room.Id).ToArrayAsync(cancellationToken);
+        if (roomId.HasValue && !physicalRoomIds.Contains(roomId.Value))
+            throw new ConflictException("The amended room is no longer ready for these dates.");
         var reservations = await _db.ReservationRooms
             .Where(item => item.BookingId != bookingId && item.RoomTypeId == roomTypeId &&
                            item.Booking != null && item.Booking.CheckIn < checkOut &&
@@ -338,8 +342,6 @@ public sealed class ReservationAmendmentService : IReservationAmendmentService
                              item.Booking.CreatedAt <= expirationCutoff))
             .Select(item => new { item.Booking!.CheckIn, item.Booking.CheckOut })
             .ToListAsync(cancellationToken);
-        var startDate = DateOnly.FromDateTime(checkIn);
-        var endDate = DateOnly.FromDateTime(checkOut);
         var closures = await _db.RoomInventoryClosures
             .Where(item => item.RoomTypeId == roomTypeId && item.IsActive &&
                            item.StartDate < endDate && item.EndDate > startDate)

@@ -1,17 +1,24 @@
 using Microsoft.EntityFrameworkCore;
 using MooreHotels.Application.DTOs;
 using MooreHotels.Application.Interfaces.Repositories;
+using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
 using MooreHotels.Domain.Common;
 using MooreHotels.Infrastructure.Persistence;
+using MooreHotels.Application.Exceptions;
 
 namespace MooreHotels.Infrastructure.Repositories;
 
 public class RoomRepository : IRoomRepository
 {
     private readonly MooreHotelsDbContext _db;
-    public RoomRepository(MooreHotelsDbContext db) => _db = db;
+    private readonly IHotelTimeService _hotelTime;
+    public RoomRepository(MooreHotelsDbContext db, IHotelTimeService hotelTime)
+    {
+        _db = db;
+        _hotelTime = hotelTime;
+    }
 
     public async Task<Room?> GetByIdAsync(Guid id) => await _db.Rooms
         .Include(room => room.RoomType)
@@ -65,6 +72,8 @@ public class RoomRepository : IRoomRepository
         {
             var start = checkIn.Value;
             var end = checkOut.Value;
+            var requireReady = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(start)) <= _hotelTime.Today;
+            query = query.Where(RoomReadinessPolicy.Sellable(requireReady));
             var expirationCutoffUtc = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
             var bookedRoomIds = await _db.ReservationRooms
                 .Where(item => item.AssignedRoomId.HasValue && item.Booking != null &&
@@ -139,6 +148,39 @@ public class RoomRepository : IRoomRepository
             _db.Rooms.Update(room);
         }
         return Task.CompletedTask;
+    }
+
+    // The room editor owns the room-row lock and commits the room, task and audit together.
+    public async Task EnsureCleaningTaskAsync(Guid roomId, Guid actorId)
+    {
+        if (await _db.Bookings.AnyAsync(b => b.Status == BookingStatus.CheckedIn &&
+            (b.RoomId == roomId || b.ReservationRooms.Any(unit => unit.AssignedRoomId == roomId))))
+            throw new ConflictException("This room has an in-house guest. Use a stayover service task or check out the guest first.");
+        if (await _db.HousekeepingTasks.AnyAsync(task => task.RoomId == roomId &&
+            task.Status != OperationalTaskStatus.Completed && task.Status != OperationalTaskStatus.Cancelled &&
+            task.Type != HousekeepingTaskType.Inspection && task.Type != HousekeepingTaskType.StayoverService)) return;
+        var task = new HousekeepingTask
+        {
+            Id = Guid.NewGuid(),
+            RoomId = roomId,
+            Type = HousekeepingTaskType.GeneralCleaning,
+            Status = OperationalTaskStatus.Pending,
+            Priority = WorkPriority.Normal,
+            CreatedByUserId = actorId,
+            CreatedAtUtc = DateTime.UtcNow,
+            Notes = "Cleaning requested from the room editor. Complete cleaning and inspection before releasing the room."
+        };
+        _db.HousekeepingTasks.Add(task);
+        _db.AuditLogs.Add(new AuditLog
+        {
+            Id = Guid.NewGuid(),
+            ProfileId = actorId,
+            Action = "HOUSEKEEPING_TASK_CREATED",
+            EntityType = "HousekeepingTask",
+            EntityId = task.Id.ToString(),
+            CreatedAt = task.CreatedAtUtc,
+            NewDataJson = System.Text.Json.JsonSerializer.Serialize(new { task.RoomId, task.Type, Reason = task.Notes })
+        });
     }
 
     public void AddInventoryPeriod(RoomInventoryPeriod period) =>

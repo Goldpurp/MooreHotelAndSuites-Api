@@ -5,6 +5,7 @@ namespace MooreHotels.Application.Interfaces.Services;
 
 public interface IFolioService
 {
+    Task<PagedResult<PaymentBookingDto>> GetPaymentsAsync(int page, int pageSize, CancellationToken cancellationToken = default);
     Task<FolioDto> GetByBookingCodeAsync(string bookingCode, CancellationToken cancellationToken = default);
     Task<FolioDto> PostChargeAsync(string bookingCode, PostFolioChargeRequest request, Guid actorId, CancellationToken cancellationToken = default);
     Task<FolioDto> PostPaymentAsync(string bookingCode, PostFolioPaymentRequest request, Guid actorId, CancellationToken cancellationToken = default);

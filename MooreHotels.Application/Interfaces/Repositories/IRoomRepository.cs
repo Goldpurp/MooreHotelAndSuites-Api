@@ -23,6 +23,7 @@ public interface IRoomRepository
     Task AddAsync(Room room);
     Task AddRoomTypeAsync(RoomType roomType);
     Task UpdateAsync(Room room);
+    Task EnsureCleaningTaskAsync(Guid roomId, Guid actorId);
     void AddInventoryPeriod(RoomInventoryPeriod period);
     void RemoveInventoryPeriod(RoomInventoryPeriod period);
     Task DeleteAsync(Room room);

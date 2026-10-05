@@ -46,6 +46,12 @@ jobs:
           done
       - name: Verify formatting
         run: dotnet format MooreHotels.sln --no-restore --verify-no-changes
+      - name: Verify monitoring and restore safeguards
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python3 docs/qa-harness/monitor_runner_test.py
+          python3 docs/qa-harness/restore_runner_test.py
       - name: Build Release
         run: dotnet build MooreHotels.sln --configuration Release --no-restore -warnaserror
       - name: Run unit tests

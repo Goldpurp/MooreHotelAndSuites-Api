@@ -1,6 +1,7 @@
-name: Production API synthetic monitor
+name: Production API secondary synthetic monitor
 
 on:
+  # Best-effort secondary check. Independent cadence and missed-run alerts are required.
   schedule:
     - cron: '3,13,23,33,43,53 * * * *'
   workflow_dispatch:

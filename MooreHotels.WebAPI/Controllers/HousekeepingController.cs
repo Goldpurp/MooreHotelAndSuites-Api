@@ -40,7 +40,17 @@ public sealed class HousekeepingController : ControllerBase
 public sealed class MaintenanceController : ControllerBase
 {
     private readonly IHousekeepingService _service;
-    public MaintenanceController(IHousekeepingService service) => _service = service;
+    private readonly IRoomService _rooms;
+    public MaintenanceController(IHousekeepingService service, IRoomService rooms)
+    {
+        _service = service;
+        _rooms = rooms;
+    }
+
+    [HttpGet("rooms")]
+    public async Task<IActionResult> GetRooms() =>
+        Ok((await _rooms.GetAllRoomsAsync(includeOffline: true))
+            .Select(room => new { room.Id, room.Name, room.RoomNumber, room.Status }));
 
     [HttpGet("work-orders")]
     public async Task<ActionResult<IReadOnlyList<MaintenanceWorkOrderDto>>> Get(CancellationToken ct) =>

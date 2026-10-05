@@ -285,7 +285,9 @@ public class ProfileService : IProfileService
                 Rooms: b.ReservationRooms.OrderBy(item => item.Sequence)
                     .Select(item => new PublicReservationRoomDto(
                         item.Id, item.Sequence, item.RoomTypeId,
-                        item.RoomTypeCode, item.RoomTypeName))
+                        item.RoomTypeCode, item.RoomTypeName,
+                        item.AssignedRoom?.Name,
+                        PublicReservationRoomDto.StatusFor(b.Status, item.AssignedRoomId.HasValue)))
                     .ToArray(),
                 Folio: b.Folio is null ? null : ToFolioSummary(b.Folio),
                 ReservationPolicy: new ReservationPolicySnapshotDto(

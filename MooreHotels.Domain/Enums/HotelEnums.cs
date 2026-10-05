@@ -118,7 +118,8 @@ public enum HousekeepingTaskType
     StayoverService,
     Inspection,
     MaintenanceRecovery,
-    RoomMoveCleaning
+    RoomMoveCleaning,
+    GeneralCleaning
 }
 
 public enum OperationalTaskStatus

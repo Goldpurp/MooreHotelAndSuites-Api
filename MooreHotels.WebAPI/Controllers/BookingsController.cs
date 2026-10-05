@@ -490,7 +490,9 @@ public class BookingsController : ControllerBase
             room.Sequence,
             room.RoomTypeId,
             room.RoomTypeCode,
-            room.RoomTypeName)).ToArray(),
+            room.RoomTypeName,
+            room.AssignedRoomName,
+            PublicReservationRoomDto.StatusFor(booking.Status, room.AssignedRoomId.HasValue))).ToArray(),
         booking.Folio,
         booking.ReservationPolicy);
 

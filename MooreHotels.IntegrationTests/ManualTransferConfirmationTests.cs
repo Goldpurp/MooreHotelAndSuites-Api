@@ -47,8 +47,8 @@ public sealed class ManualTransferConfirmationTests
         Assert.Equal(booking.BookingCode, body.Data.BookingCode);
         Assert.Equal("Paid", body.Data.PaymentStatus);
         Assert.Equal("Confirmed", body.Data.Status);
-        Assert.Equal("TypedAcknowledgement", body.Data.ConfirmationMethod);
-        Assert.StartsWith($"MANUAL-{booking.BookingCode}-", body.Data.TransactionReference);
+        Assert.Equal("BankStatementReview", body.Data.ConfirmationMethod);
+        Assert.Equal($"BANK-{booking.BookingCode}", body.Data.TransactionReference);
         Assert.DoesNotContain("CLIENT-SUPPLIED", body.Data.TransactionReference);
         Assert.Equal(DateTimeKind.Utc, body.Data.ConfirmedAtUtc.Kind);
         await _fixture.FlushEmailOutboxAsync();
@@ -190,7 +190,7 @@ public sealed class ManualTransferConfirmationTests
     }
 
     [Fact]
-    public async Task Server_generated_references_are_unique()
+    public async Task Submitted_bank_references_are_preserved()
     {
         var first = await _fixture.CreateBookingAsync();
         var second = await _fixture.CreateBookingAsync();
@@ -203,8 +203,8 @@ public sealed class ManualTransferConfirmationTests
         Assert.NotNull(firstBody);
         Assert.NotNull(secondBody);
         Assert.NotEqual(firstBody.Data.TransactionReference, secondBody.Data.TransactionReference);
-        Assert.StartsWith($"MANUAL-{first.BookingCode}-", firstBody.Data.TransactionReference);
-        Assert.StartsWith($"MANUAL-{second.BookingCode}-", secondBody.Data.TransactionReference);
+        Assert.Equal($"BANK-{first.BookingCode}", firstBody.Data.TransactionReference);
+        Assert.Equal($"BANK-{second.BookingCode}", secondBody.Data.TransactionReference);
     }
 
     [Fact]
@@ -227,13 +227,13 @@ public sealed class ManualTransferConfirmationTests
         Assert.Equal(booking.Amount, data.GetProperty("AmountConfirmed").GetDecimal());
         Assert.Equal("AwaitingVerification", data.GetProperty("PreviousPaymentStatus").GetString());
         Assert.Equal("Paid", data.GetProperty("NewPaymentStatus").GetString());
-        Assert.StartsWith("MANUAL-", data.GetProperty("InternalConfirmationReference").GetString());
+        Assert.Equal($"BANK-{booking.BookingCode}", data.GetProperty("BankReference").GetString());
         Assert.Equal(_fixture.Manager.Id, data.GetProperty("ConfirmingStaffId").GetGuid());
         Assert.Equal(
             AuditDataSanitizer.RedactedValue,
             data.GetProperty("ConfirmingStaffName").GetString());
         Assert.Equal("Manager", data.GetProperty("ConfirmingStaffRole").GetString());
-        Assert.Equal("TypedAcknowledgement", data.GetProperty("ConfirmationMethod").GetString());
+        Assert.Equal("BankStatementReview", data.GetProperty("ConfirmationMethod").GetString());
         Assert.False(string.IsNullOrWhiteSpace(data.GetProperty("RequestId").GetString()));
         Assert.DoesNotContain("jwt", audit.NewDataJson, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("password", audit.NewDataJson, StringComparison.OrdinalIgnoreCase);
@@ -386,6 +386,9 @@ public sealed class ManualTransferConfirmationTests
             new
             {
                 confirmationText,
+                bankReference = $"BANK-{bookingCode}",
+                amount = await _fixture.WithDbAsync(db => db.Bookings.Where(b => b.BookingCode == bookingCode).Select(b => (decimal?)b.Amount).SingleOrDefaultAsync()) ?? 35000m,
+                reason = "Matched actual bank statement credit",
                 confirmationMethod = "TypedAcknowledgement",
                 transactionReference = legacyReference
             });

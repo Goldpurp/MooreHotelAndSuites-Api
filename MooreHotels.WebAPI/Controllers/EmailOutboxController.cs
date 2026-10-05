@@ -5,6 +5,7 @@ using MooreHotels.Infrastructure.Persistence;
 using MooreHotels.Domain.Entities;
 using System.Security.Claims;
 using System.Text.Json;
+using MooreHotels.Application.DTOs;
 
 namespace MooreHotels.WebAPI.Controllers;
 
@@ -17,6 +18,23 @@ public sealed class EmailOutboxController : ControllerBase
     private readonly MooreHotelsDbContext _db;
 
     public EmailOutboxController(MooreHotelsDbContext db) => _db = db;
+
+    [HttpGet("dead-letters/page")]
+    public async Task<IActionResult> GetDeadLetterPage([FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+    {
+        page = Math.Clamp(page, 1, 1000000);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _db.EmailOutboxMessages.AsNoTracking()
+            .Where(m => m.DeliveredAtUtc == null && m.AttemptCount >= MaximumAttempts);
+        var total = await query.CountAsync(cancellationToken);
+        var items = await query.OrderBy(m => m.CreatedAtUtc).ThenBy(m => m.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(m => new RetryQueueItemDto(m.Id, m.Template, "Email", m.AttemptCount,
+                m.LastErrorCode, m.CreatedAtUtc, m.QuarantinedAtUtc == null))
+            .ToListAsync(cancellationToken);
+        return Ok(PagedResult<RetryQueueItemDto>.Create(items, total, page, pageSize));
+    }
 
     [HttpGet("dead-letters")]
     public async Task<IActionResult> GetDeadLetters(

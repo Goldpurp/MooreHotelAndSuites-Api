@@ -15,6 +15,12 @@ public sealed class FoliosController : ControllerBase
 
     public FoliosController(IFolioService folios) => _folios = folios;
 
+    [HttpGet]
+    [Authorize(Policy = HotelAuthorization.FolioRead)]
+    public async Task<ActionResult<PagedResult<PaymentBookingDto>>> Payments(
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default) =>
+        Ok(await _folios.GetPaymentsAsync(page, pageSize, cancellationToken));
+
     [HttpGet("{bookingCode}")]
     [Authorize(Policy = HotelAuthorization.FolioRead)]
     public async Task<ActionResult<FolioDto>> Get(

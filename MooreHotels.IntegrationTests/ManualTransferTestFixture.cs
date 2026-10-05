@@ -35,6 +35,8 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
     public TestUser Manager { get; private set; } = null!;
     public TestUser Staff { get; private set; } = null!;
     public TestUser ClientUser { get; private set; } = null!;
+    // Opt-in browser QA host; ordinary integration tests keep the in-memory server.
+    public int? BrowserPort { get; init; }
 
     public async Task InitializeAsync()
     {
@@ -90,6 +92,7 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         SetEnvironment("SeedAdmin", "false");
 
         _factory = new TestApiFactory(Monnify, Email);
+        if (BrowserPort is int port) _factory.UseKestrel(port);
         Client = _factory.CreateClient(new WebApplicationFactoryClientOptions
         {
             AllowAutoRedirect = false,

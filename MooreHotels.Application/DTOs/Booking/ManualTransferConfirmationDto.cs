@@ -3,7 +3,7 @@ namespace MooreHotels.Application.DTOs;
 public static class ManualTransferConfirmation
 {
     public const string RequiredText = "ACCEPT";
-    public const string Method = "TypedAcknowledgement";
+    public const string Method = "BankStatementReview";
 }
 
 public sealed record ManualTransferConfirmationDto(

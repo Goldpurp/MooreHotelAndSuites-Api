@@ -123,6 +123,8 @@ public static class ServiceCollectionExtensions
             })
             .AddJsonOptions(options =>
             {
+                // Keep parser/CLR type details out of public validation responses.
+                options.AllowInputFormatterExceptionMessages = false;
                 options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase;
                 options.JsonSerializerOptions.Converters.Add(
                     new JsonStringEnumConverter(JsonNamingPolicy.CamelCase, allowIntegerValues: false));

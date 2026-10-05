@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using MooreHotels.Application.Common;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -22,7 +23,7 @@ public sealed class PaymentReviewService(
         await RequireReviewerAsync(actorId, ct);
         var bookings = await db.Bookings.AsNoTracking().Include(b => b.Guest)
             .Where(b => b.PaymentStatus == PaymentStatus.PaymentReported)
-            .OrderBy(b => b.CreatedAt).Take(500).ToListAsync(ct);
+            .OrderBy(b => b.CreatedAt).ThenBy(b => b.Id).ToListAsync(ct);
         var ids = bookings.Select(b => b.Id.ToString()).ToArray();
         var reports = await db.AuditLogs.AsNoTracking()
             .Where(a => a.Action == "PAYMENT_REPORTED" && ids.Contains(a.EntityId))
@@ -150,18 +151,15 @@ public sealed class PaymentReviewService(
                 return Result(b, "Report rejected and room released. No payment or refund was recorded.");
             }
 
-            var bankReference = request.BankReference?.Trim().ToUpperInvariant();
-            if (bankReference is null || bankReference.Length < 6 || bankReference.Length > 120 ||
-                bankReference.Any(char.IsControl) ||
-                string.Equals(bankReference, b.BookingCode, StringComparison.OrdinalIgnoreCase) ||
-                request.Amount is not > 0 || request.Amount > 99999999999999m ||
-                decimal.Round(request.Amount.Value, 2) != request.Amount)
-                throw new BadRequestException("Enter the unique bank transaction ID from the statement, not the booking reference, and the exact verified credit amount (two decimal places maximum).");
+            var bankReference = BankTransferEvidence.Reference(request.BankReference, b.BookingCode);
+            BankTransferEvidence.Amount(request.Amount);
+            var verifiedAmount = request.Amount ?? throw new BadRequestException("A verified bank credit amount is required.");
             if (b.Currency != "NGN") throw new BadRequestException("Only verified NGN bank credits can be reconciled here.");
-            var creditKey = "bank-credit:" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(bankReference)));
+            var creditKey = BankTransferEvidence.CreditKey(bankReference);
             // Global lock + unique ledger key prevent reuse across different bookings.
             await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({creditKey}, 0))", ct);
-            if (await db.FolioEntries.AnyAsync(e => e.IdempotencyKey == creditKey, ct))
+            if (await db.FolioEntries.AnyAsync(e => e.IdempotencyKey == creditKey ||
+                (e.Type == FolioEntryType.Payment && e.ExternalReference != null && e.ExternalReference.ToUpper() == bankReference), ct))
                 throw new BadRequestException("This bank credit has already been recorded. Do not apply it twice.");
 
             if (decision == "Confirm")
@@ -214,7 +212,7 @@ public sealed class PaymentReviewService(
                 b.PaymentStatus = PaymentStatus.RefundPending;
             }
             AddEntry(folio, FolioAccounting.NewEntry(folio, FolioEntryType.Payment, FolioEntryDirection.Credit,
-                request.Amount.Value, "Bank credit verified during payment review", "PaymentReview", b.Id.ToString(),
+                verifiedAmount, "Bank credit verified during payment review", "PaymentReview", b.Id.ToString(),
                 creditKey, now, actorId, bankReference));
             b.TransactionReference = bankReference;
             b.PaymentConfirmationMethod = "BankStatementReview";
@@ -254,10 +252,9 @@ public sealed class PaymentReviewService(
 
         var cutoff = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
         return await db.Rooms.AsNoTracking()
+            .Where(RoomReadinessPolicy.Sellable(requireReady: true))
             .Where(room =>
                 room.RoomTypeId == booking.RoomTypeId &&
-                room.IsOnline &&
-                room.Status == RoomStatus.Available &&
                 !db.RoomInventoryClosures.Any(closure =>
                     closure.IsActive && closure.RoomId == room.Id &&
                     closure.StartDate < end && closure.EndDate > start) &&
@@ -296,7 +293,7 @@ public sealed class PaymentReviewService(
                 .FromSqlInterpolated($"SELECT * FROM rooms WHERE \"Id\" = {roomId} FOR UPDATE")
                 .SingleOrDefaultAsync(ct)
                 ?? throw new BadRequestException("One or more selected rooms no longer exist. Refresh the room choices and try again.");
-            if (room.RoomTypeId != booking.RoomTypeId || !room.IsOnline || room.Status != RoomStatus.Available)
+            if (room.RoomTypeId != booking.RoomTypeId || !RoomReadinessPolicy.IsReady(room))
                 throw new BadRequestException("One or more selected rooms are no longer clean, online, and in the paid room type. Refresh the room choices and try again.");
         }
 
@@ -348,8 +345,10 @@ public sealed class PaymentReviewService(
             .ToListAsync(ct);
         if (b.RoomId.HasValue && !assigned.Contains(b.RoomId.Value)) assigned.Add(b.RoomId.Value);
         var cutoff = BookingPaymentPolicy.GetExpirationCutoffUtc(DateTime.UtcNow);
+        var requireReady = start <= hotelTime.Today;
         if (await db.Rooms.AnyAsync(r => assigned.Contains(r.Id) &&
-                (!r.IsOnline || r.Status == RoomStatus.Maintenance || r.Status == RoomStatus.OutOfOrder), ct) ||
+                (!r.IsOnline || r.Status == RoomStatus.Maintenance || r.Status == RoomStatus.OutOfOrder ||
+                 requireReady && r.Status != RoomStatus.Available), ct) ||
             await db.RoomInventoryClosures.AnyAsync(c => c.IsActive && c.RoomId.HasValue && assigned.Contains(c.RoomId.Value) && c.StartDate < end && c.EndDate > start, ct) ||
             await db.Bookings.AnyAsync(other => other.Id != b.Id &&
                 ((other.RoomId.HasValue && assigned.Contains(other.RoomId.Value)) ||
