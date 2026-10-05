@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
+using MooreHotels.Domain.Common;
 using MooreHotels.Domain.Enums;
 
 namespace MooreHotels.IntegrationTests;
@@ -82,8 +83,9 @@ public sealed class PaymentReadinessTests(ManualTransferTestFixture fixture)
         Assert.Equal(HttpStatusCode.OK, initial.StatusCode);
 
         var literal = prefix + "%_!";
-        var target = await fixture.CreateBookingAsync(paymentStatus: PaymentStatus.PaymentReported);
-        var duplicate = await fixture.CreateBookingAsync(paymentStatus: PaymentStatus.PaymentReported);
+        var paymentStatus = route == "review" ? PaymentStatus.PaymentReported : PaymentStatus.AwaitingVerification;
+        var target = await fixture.CreateBookingAsync(paymentStatus: paymentStatus);
+        var duplicate = await fixture.CreateBookingAsync(paymentStatus: paymentStatus);
         Task<HttpResponseMessage> Submit(MooreHotels.Domain.Entities.Booking booking) => route switch
         {
             "review" => Send(fixture.Admin, HttpMethod.Post, $"/api/bookings/{booking.BookingCode}/review-transfer",
@@ -94,12 +96,18 @@ public sealed class PaymentReadinessTests(ManualTransferTestFixture fixture)
                 new { confirmationText = "ACCEPT", bankReference = literal, amount = booking.Amount, reason = "Matched hotel bank statement credit" })
         };
         using var accepted = await Submit(target);
-        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+        Assert.True(accepted.StatusCode == HttpStatusCode.OK, await accepted.Content.ReadAsStringAsync());
+        // Seed a pre-normalization legacy row only in the disposable test database.
+        literal = prefix + "LEGACY%_!";
+        var legacyReference = literal.ToLowerInvariant();
+        var legacyKey = "legacy-" + Guid.NewGuid().ToString("N");
+        var legacy = await fixture.CreateBookingAsync();
         await fixture.WithDbAsync(async db =>
         {
-            var entry = await db.FolioEntries.SingleAsync(e => e.Folio!.BookingId == target.Id && e.Type == FolioEntryType.Payment);
-            entry.ExternalReference = literal.ToLowerInvariant();
-            entry.IdempotencyKey = "legacy-" + Guid.NewGuid().ToString("N");
+            var folio = await db.Folios.SingleAsync(f => f.BookingId == legacy.Id);
+            db.FolioEntries.Add(FolioAccounting.NewEntry(folio, FolioEntryType.Payment,
+                FolioEntryDirection.Credit, legacy.Amount, "Legacy payment fixture", "LegacyPayment",
+                legacy.Id.ToString(), legacyKey, DateTime.UtcNow, fixture.Admin.Id, legacyReference));
             return await db.SaveChangesAsync();
         });
         using var rejected = await Submit(duplicate);
