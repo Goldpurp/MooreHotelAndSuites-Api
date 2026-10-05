@@ -291,6 +291,9 @@ public sealed class GuestBookingSecurityTests
             {
                 confirmationText = "ACCEPT",
                 confirmationMethod = "TypedAcknowledgement",
+                bankReference = $"BANK-{created.BookingCode}",
+                amount = await _fixture.WithDbAsync(db => db.Bookings.Where(b => b.BookingCode == created.BookingCode).Select(b => b.Amount).SingleAsync()),
+                reason = "Matched actual bank statement credit",
                 transactionReference = "IGNORED"
             })
         };

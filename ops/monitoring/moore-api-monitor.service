@@ -1,0 +1,17 @@
+[Unit]
+Description=Moore API operations and latency probe
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+WorkingDirectory=/opt/moore-monitor
+EnvironmentFile=/etc/moore-monitor/monitor.env
+ExecStart=/usr/bin/python3 /opt/moore-monitor/scripts/production-monitor.py
+TimeoutStartSec=220
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictSUIDSGID=yes

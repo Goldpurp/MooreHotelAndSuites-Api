@@ -97,14 +97,25 @@ public sealed record ReservationRoomDto(
     Guid? AssignedRoomId,
     string? AssignedRoomNumber,
     DateTime? AssignedAtUtc,
-    Guid? AssignedByUserId);
+    Guid? AssignedByUserId,
+    string? AssignedRoomName = null);
 
 public sealed record PublicReservationRoomDto(
     Guid Id,
     int Sequence,
     Guid RoomTypeId,
     string RoomTypeCode,
-    string RoomTypeName);
+    string RoomTypeName,
+    string? AssignedRoomName = null,
+    string AssignmentStatus = "Pending")
+{
+    public static string StatusFor(BookingStatus status, bool assigned) => status switch
+    {
+        BookingStatus.Cancelled or BookingStatus.NoShow => "Released",
+        BookingStatus.CheckedOut => "Completed",
+        _ => assigned ? "Assigned" : "Pending"
+    };
+}
 
 public sealed record AssignReservationRoomRequest(
     [Required] Guid RoomId,

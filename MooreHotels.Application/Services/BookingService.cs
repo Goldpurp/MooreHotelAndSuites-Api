@@ -256,7 +256,7 @@ public class BookingService : IBookingService
             throw new BadRequestException("A single reservation cannot exceed 90 nights.");
         if (checkInDate > _hotelTime.Today.AddYears(2))
             throw new BadRequestException("Reservations cannot be created more than two years in advance.");
-        if (room is not null && (!room.IsOnline || room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder))
+        if (room is not null && !RoomReadinessPolicy.CanSell(room, checkInDate == _hotelTime.Today))
             throw new BadRequestException("This room is currently unavailable.");
         var requestedOccupancy = checked(request.AdultCount + request.ChildCount);
         var maximumOccupancy = checked(roomType.MaxOccupancy * request.RoomQuantity);
@@ -676,8 +676,7 @@ public class BookingService : IBookingService
             if (booking.PaymentStatus != PaymentStatus.Paid) throw new BadRequestException("Full payment verification is required.");
             if (assignedRooms.Length != booking.RoomQuantity)
                 throw new BadRequestException("Assign every reserved room before check-in.");
-            if (assignedRooms.Any(assignedRoom =>
-                    !assignedRoom.IsOnline || assignedRoom.Status != RoomStatus.Available))
+            if (assignedRooms.Any(assignedRoom => !RoomReadinessPolicy.IsReady(assignedRoom)))
                 throw new BadRequestException(
                     "Every assigned room must be online, clean, and available before check-in.");
             foreach (var assignedRoom in assignedRooms)
@@ -711,16 +710,13 @@ public class BookingService : IBookingService
         }
         else if (status == BookingStatus.NoShow)
         {
-            if (booking.Status == BookingStatus.CheckedIn || booking.Status == BookingStatus.CheckedOut)
-                throw new BadRequestException("An active or completed stay cannot be marked as a no-show.");
+            if (booking.Status is not (BookingStatus.Pending or BookingStatus.Confirmed))
+                throw new BadRequestException("Only a pending or confirmed reservation can be marked as a no-show.");
             if (DateTime.UtcNow < booking.CheckIn)
                 throw new BadRequestException("A booking cannot be marked as a no-show before check-in time.");
 
-            foreach (var assignedRoom in assignedRooms)
-            {
-                assignedRoom.Status = RoomStatus.Available;
-                await _roomRepo.UpdateAsync(assignedRoom);
-            }
+            // NoShow releases the reservation's inventory hold. The guest never
+            // occupied the room, so this action must not change physical readiness.
             await _folioService.ApplyNoShowPolicyAsync(
                 booking, "Reservation marked as a no-show.", userId);
         }
@@ -802,13 +798,18 @@ public class BookingService : IBookingService
                 "Only an authenticated Admin or Manager can confirm a bank transfer.");
         }
 
+        var bankReference = BankTransferEvidence.Reference(request.BankReference, normalizedCode);
+        BankTransferEvidence.Amount(request.Amount);
+        var reason = request.Reason?.Trim();
+        if (reason is null || reason.Length is < 10 or > 500)
+            throw new BadRequestException("Enter a bank statement review reason of 10–500 characters.");
         return await _bookingRepo.ConfirmManualTransferAsync(
             normalizedCode,
             new ManualTransferConfirmationActor(
                 actingUser.Id,
                 actingUser.Name,
                 actingUser.Role,
-                requestId),
+                requestId, bankReference, request.Amount!.Value, reason),
             cancellationToken);
     }
 
@@ -1325,7 +1326,8 @@ public class BookingService : IBookingService
                     item.AssignedRoomId,
                     item.AssignedRoom?.RoomNumber,
                     item.AssignedAtUtc,
-                    item.AssignedByUserId))
+                    item.AssignedByUserId,
+                    item.AssignedRoom?.Name))
                 .ToArray(),
             Folio: b.Folio is null ? null : MapFolioSummary(b.Folio),
             RefundApprovedAmount: b.RefundApprovedAmount,

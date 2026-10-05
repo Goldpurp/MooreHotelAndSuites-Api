@@ -13,5 +13,5 @@ public class AnalyticsController : ControllerBase
     public AnalyticsController(IAnalyticsService analyticsService) => _analyticsService = analyticsService;
 
     [HttpGet("overview")]
-    public async Task<IActionResult> GetOverview() => Ok(await _analyticsService.GetOverviewAsync());
+    public async Task<IActionResult> GetOverview([FromQuery] string period = "month") => Ok(await _analyticsService.GetOverviewAsync(period));
 }

@@ -1,4 +1,5 @@
 using System.Data;
+using MooreHotels.Application.Common;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -23,6 +24,21 @@ public sealed class FolioService : IFolioService
     {
         _db = db;
         _emailOutbox = emailOutbox;
+    }
+
+    public async Task<PagedResult<PaymentBookingDto>> GetPaymentsAsync(int page, int pageSize, CancellationToken cancellationToken = default)
+    {
+        page = Math.Max(1, page);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _db.Bookings.AsNoTracking();
+        var count = await query.CountAsync(cancellationToken);
+        var rows = await query.OrderByDescending(b => b.CreatedAt).ThenByDescending(b => b.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(b => new PaymentBookingDto(b.Id, b.BookingCode, b.Guest!.FirstName, b.Guest.LastName,
+                b.Status, b.Amount, b.Currency, b.PaymentStatus, b.PaymentMethod, b.TransactionReference,
+                b.PaymentConfirmationMethod, b.CreatedAt, b.RefundAmount, b.RefundApprovedAmount, b.RefundReference))
+            .ToListAsync(cancellationToken);
+        return PagedResult<PaymentBookingDto>.Create(rows, count, page, pageSize);
     }
 
     public async Task<FolioDto> GetByBookingCodeAsync(
@@ -108,6 +124,17 @@ public sealed class FolioService : IFolioService
                     throw new BadRequestException("A staff-posted payment cannot exceed the outstanding balance.");
                 var reference = RequireText(request.ExternalReference, "Payment reference", 160).ToUpperInvariant();
                 var method = NormalizePaymentMethod(request.Method);
+                if (method == "BankTransfer")
+                {
+                    reference = BankTransferEvidence.Reference(reference, booking.BookingCode);
+                    var creditKey = BankTransferEvidence.CreditKey(reference);
+                    var referencePattern = SqlLikePattern.Literal(reference);
+                    await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({creditKey}, 0))", cancellationToken);
+                    if (await _db.FolioEntries.AnyAsync(e => e.Type == FolioEntryType.Payment &&
+                        e.ExternalReference != null && EF.Functions.ILike(e.ExternalReference, referencePattern,
+                            SqlLikePattern.EscapeCharacter), cancellationToken))
+                        throw new BadRequestException("This bank credit has already been recorded. Do not apply it twice.");
+                }
                 var entry = FolioAccounting.NewEntry(
                     folio,
                     FolioEntryType.Payment,

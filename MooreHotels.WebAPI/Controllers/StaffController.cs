@@ -45,6 +45,17 @@ public class StaffController : ControllerBase
         return Ok(allUsers.Where(u => u.Role == UserRole.Client));
     }
 
+    [HttpPut("clients/{id:guid}")]
+    [Authorize(Roles = "Admin,Manager")]
+    [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]
+    public async Task<IActionResult> UpdateClient(Guid id, [FromBody] UpdateClientRequest request)
+    {
+        if (!Guid.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var actorId))
+            return Unauthorized();
+        await _staffService.UpdateClientAsync(id, request, actorId);
+        return Ok(new { Message = "Client account profile updated. Saved guest and stay records are unchanged." });
+    }
+
     [HttpPost("onboard-staff")]
     [Authorize(Roles = "Admin,Manager")]
     [EnableRateLimiting(ServiceCollectionExtensions.AuthRateLimitPolicy)]

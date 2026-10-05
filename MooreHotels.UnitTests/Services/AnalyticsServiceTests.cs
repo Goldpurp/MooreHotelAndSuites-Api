@@ -43,7 +43,7 @@ public class AnalyticsServiceTests
             .ReturnsAsync(Report(today.AddDays(-59), today.AddDays(-30), 600, 300, 1000000m, 40000m));
 
         _bookingRepoMock.Setup(b => b.GetActiveGuestsCountAsync(default)).ReturnsAsync(14);
-        _bookingRepoMock.Setup(b => b.GetDailyRevenueDynamicsAsync(7, default)).ReturnsAsync(new List<RevenuePoint>());
+        _bookingRepoMock.Setup(b => b.GetDailyRevenueDynamicsAsync(30, default)).ReturnsAsync(new List<RevenuePoint>());
         _bookingRepoMock.Setup(b => b.GetActiveOperationsAsync(5, default)).ReturnsAsync(new List<ActiveOperationDto>());
 
         _roomRepoMock.Setup(r => r.GetAssetStatusDistributionAsync(default)).ReturnsAsync(new AssetStatusDistribution(12, 8, 0, 0));

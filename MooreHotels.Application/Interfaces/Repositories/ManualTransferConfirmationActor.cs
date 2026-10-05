@@ -6,4 +6,7 @@ public sealed record ManualTransferConfirmationActor(
     Guid UserId,
     string Name,
     UserRole Role,
-    string RequestId);
+    string RequestId,
+    string BankReference,
+    decimal Amount,
+    string Reason);

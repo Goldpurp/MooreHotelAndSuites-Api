@@ -155,8 +155,8 @@ public sealed class InventoryService : IInventoryService
             .SingleOrDefaultAsync(type => type.Id == roomTypeId && type.IsActive, cancellationToken)
             ?? throw new NotFoundException("Room type not found or inactive.");
         var physicalRoomIds = await _db.Rooms.AsNoTracking()
-            .Where(room => room.RoomTypeId == roomTypeId && room.IsOnline &&
-                           room.Status != RoomStatus.Maintenance && room.Status != RoomStatus.OutOfOrder)
+            .Where(RoomReadinessPolicy.Sellable(checkInDate <= _hotelTime.Today))
+            .Where(room => room.RoomTypeId == roomTypeId)
             .Select(room => room.Id)
             .ToArrayAsync(cancellationToken);
         var startUtc = _hotelTime.GetCheckInUtc(checkInDate.ToDateTime(TimeOnly.MinValue));
@@ -442,13 +442,10 @@ public sealed class InventoryService : IInventoryService
             await _db.Entry(room).Reference(item => item.RoomType).LoadAsync(cancellationToken);
             if (room.RoomTypeId != unit.RoomTypeId)
                 throw new BadRequestException("The physical room does not match the reserved room type.");
-            if (!room.IsOnline || room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder)
-                throw new BadRequestException("The physical room is offline or under maintenance.");
-            if (booking.Status == BookingStatus.CheckedIn && room.Status != RoomStatus.Available)
-                throw new BadRequestException("An in-house room move requires a clean and available destination room.");
-
             var checkInDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckIn));
             var checkOutDate = DateOnly.FromDateTime(_hotelTime.ToHotelLocalTime(booking.CheckOut));
+            if (!RoomReadinessPolicy.CanSell(room, booking.Status == BookingStatus.CheckedIn || checkInDate <= _hotelTime.Today))
+                throw new BadRequestException("The physical room must be online and released after cleaning and inspection for an immediate arrival or room move.");
             if (await _db.RoomInventoryClosures.AnyAsync(closure =>
                     closure.IsActive &&
                     closure.RoomId == room.Id &&
@@ -532,7 +529,8 @@ public sealed class InventoryService : IInventoryService
                 room.Id,
                 room.RoomNumber,
                 unit.AssignedAtUtc,
-                unit.AssignedByUserId);
+                unit.AssignedByUserId,
+                room.Name);
         });
     }
 

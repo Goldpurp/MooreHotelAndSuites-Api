@@ -19,6 +19,23 @@ public sealed class MediaDeletionsController : ControllerBase
 
     public MediaDeletionsController(MooreHotelsDbContext db) => _db = db;
 
+    [HttpGet("failed/page")]
+    public async Task<IActionResult> GetFailedPage([FromQuery] int page = 1,
+        [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
+    {
+        page = Math.Clamp(page, 1, 1000000);
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var query = _db.MediaDeletionJobs.AsNoTracking()
+            .Where(m => m.AttemptCount >= MediaDeletionWorker.MaximumAttempts);
+        var total = await query.CountAsync(cancellationToken);
+        var items = await query.OrderBy(m => m.CreatedAtUtc).ThenBy(m => m.Id)
+            .Skip((page - 1) * pageSize).Take(pageSize)
+            .Select(m => new RetryQueueItemDto(m.Id, m.PublicId, m.SourceType, m.AttemptCount,
+                m.LastErrorCode, m.CreatedAtUtc, true))
+            .ToListAsync(cancellationToken);
+        return Ok(PagedResult<RetryQueueItemDto>.Create(items, total, page, pageSize));
+    }
+
     [HttpGet("failed")]
     public async Task<ActionResult<IReadOnlyList<MediaDeletionJobDto>>> GetFailed(
         CancellationToken cancellationToken)

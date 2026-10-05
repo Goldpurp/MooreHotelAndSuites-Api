@@ -89,7 +89,7 @@ public sealed class PricingService : IPricingService
             room = await _db.Rooms.AsNoTracking().Include(item => item.RoomType)
                 .SingleOrDefaultAsync(item => item.Id == request.RoomId.Value, cancellationToken)
                 ?? throw new NotFoundException("Room not found.");
-            if (!room.IsOnline || room.Status is RoomStatus.Maintenance or RoomStatus.OutOfOrder)
+            if (!RoomReadinessPolicy.CanSell(room, checkInDate == _hotelTime.Today))
                 throw new BadRequestException("This room is currently unavailable.");
             roomType = room.RoomType
                 ?? throw new InvalidOperationException("The room has no configured room type.");

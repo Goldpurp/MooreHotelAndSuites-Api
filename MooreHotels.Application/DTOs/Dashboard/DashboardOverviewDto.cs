@@ -5,7 +5,10 @@ public record DashboardOverviewDto(
     DashboardKpis Kpis,
     List<RevenuePoint> RevenueDynamics,
     AssetStatusDistribution AssetStatus,
-    List<ActiveOperationDto> ActiveOperations);
+    List<ActiveOperationDto> ActiveOperations,
+    DateOnly FromDate = default,
+    DateOnly ToDate = default,
+    OperationalReportDto? Report = null);
 
 public record DashboardKpis(
     decimal NetRevenue,

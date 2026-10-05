@@ -3,6 +3,11 @@ using MooreHotels.Domain.Enums;
 
 namespace MooreHotels.Application.DTOs;
 
+public sealed record ChannelEventSummaryDto(
+    Guid Id, ChannelEventDirection Direction, ChannelEventStatus Status,
+    string EventType, string? ExternalReservationId, int AttemptCount,
+    DateTime CreatedAtUtc, DateTime? ProcessedAtUtc);
+
 public sealed record DistributionChannelDto(
     Guid Id,
     string Code,

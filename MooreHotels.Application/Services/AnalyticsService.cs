@@ -1,4 +1,5 @@
 using MooreHotels.Application.DTOs;
+using MooreHotels.Application.Exceptions;
 using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
 
@@ -23,14 +24,21 @@ public class AnalyticsService : IAnalyticsService
         _hotelTime = hotelTime;
     }
 
-    public async Task<DashboardOverviewDto> GetOverviewAsync()
-        => await GetAccountingGradeOverviewAsync();
+    public async Task<DashboardOverviewDto> GetOverviewAsync(string period = "month")
+        => await GetAccountingGradeOverviewAsync(period);
 
-    private async Task<DashboardOverviewDto> GetAccountingGradeOverviewAsync()
+    private async Task<DashboardOverviewDto> GetAccountingGradeOverviewAsync(string period)
     {
         var today = _hotelTime.Today;
-        var currentFrom = today.AddDays(-29);
-        var previousFrom = currentFrom.AddDays(-30);
+        var days = period.ToLowerInvariant() switch
+        {
+            "day" => 1,
+            "week" => 7,
+            "month" => 30,
+            _ => throw new BadRequestException("Choose day, week, or month for the reporting period.")
+        };
+        var currentFrom = today.AddDays(1 - days);
+        var previousFrom = currentFrom.AddDays(-days);
         var current = await _operationalReporting.GetReportAsync(currentFrom, today);
         var previous = await _operationalReporting.GetReportAsync(previousFrom, currentFrom.AddDays(-1));
         var currentNetReceipts = current.Payments - current.Refunds;
@@ -47,7 +55,7 @@ public class AnalyticsService : IAnalyticsService
             : currentOccupancy > 0 ? 100d : 0d;
         var assetStatus = await _roomRepo.GetAssetStatusDistributionAsync();
         var activeOperations = await _bookingRepo.GetActiveOperationsAsync(5);
-        var revenueDynamics = await _bookingRepo.GetDailyRevenueDynamicsAsync(7);
+        var revenueDynamics = await _bookingRepo.GetDailyRevenueDynamicsAsync(days);
         return new DashboardOverviewDto(
             new DashboardKpis(
                 currentNetReceipts,
@@ -58,6 +66,6 @@ public class AnalyticsService : IAnalyticsService
                 occupancyGrowth),
             revenueDynamics.ToList(),
             assetStatus,
-            activeOperations.ToList());
+            activeOperations.ToList(), currentFrom, today, current);
     }
 }

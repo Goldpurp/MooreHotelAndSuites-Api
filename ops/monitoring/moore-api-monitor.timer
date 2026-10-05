@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Moore operations probe every five minutes
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=5min
+AccuracySec=1s
+Unit=moore-api-monitor.service
+
+[Install]
+WantedBy=timers.target

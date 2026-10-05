@@ -4,6 +4,7 @@ using MooreHotels.Application.Interfaces.Repositories;
 using MooreHotels.Application.Interfaces.Services;
 using MooreHotels.Domain.Entities;
 using MooreHotels.Domain.Enums;
+using MooreHotels.Domain.Common;
 
 namespace MooreHotels.Application.Services;
 
@@ -118,6 +119,8 @@ public class RoomService : IRoomService
 
         if (DateOnly.FromDateTime(checkIn) < _hotelTime.Today)
             return new RoomAvailabilityResponse(false, "Check-in cannot be in the past.");
+        if (!RoomReadinessPolicy.CanSell(room, DateOnly.FromDateTime(checkIn) == _hotelTime.Today))
+            return new RoomAvailabilityResponse(false, "This room has not been cleaned, inspected, and released for today's arrival.");
         if (start >= end)
             return new RoomAvailabilityResponse(false, $"Invalid range. Standard check-out is {_hotelTime.CheckOutTime:HH\\:mm}.");
         if (DateOnly.FromDateTime(checkOut).DayNumber - DateOnly.FromDateTime(checkIn).DayNumber > 90)
@@ -413,6 +416,8 @@ public class RoomService : IRoomService
             room.Amenities = NormalizeAmenities(request.Amenities);
         }
 
+        if (request.Status is RoomStatus.Cleaning or RoomStatus.Dirty)
+            await _roomRepo.EnsureCleaningTaskAsync(room.Id, actorId);
         await _roomRepo.UpdateAsync(room);
         await _auditService.LogActionAsync(actorId, "UPDATE_ROOM", "Room", room.Id.ToString(),
             oldData: oldState,
