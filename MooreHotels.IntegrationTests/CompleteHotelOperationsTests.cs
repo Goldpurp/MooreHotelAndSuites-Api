@@ -119,7 +119,7 @@ public sealed class CompleteHotelOperationsTests
         await housekeeping.UpdateTaskAsync(
             cleaning.Id,
             new UpdateHousekeepingTaskRequest(OperationalTaskStatus.Completed, housekeeper.Id, null, null),
-            housekeeper.Id);
+            _fixture.Manager.Id);
         var inspection = Assert.Single(
             await housekeeping.GetTasksAsync(),
             item => item.BookingId == booking.Id && item.Type == HousekeepingTaskType.Inspection &&

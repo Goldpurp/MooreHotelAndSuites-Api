@@ -151,16 +151,20 @@ public sealed class PaymentReviewService(
                 return Result(b, "Report rejected and room released. No payment or refund was recorded.");
             }
 
-            var bankReference = BankTransferEvidence.Reference(request.BankReference, b.BookingCode);
+            var bankReference = decision == "Confirm"
+                ? BankTransferEvidence.OptionalReference(request.BankReference, b.BookingCode)
+                : BankTransferEvidence.Reference(request.BankReference, b.BookingCode);
             BankTransferEvidence.Amount(request.Amount);
             var verifiedAmount = request.Amount ?? throw new BadRequestException("A verified bank credit amount is required.");
             if (b.Currency != "NGN") throw new BadRequestException("Only verified NGN bank credits can be reconciled here.");
-            var creditKey = BankTransferEvidence.CreditKey(bankReference);
-            var bankReferencePattern = SqlLikePattern.Literal(bankReference);
-            // Global lock + unique ledger key prevent reuse across different bookings.
+            var creditKey = BankTransferEvidence.ConfirmationKey(bankReference, b.Id);
+            var confirmationReference = BankTransferEvidence.ConfirmationReference(bankReference, b.Id);
+            var bankReferencePattern = SqlLikePattern.Literal(bankReference ?? string.Empty);
+            // A supplied bank ID is unique across bookings; without one, the
+            // booking-scoped key prevents replay of this manual confirmation.
             await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({creditKey}, 0))", ct);
             if (await db.FolioEntries.AnyAsync(e => e.IdempotencyKey == creditKey ||
-                (e.Type == FolioEntryType.Payment && e.ExternalReference != null &&
+                (bankReference != null && e.Type == FolioEntryType.Payment && e.ExternalReference != null &&
                  EF.Functions.ILike(e.ExternalReference, bankReferencePattern, SqlLikePattern.EscapeCharacter)), ct))
                 throw new BadRequestException("This bank credit has already been recorded. Do not apply it twice.");
 
@@ -216,7 +220,7 @@ public sealed class PaymentReviewService(
             AddEntry(folio, FolioAccounting.NewEntry(folio, FolioEntryType.Payment, FolioEntryDirection.Credit,
                 verifiedAmount, "Bank credit verified during payment review", "PaymentReview", b.Id.ToString(),
                 creditKey, now, actorId, bankReference));
-            b.TransactionReference = bankReference;
+            b.TransactionReference = confirmationReference;
             b.PaymentConfirmationMethod = "BankStatementReview";
             b.PaymentConfirmedByUserId = actorId;
             b.PaymentConfirmedAtUtc = now;
@@ -227,7 +231,7 @@ public sealed class PaymentReviewService(
                 var guest = await db.Guests.SingleAsync(g => g.Id == b.GuestId, ct);
                 var roomName = await db.Rooms.Where(r => r.Id == b.RoomId).Select(r => r.Name).SingleOrDefaultAsync(ct);
                 db.EmailOutboxMessages.Add(outbox.Create(TransactionalEmailTemplates.PaymentSuccess, guest.Email,
-                    new PaymentSuccessEmail(guest.FirstName, b.BookingCode, roomName ?? "Room assignment pending", request.Amount.Value, bankReference), b.GuestId));
+                    new PaymentSuccessEmail(guest.FirstName, b.BookingCode, roomName ?? "Room assignment pending", request.Amount.Value, confirmationReference), b.GuestId));
             }
             else await AddNoticeAsync(b, "Bank credit verified. Your reservation is cancelled and a refund is pending staff processing; the refund has not yet been sent.", ct);
             await db.SaveChangesAsync(ct);

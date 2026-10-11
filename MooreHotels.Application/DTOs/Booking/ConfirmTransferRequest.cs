@@ -4,7 +4,7 @@ namespace MooreHotels.Application.DTOs;
 
 public sealed class ConfirmTransferRequest
 {
-    [Required, StringLength(120, MinimumLength = 6)]
+    [StringLength(120)]
     public string? BankReference { get; init; }
     public decimal? Amount { get; init; }
     [Required, StringLength(500, MinimumLength = 10)]

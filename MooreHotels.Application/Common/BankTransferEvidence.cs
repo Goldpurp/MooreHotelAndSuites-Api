@@ -6,6 +6,15 @@ namespace MooreHotels.Application.Common;
 
 public static class BankTransferEvidence
 {
+    public static string? OptionalReference(string? value, string bookingCode) =>
+        string.IsNullOrWhiteSpace(value) ? null : Reference(value, bookingCode);
+
+    public static string ConfirmationKey(string? reference, Guid bookingId) =>
+        reference is null ? $"manual-confirmation:{bookingId:N}" : CreditKey(reference);
+
+    public static string ConfirmationReference(string? reference, Guid bookingId) =>
+        reference ?? $"MANUAL-{bookingId:N}";
+
     // This validates evidence and prevents reuse; authenticity is checked by staff against the bank statement.
     public static string Reference(string? value, string bookingCode)
     {

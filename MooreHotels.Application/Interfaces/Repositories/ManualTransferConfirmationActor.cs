@@ -7,6 +7,6 @@ public sealed record ManualTransferConfirmationActor(
     string Name,
     UserRole Role,
     string RequestId,
-    string BankReference,
+    string? BankReference,
     decimal Amount,
     string Reason);
