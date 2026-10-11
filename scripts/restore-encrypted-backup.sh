@@ -35,8 +35,23 @@ count="$(run_psql --tuples-only --no-align --command "SELECT count(*) FROM pg_cl
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 age --decrypt --identity "$RESTORE_AGE_IDENTITY_FILE" --output "$work/verified.dump" "$archive"
-pg_restore --list "$work/verified.dump" >/dev/null
+pg_restore --list "$work/verified.dump" > "$work/restore.list"
+# A schema-filtered pg_dump includes CREATE SCHEMA public, whereas a newly
+# created target already has that empty schema. Keep its namespace and omit
+# only that TOC entry; all functions, tables, rows and constraints still restore.
+public_schema_exists="$(run_psql --tuples-only --no-align --command "SELECT count(*) FROM pg_namespace WHERE nspname='public'")"
+if [[ "$public_schema_exists" == 1 ]]; then
+  python3 - "$work/restore.list" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text().splitlines(keepends=True)
+path.write_text(''.join(
+    '; ' + line if line.split()[3:6] == ['SCHEMA', '-', 'public'] else line
+    for line in lines
+))
+PY
+fi
 # No --clean or --create. One transaction prevents a partial SQL restore.
-pg_restore --exit-on-error --single-transaction --no-owner --no-privileges --dbname "$PGDATABASE" "$work/verified.dump"
+pg_restore --exit-on-error --single-transaction --no-owner --no-privileges --use-list "$work/restore.list" --dbname "$PGDATABASE" "$work/verified.dump"
 "$script_directory/verify-restore-drill.sh"
 echo 'Database archive restored and invariants verified. Application key decryption and media recovery still require separate acceptance.'

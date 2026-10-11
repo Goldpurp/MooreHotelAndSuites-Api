@@ -128,6 +128,38 @@ jobs:
             exit 1
           fi
           ./scripts/verify-restore-drill.sh
+      - name: Restore the encrypted schema-filtered backup format
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: 5432
+          PGUSER: postgres
+          PGPASSWORD: postgres
+          PGDATABASE: moore_production_rehearsal
+          TMPDIR: /tmp/moore-encrypted-restore-ci
+          RESTORE_AGE_IDENTITY_FILE: /tmp/moore-encrypted-restore-ci/identity.txt
+          RESTORE_DRILL_EXPECTED_DATABASE: moore_encrypted_restore_rehearsal
+          RESTORE_DRILL_CONNECTION_STRING: Host=127.0.0.1;Port=5432;Database=moore_encrypted_restore_rehearsal;Username=postgres;Password=postgres;SSL Mode=Disable
+        run: |
+          umask 077
+          mkdir -p "$TMPDIR/tools"
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends age
+          age-keygen --output "$RESTORE_AGE_IDENTITY_FILE"
+          recipient="$(age-keygen -y "$RESTORE_AGE_IDENTITY_FILE")"
+          docker exec "${{ job.services.postgres.id }}" pg_dump -U postgres -d moore_production_rehearsal --format=custom --schema=public --no-owner --no-privileges | age --recipient "$recipient" > "$TMPDIR/application.dump.age"
+          cat > "$TMPDIR/tools/pg_restore" <<'SH'
+          #!/usr/bin/env bash
+          exec docker run --rm --network host --env PGHOST --env PGPORT --env PGDATABASE --env PGUSER --env PGPASSWORD --env PGSSLMODE --volume "$TMPDIR:$TMPDIR:ro" postgres:17-alpine@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 pg_restore "$@"
+          SH
+          chmod 700 "$TMPDIR/tools/pg_restore"
+          export PATH="$TMPDIR/tools:$PATH"
+          createdb "$RESTORE_DRILL_EXPECTED_DATABASE"
+          ./scripts/restore-encrypted-backup.sh "$TMPDIR/application.dump.age"
+          test "$(PGDATABASE="$RESTORE_DRILL_EXPECTED_DATABASE" psql --no-psqlrc -At -v ON_ERROR_STOP=1 -c 'SELECT count(*) FROM audit_logs WHERE "Id" = $$00000000-0000-0000-0000-000000000001$$::uuid')" = 1
+          if ./scripts/restore-encrypted-backup.sh "$TMPDIR/application.dump.age"; then
+            echo 'Nonempty encrypted restore target was incorrectly accepted.' >&2
+            exit 1
+          fi
       - name: Publish API
         run: dotnet publish MooreHotels.WebAPI/MooreHotels.WebAPI.csproj --configuration Release --no-build --output /tmp/moore-hotels-api
       - name: Build production container
