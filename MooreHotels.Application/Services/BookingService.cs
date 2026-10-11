@@ -798,7 +798,7 @@ public class BookingService : IBookingService
                 "Only an authenticated Admin or Manager can confirm a bank transfer.");
         }
 
-        var bankReference = BankTransferEvidence.Reference(request.BankReference, normalizedCode);
+        var bankReference = BankTransferEvidence.OptionalReference(request.BankReference, normalizedCode);
         BankTransferEvidence.Amount(request.Amount);
         var reason = request.Reason?.Trim();
         if (reason is null || reason.Length is < 10 or > 500)

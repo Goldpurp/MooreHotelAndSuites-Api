@@ -71,7 +71,7 @@ public sealed class LiveQaRemainingWorkflowTests(ManualTransferTestFixture fixtu
             .UpdateStatusAsync(booking.Id, BookingStatus.CheckedOut, fixture.Manager.Id);
         var cleaning = Assert.Single(await housekeeping.GetTasksAsync(), t =>
             t.BookingId == booking.Id && t.Type == HousekeepingTaskType.CheckoutCleaning);
-        await CompleteTask(housekeeping, cleaning.Id, cleaner.Id);
+        await CompleteTask(housekeeping, cleaning.Id, cleaner.Id, completedBy: fixture.Manager.Id);
         var inspection = Assert.Single(await housekeeping.GetTasksAsync(), t =>
             t.BookingId == booking.Id && t.Type == HousekeepingTaskType.Inspection);
         await CompleteTask(housekeeping, inspection.Id, fixture.Manager.Id, false);
@@ -83,7 +83,7 @@ public sealed class LiveQaRemainingWorkflowTests(ManualTransferTestFixture fixtu
         var reclean = Assert.Single(await housekeeping.GetTasksAsync(), t =>
             t.BookingId == booking.Id && t.Type == HousekeepingTaskType.CheckoutCleaning &&
             t.Status != OperationalTaskStatus.Completed);
-        await CompleteTask(housekeeping, reclean.Id, cleaner.Id);
+        await CompleteTask(housekeeping, reclean.Id, cleaner.Id, completedBy: fixture.Manager.Id);
         var secondInspection = Assert.Single(await housekeeping.GetTasksAsync(), t =>
             t.BookingId == booking.Id && t.Type == HousekeepingTaskType.Inspection &&
             t.Status != OperationalTaskStatus.Completed);
@@ -187,11 +187,11 @@ public sealed class LiveQaRemainingWorkflowTests(ManualTransferTestFixture fixtu
     private Task<RoomStatus> Status(Guid id) => fixture.WithDbAsync(db => db.Rooms
         .Where(r => r.Id == id).Select(r => r.Status).SingleAsync());
 
-    private static async Task CompleteTask(IHousekeepingService service, Guid id, Guid actor, bool? passed = null)
+    private static async Task CompleteTask(IHousekeepingService service, Guid id, Guid actor, bool? passed = null, Guid? completedBy = null)
     {
         await service.UpdateTaskAsync(id, new UpdateHousekeepingTaskRequest(
             OperationalTaskStatus.InProgress, actor, null, null), actor);
         await service.UpdateTaskAsync(id, new UpdateHousekeepingTaskRequest(
-            OperationalTaskStatus.Completed, actor, passed, "Isolated QA"), actor);
+            OperationalTaskStatus.Completed, null, passed, "Isolated QA"), completedBy ?? actor);
     }
 }

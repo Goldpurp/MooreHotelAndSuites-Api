@@ -49,7 +49,9 @@ public sealed class HousekeepingService : IHousekeepingService
         {
             _db.ChangeTracker.Clear();
             await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
-            await RequireOperationalActorAsync(actorId, "Housekeeping", cancellationToken);
+            var actor = await RequireOperationalActorAsync(actorId, "Housekeeping", cancellationToken);
+            if (request.Type == HousekeepingTaskType.Inspection && !IsManagement(actor))
+                throw new UnauthorizedAccessException("Only an administrator or manager can create a room inspection.");
             var room = await _db.Rooms
                 .FromSqlInterpolated($"SELECT * FROM rooms WHERE \"Id\" = {request.RoomId} FOR UPDATE")
                 .SingleOrDefaultAsync(cancellationToken)
@@ -122,6 +124,9 @@ public sealed class HousekeepingService : IHousekeepingService
                 .SingleOrDefaultAsync(cancellationToken)
                 ?? throw new NotFoundException("Housekeeping task not found.");
             var actor = await RequireOperationalActorAsync(actorId, "Housekeeping", cancellationToken);
+            if (!IsManagement(actor) &&
+                (task.Type == HousekeepingTaskType.Inspection || request.Status == OperationalTaskStatus.Completed))
+                throw new UnauthorizedAccessException("Only an administrator or manager can confirm cleaning or release a room.");
             var room = await _db.Rooms
                 .FromSqlInterpolated($"SELECT * FROM rooms WHERE \"Id\" = {task.RoomId} FOR UPDATE")
                 .SingleAsync(cancellationToken);

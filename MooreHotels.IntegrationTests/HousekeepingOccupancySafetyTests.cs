@@ -42,7 +42,8 @@ public sealed class HousekeepingOccupancySafetyTests
             _fixture.Manager.Id);
         foreach (var next in new[] { OperationalTaskStatus.InProgress, OperationalTaskStatus.Completed })
         {
-            await service.UpdateTaskAsync(task.Id, new UpdateHousekeepingTaskRequest(next, null, null, null), cleaner.Id);
+            await service.UpdateTaskAsync(task.Id, new UpdateHousekeepingTaskRequest(next, null, null, null),
+                next == OperationalTaskStatus.Completed ? _fixture.Manager.Id : cleaner.Id);
             var state = await _fixture.WithDbAsync(db => db.Rooms.AsNoTracking().SingleAsync(item => item.Id == roomId));
             Assert.Equal(status, state.Status);
             Assert.False(state.IsOnline);

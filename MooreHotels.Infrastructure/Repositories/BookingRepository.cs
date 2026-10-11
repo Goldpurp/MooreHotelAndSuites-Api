@@ -508,16 +508,17 @@ public class BookingRepository : IBookingRepository
             if (amountDue <= 0)
                 throw new BadRequestException("This booking has no outstanding balance.");
 
-            var bankReference = BankTransferEvidence.Reference(actor.BankReference, booking.BookingCode);
+            var bankReference = BankTransferEvidence.OptionalReference(actor.BankReference, booking.BookingCode);
             BankTransferEvidence.Amount(actor.Amount);
             if (booking.Currency != "NGN" || actor.Amount != amountDue || actor.Amount != booking.Amount ||
                 FolioAccounting.Calculate(folio.Entries).Payments != 0)
                 throw new BadRequestException("The verified NGN credit must match the full unpaid reservation balance.");
-            var creditKey = BankTransferEvidence.CreditKey(bankReference);
-            var bankReferencePattern = SqlLikePattern.Literal(bankReference);
+            var creditKey = BankTransferEvidence.ConfirmationKey(bankReference, booking.Id);
+            var confirmationReference = BankTransferEvidence.ConfirmationReference(bankReference, booking.Id);
+            var bankReferencePattern = SqlLikePattern.Literal(bankReference ?? string.Empty);
             await _db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({creditKey}, 0))", cancellationToken);
             if (await _db.FolioEntries.AnyAsync(e => e.IdempotencyKey == creditKey ||
-                (e.Type == FolioEntryType.Payment && e.ExternalReference != null &&
+                (bankReference != null && e.Type == FolioEntryType.Payment && e.ExternalReference != null &&
                  EF.Functions.ILike(e.ExternalReference, bankReferencePattern, SqlLikePattern.EscapeCharacter)), cancellationToken))
                 throw new BadRequestException("This bank credit has already been recorded. Do not apply it twice.");
             if (booking.CheckIn < _hotelTime.GetLocalDayStartUtc(_hotelTime.Today) || booking.CheckOut <= DateTime.UtcNow)
@@ -554,7 +555,7 @@ public class BookingRepository : IBookingRepository
 
             booking.PaymentStatus = PaymentStatus.Paid;
             booking.Status = BookingStatus.Confirmed;
-            booking.TransactionReference = bankReference;
+            booking.TransactionReference = confirmationReference;
             booking.PaymentConfirmationMethod = ManualTransferConfirmation.Method;
             booking.PaymentConfirmedByUserId = actor.UserId;
             booking.PaymentConfirmedAtUtc = confirmedAtUtc;
@@ -617,7 +618,7 @@ public class BookingRepository : IBookingRepository
                             ? "Room assignment pending"
                             : $"{roomTypeName} (room assignment pending)"),
                         amountDue,
-                        bankReference),
+                        confirmationReference),
                     booking.GuestId));
             }
 
@@ -628,7 +629,7 @@ public class BookingRepository : IBookingRepository
                 booking.BookingCode,
                 booking.PaymentStatus.ToString(),
                 booking.Status.ToString(),
-                bankReference,
+                confirmationReference,
                 ManualTransferConfirmation.Method,
                 confirmedAtUtc);
         });
