@@ -24,7 +24,7 @@ namespace MooreHotels.Infrastructure.Migrations
                 {
                     table.PrimaryKey("PK_data_protection_keys", x => x.Id);
                 });
-            migrationBuilder.Sql("ALTER TABLE public.data_protection_keys ENABLE ROW LEVEL SECURITY");
+            migrationBuilder.Sql("ALTER TABLE public.data_protection_keys ENABLE ROW LEVEL SECURITY;");
         }
 
         /// <inheritdoc />

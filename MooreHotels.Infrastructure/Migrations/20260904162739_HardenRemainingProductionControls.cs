@@ -96,7 +96,7 @@ namespace MooreHotels.Infrastructure.Migrations
                 UPDATE bookings
                 SET "GuestAccessTokenRevokedAtUtc" = CURRENT_TIMESTAMP,
                     "ProtectedGuestAccessToken" = NULL
-                WHERE "GuestAccessTokenHash" IS NOT NULL
+                WHERE "GuestAccessTokenHash" IS NOT NULL;
                 """);
 
             migrationBuilder.DropColumn(
