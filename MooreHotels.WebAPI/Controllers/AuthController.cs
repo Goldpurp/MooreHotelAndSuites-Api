@@ -349,8 +349,14 @@ public class AuthController : ControllerBase
             {
                 var token = await _userManager.GeneratePasswordResetTokenAsync(user);
                 var encodedToken = WebEncoders.Base64UrlEncode(Encoding.UTF8.GetBytes(token));
-                var resetUrl = BuildFrontendFragmentUrl("reset-password", new Dictionary<string, string?>
+                var isClient = user.Role == UserRole.Client;
+                var baseUrlKey = isClient ? "PublicAppUrl" : "DashboardUrl";
+                var baseUrl = _configuration[baseUrlKey]
+                    ?? throw new InvalidOperationException($"{baseUrlKey} is not configured.");
+                var resetUrl = FrontendLinkBuilder.WithFragment(baseUrl, isClient ? "reset-password" : "", new Dictionary<string, string?>
                 {
+                    // The static dashboard serves account recovery from its root.
+                    ["route"] = isClient ? null : "reset-password",
                     ["userId"] = user.Id.ToString(),
                     ["token"] = encodedToken
                 });
