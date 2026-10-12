@@ -30,10 +30,15 @@ public sealed class PasswordResetDestinationTests(ManualTransferTestFixture fixt
         var config = scope.ServiceProvider.GetRequiredService<IConfiguration>();
         var user = new ApplicationUser
         {
-            Id = Guid.NewGuid(), Name = "Account recovery regression",
+            Id = Guid.NewGuid(),
+            Name = "Account recovery regression",
             Email = $"recovery-{Guid.NewGuid():N}@example.test",
-            Role = role, Status = ProfileStatus.Active, EmailConfirmed = true,
-            LockoutEnabled = true, CreatedAt = DateTime.UtcNow, StatusChangedAtUtc = DateTime.UtcNow
+            Role = role,
+            Status = ProfileStatus.Active,
+            EmailConfirmed = true,
+            LockoutEnabled = true,
+            CreatedAt = DateTime.UtcNow,
+            StatusChangedAtUtc = DateTime.UtcNow
         };
         user.UserName = user.Email;
         var created = firstPassword
@@ -60,8 +65,10 @@ public sealed class PasswordResetDestinationTests(ManualTransferTestFixture fixt
         Assert.False(string.IsNullOrWhiteSpace(parameters["token"].ToString()));
         var request = new
         {
-            UserId = parameters["userId"].ToString(), Token = parameters["token"].ToString(),
-            NewPassword = "RecoveredPassword123!", ConfirmNewPassword = "RecoveredPassword123!"
+            UserId = parameters["userId"].ToString(),
+            Token = parameters["token"].ToString(),
+            NewPassword = "RecoveredPassword123!",
+            ConfirmNewPassword = "RecoveredPassword123!"
         };
         using var completed = await fixture.Client.PostAsJsonAsync("/api/auth/reset-password", request);
         Assert.Equal(HttpStatusCode.OK, completed.StatusCode);
