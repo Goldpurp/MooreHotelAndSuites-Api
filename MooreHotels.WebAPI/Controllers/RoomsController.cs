@@ -133,7 +133,7 @@ public class RoomsController : ControllerBase
     [HttpPost]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
-    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [EnableRateLimiting(ServiceCollectionExtensions.RoomWriteRateLimitPolicy)]
     [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     public async Task<IActionResult> CreateRoom([FromForm] CreateRoomRequest request, List<IFormFile> files)
     {
@@ -188,7 +188,7 @@ public class RoomsController : ControllerBase
     [HttpPost("{id:guid}/images")]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
-    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [EnableRateLimiting(ServiceCollectionExtensions.RoomWriteRateLimitPolicy)]
     [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     public async Task<IActionResult> AddImages(Guid id, List<IFormFile> files)
     {
@@ -267,7 +267,7 @@ public class RoomsController : ControllerBase
     [HttpPut("{id:guid}")]
     [Authorize(Roles = "Admin,Manager")]
     [Consumes("multipart/form-data")]
-    [EnableRateLimiting(ServiceCollectionExtensions.ImageUploadRateLimitPolicy)]
+    [EnableRateLimiting(ServiceCollectionExtensions.RoomWriteRateLimitPolicy)]
     [RequestSizeLimit(ImageFileValidator.MaxMultipartRequestBytes)]
     [ProducesResponseType(typeof(RoomDto), StatusCodes.Status200OK)]
     [ProducesResponseType(StatusCodes.Status400BadRequest)]
