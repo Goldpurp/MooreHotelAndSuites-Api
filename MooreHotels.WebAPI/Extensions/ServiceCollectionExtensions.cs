@@ -43,6 +43,7 @@ public static class ServiceCollectionExtensions
     public const string LookupRateLimitPolicy = "Lookup";
     public const string WebhookRateLimitPolicy = "Webhook";
     public const string ImageUploadRateLimitPolicy = "ImageUpload";
+    public const string RoomWriteRateLimitPolicy = "RoomWrite";
     public const string PublicReadRateLimitPolicy = "PublicRead";
     public const long DefaultRequestBodySize = 1024 * 1024;
 
@@ -399,6 +400,8 @@ public static class ServiceCollectionExtensions
                     RateLimitPartition.GetNoLimiter("test"));
                 options.AddPolicy(ImageUploadRateLimitPolicy, _ =>
                     RateLimitPartition.GetNoLimiter("test"));
+                options.AddPolicy(RoomWriteRateLimitPolicy, _ =>
+                    RateLimitPartition.GetNoLimiter("test"));
                 options.AddPolicy(PublicReadRateLimitPolicy, _ =>
                     RateLimitPartition.GetNoLimiter("test"));
                 return;
@@ -472,6 +475,22 @@ public static class ServiceCollectionExtensions
                         QueueLimit = 0,
                         AutoReplenishment = true
                     }));
+
+            // Admin is the hotel's super-administrator role. Initial room setup
+            // must not exhaust the hourly photo allowance. Keep the global
+            // traffic limit and all endpoint authorization/validation active.
+            options.AddPolicy(RoomWriteRateLimitPolicy, context =>
+                context.User.Identity?.IsAuthenticated == true && context.User.IsInRole("Admin")
+                    ? RateLimitPartition.GetNoLimiter(GetAuthenticatedClientKey(context))
+                    : RateLimitPartition.GetFixedWindowLimiter(
+                        GetAuthenticatedClientKey(context),
+                        _ => new FixedWindowRateLimiterOptions
+                        {
+                            PermitLimit = 10,
+                            Window = TimeSpan.FromHours(1),
+                            QueueLimit = 0,
+                            AutoReplenishment = true
+                        }));
 
             options.AddPolicy(PublicReadRateLimitPolicy, context =>
                 context.User.Identity?.IsAuthenticated == true

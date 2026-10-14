@@ -37,6 +37,7 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
     public TestUser ClientUser { get; private set; } = null!;
     // Opt-in browser QA host; ordinary integration tests keep the in-memory server.
     public int? BrowserPort { get; init; }
+    public bool EnableRateLimiting { get; init; }
 
     public async Task InitializeAsync()
     {
@@ -79,7 +80,7 @@ public sealed class ManualTransferTestFixture : IAsyncLifetime
         SetEnvironment("Runtime__AllowLocalProviderTestDoubles", "true");
         SetEnvironment("Runtime__EnableSwagger", "true");
         SetEnvironment("Runtime__EnableBookingExpiration", "false");
-        SetEnvironment("Runtime__EnableRateLimiting", "false");
+        SetEnvironment("Runtime__EnableRateLimiting", EnableRateLimiting ? "true" : "false");
         SetEnvironment("Runtime__RequirePublicBookingEmailVerification", "false");
         SetEnvironment("Runtime__EnableMediaDeletion", "false");
         SetEnvironment("MonnifySettings__Enabled", "true");
