@@ -34,7 +34,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
-          dotnet-version: 10.0.400
+          dotnet-version: 10.0.402
           cache: true
           cache-dependency-path: '**/packages.lock.json'
       - name: Restore
@@ -210,7 +210,7 @@ jobs:
           build-mode: manual
       - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6
         with:
-          dotnet-version: 10.0.400
+          dotnet-version: 10.0.402
       - run: dotnet restore MooreHotels.sln --locked-mode
       - run: dotnet build MooreHotels.sln --configuration Release --no-restore
       - uses: github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939 # v4
