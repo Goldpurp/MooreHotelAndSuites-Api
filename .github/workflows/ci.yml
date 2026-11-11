@@ -213,4 +213,4 @@ jobs:
           dotnet-version: 10.0.402
       - run: dotnet restore MooreHotels.sln --locked-mode
       - run: dotnet build MooreHotels.sln --configuration Release --no-restore
-      - uses: github/codeql-action/analyze@fddeee1a7ece751b577e409a89057319e3172939 # v4
+      - uses: github/codeql-action/analyze@3ea37a44b6e4e6847c46edae209410d258d548d1 # v4
